@@ -163,7 +163,13 @@ def _marker_offsets(data):
 
 
 def find_joc_emdf(frame):
-    """返回同步帧中唯一、连续且包含 ID11/ID14 的 JOC EMDF 容器。"""
+    """返回同步帧中唯一、顶层连续且包含 ID11/ID14 的 JOC EMDF 容器。
+
+    EMDF payload 是不透明字节串，其中可能自然出现另一个 ``0x5838``。若从这个
+    内嵌 marker 开始的后续随机位恰好也能通过容器语法探测，它仍不是一个独立的
+    transport 容器。因此，候选的起点一旦落在较早 JOC 容器的声明范围内，就只把
+    它记作内嵌伪候选，不参与“多个容器”的判定。
+    """
     matches = []
     offsets = _marker_offsets(frame)
     parsed_candidates = []
@@ -193,13 +199,32 @@ def find_joc_emdf(frame):
                 "candidate_parse_errors": parse_errors,
                 "repair_hint": "检查 EMDF 是否跨多个 audio-block skip field 分片，或 payload config 是否变化",
             })
-    if len(matches) != 1:
-        starts = [item.start_bit for item in matches]
+    top_level_matches = []
+    nested_matches = []
+    for container in sorted(matches, key=lambda item: item.start_bit):
+        parent = next((candidate for candidate in top_level_matches
+                       if candidate.start_bit < container.start_bit <
+                       candidate.start_bit + len(candidate.raw) * 8), None)
+        if parent is None:
+            top_level_matches.append(container)
+        else:
+            nested_matches.append({
+                "start_bit": container.start_bit,
+                "end_bit": container.start_bit + len(container.raw) * 8,
+                "parent_start_bit": parent.start_bit,
+                "parent_end_bit": parent.start_bit + len(parent.raw) * 8,
+            })
+    if len(top_level_matches) != 1:
+        starts = [item.start_bit for item in top_level_matches]
         raise UnsupportedVariantError(
             "emdf_transport", "multiple_joc_containers",
             "同步帧中存在多个可用 JOC EMDF，当前无法自动选择",
-            details={"syncframe_bytes": len(frame), "joc_container_start_bits": starts})
-    return matches[0]
+            details={
+                "syncframe_bytes": len(frame),
+                "joc_container_start_bits": starts,
+                "nested_joc_candidates": nested_matches,
+            })
+    return top_level_matches[0]
 
 
 def parse_container(data):
