@@ -1,0 +1,99 @@
+name: Native builds
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.asset }}
+    runs-on: ${{ matrix.runner }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2022
+            asset: windows-x64
+            cmake_args: -A x64
+
+          - runner: ubuntu-22.04
+            asset: linux-x64
+            cmake_args: ""
+
+          - runner: macos-15-intel
+            asset: macos-x64
+            cmake_args: -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+
+          - runner: macos-15
+            asset: macos-arm64
+            cmake_args: -DCMAKE_OSX_DEPLOYMENT_TARGET=12.0
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Configure
+        run: >
+          cmake
+          -S native
+          -B build/native
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}/stage"
+          ${{ matrix.cmake_args }}
+
+      - name: Build
+        run: cmake --build build/native --config Release --parallel
+
+      - name: Install
+        run: cmake --install build/native --config Release
+
+      - name: Package
+        working-directory: stage
+        run: >
+          cmake -E tar
+          cf "../JustOneCacophony-native-${{ matrix.asset }}.zip"
+          --format=zip
+          -- .
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JustOneCacophony-native-${{ matrix.asset }}
+          path: JustOneCacophony-native-${{ matrix.asset }}.zip
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download native packages
+        uses: actions/download-artifact@v5
+        with:
+          pattern: JustOneCacophony-native-*
+          path: dist
+          merge-multiple: true
+
+      - name: Create release
+        run: >
+          gh release create "$GITHUB_REF_NAME"
+          dist/*.zip
+          --verify-tag
+          --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
