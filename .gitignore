@@ -1,0 +1,15 @@
+__pycache__/
+*.py[cod]
+
+.venv/
+venv/
+
+build/
+output/
+metadata_cache/
+
+*.metadata.json
+*.report.json
+*.variant-error.json
+*.objects16.f32le
+
