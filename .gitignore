@@ -6,6 +6,8 @@ venv/
 
 build/
 output/
+tests/
+lib/
 metadata_cache/
 
 *.metadata.json

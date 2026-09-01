@@ -157,6 +157,7 @@ JustOneCacophony/
 - 当前只覆盖常见 continuous EMDF transport；跨多个 audio-block skip field 的碎片化 transport 尚未覆盖。
 - Dense JOC 是当前主要路径；Sparse JOC 分支不应视为受支持能力。
 - 扬声器路径当前只覆盖普通点对象；extent、spread、divergence 等对象模式不在支持范围内。
+- OAMD trim element 会按声明边界校验并跳过；warp、balance 和 trim 参数不应用于当前原始对象轨迹或扬声器渲染。
 - 多数据点、少见参数带配置和特殊 OAMD 调度的覆盖度低于常见 12-band、单数据点素材。
 - 扬声器 limiter 不属于当前实现的主公式。
 - ADM 输出、原生库和扬声器布局仍需在更多平台、播放器与真实素材上确认互操作性。
