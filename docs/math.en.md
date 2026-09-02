@@ -499,15 +499,25 @@ s_{\mathrm{frame}}
 +32f_{\mathrm{block}}.
 $$
 
-For processing-block length $B=32$, the aligned update point is
+The theoretical update position on the decoder-output PCM timeline is
+
+$$
+s_{\mathrm{theoretical}}
+=s_{\mathrm{coded}}+d_{\mathrm{decoder}},
+\qquad d_{\mathrm{decoder}}=1473.
+$$
+
+The speaker renderer retains the existing processing-block length $B=32$, so the aligned update point is
 
 $$
 \widehat s
 =
 B\left\lfloor
-\frac{s_{\mathrm{coded}}+B/2-1}{B}
+\frac{s_{\mathrm{theoretical}}+B/2-1}{B}
 \right\rfloor.
 $$
+
+Thus, for frame-aligned updates, `align32(1473)=1472`. The 1473 value is the theoretical decoder delay at the metadata interface; 1472 is its effective boundary in the current 32-sample control block. The 640-value inverse-QMF window/state is not part of this metadata-timing formula.
 
 For ramp duration $D$, the number of blocks is
 

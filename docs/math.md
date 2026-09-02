@@ -499,15 +499,25 @@ s_{\mathrm{frame}}
 +32f_{\mathrm{block}}.
 $$
 
-对处理块长度 $B=32$，更新点对齐为
+decoder 输出 PCM timeline 上的理论更新位置为
+
+$$
+s_{\mathrm{theoretical}}
+=s_{\mathrm{coded}}+d_{\mathrm{decoder}},
+\qquad d_{\mathrm{decoder}}=1473.
+$$
+
+扬声器 renderer 保留现有的处理块长度 $B=32$，更新点对齐为
 
 $$
 \widehat s
 =
 B\left\lfloor
-\frac{s_{\mathrm{coded}}+B/2-1}{B}
+\frac{s_{\mathrm{theoretical}}+B/2-1}{B}
 \right\rfloor.
 $$
+
+因此，对 frame-aligned 更新有 `align32(1473)=1472`。1473 是 metadata interface 的理论 decoder delay；1472 是当前 32-sample control block 中的有效边界。inverse-QMF 使用的 640 项 window/state 不属于这条 metadata timing 公式。
 
 给定 ramp duration $D$，block 数为
 

@@ -95,6 +95,16 @@ python main.py input.m4a --metadata-cache metadata_cache
 python main.py input.m4a --metadata-dir metadata_cache
 ```
 
+### OAMD 时间对齐
+
+对象轨迹和直接扬声器渲染的 metadata delay 默认均为 `1473 samples`。该值描述 decoder 输出 PCM 与 OAMD 更新之间的理论时间映射；扬声器 renderer 仍使用现有的 32-sample control block，因此默认更新的实际 block boundary 为 `1472`：
+
+```text
+align32(1473) = 1472
+```
+
+可分别用 `--object-delay-samples` 和 `--speaker-metadata-offset` 覆盖默认值。这里的 1473 不应与 inverse-QMF 的 640 项 filter/window state 混淆；后者是 QMF 状态长度，不是 metadata delay。
+
 更多参数可查看：
 
 ```powershell

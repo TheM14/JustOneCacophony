@@ -95,6 +95,16 @@ python main.py input.m4a --metadata-cache metadata_cache
 python main.py input.m4a --metadata-dir metadata_cache
 ```
 
+### OAMD time alignment
+
+Object trajectories and direct speaker rendering both default to a metadata delay of `1473 samples`. This value describes the theoretical mapping between decoder-output PCM and OAMD updates. The speaker renderer retains its existing 32-sample control block, so the default update lands on effective block boundary `1472`:
+
+```text
+align32(1473) = 1472
+```
+
+Override the two paths with `--object-delay-samples` and `--speaker-metadata-offset`, respectively. The 1473-sample timing offset is distinct from the 640-value inverse-QMF filter/window state; 640 is a QMF state length, not a metadata delay.
+
 For all options:
 
 ```powershell

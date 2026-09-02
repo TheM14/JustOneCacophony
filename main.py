@@ -286,8 +286,8 @@ def build_parser():
     parser.add_argument("--gain-db", type=float, default=0.0,
                         help="成品增益 dB，默认 0（float32 系数 1.0）")
     parser.add_argument("--duration", type=float, help="只处理开头指定秒数")
-    parser.add_argument("--object-delay-samples", type=int, default=640,
-                        help="可选的对象 PCM/OAMD 时间补偿，默认 640 samples")
+    parser.add_argument("--object-delay-samples", type=int, default=1473,
+                        help="可选的对象 PCM/OAMD 时间补偿，默认 1473 samples")
     parser.add_argument("--trajectory-mode", choices=("compact", "dense64"), default="compact",
                         help="对象轨迹表示；compact 用长线性插值压缩 AXML，dense64 保留逐 64-sample 块")
     parser.add_argument("--ffmpeg", default=os.environ.get("FFMPEG", "ffmpeg"))

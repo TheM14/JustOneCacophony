@@ -179,7 +179,7 @@ def _expand_events(events, total_samples, rate, update_quantum_samples,
     raise ValueError(f"未知 trajectory_mode: {trajectory_mode}")
 
 def build_adm_tracks(index, frames=None, rate=48000, frame_samples=1536,
-                     update_quantum_samples=64, object_delay_samples=640,
+                     update_quantum_samples=64, object_delay_samples=1473,
                      trajectory_mode="compact"):
     """从统一 metadata index 构造 15 条 ADM 轨迹。
 
@@ -187,7 +187,7 @@ def build_adm_tracks(index, frames=None, rate=48000, frame_samples=1536,
     OAMD 的内外层 sample offset、block offset 和 ramp 均保留。
     ``trajectory_mode="compact"`` 用一个长 ADM interpolation block 表示每条
     线性 ramp；``dense64`` 保留逐 64-sample 展开作为兼容回退。
-    ``object_delay_samples`` 将位置更新与对象逆 QMF 的输出时刻对齐。
+    ``object_delay_samples`` 将位置更新与对象 PCM 的 decoder 输出时刻对齐。
     slot1..15 与对象 PCM ch1..15 一一对应。
     """
     frames = index.rows if frames is None else frames
