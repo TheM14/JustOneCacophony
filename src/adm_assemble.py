@@ -14,7 +14,7 @@ import adm_atmos
 
 
 def assemble_from_raw(raw16_path, out_path, scale=1.0, kf_tracks=None,
-                      duration_sec=None, rate=48000):
+                      duration_sec=None, rate=48000, joc_binaural_mode=4):
     """16ch f32 交织 raw → 25ch ADM BWF（空 7.1.2 bed + LFE + 15 对象）。
 
     raw16: (n, 16) 交织（ch0 = LFE，ch1-15 = 对象）。
@@ -54,7 +54,8 @@ def assemble_from_raw(raw16_path, out_path, scale=1.0, kf_tracks=None,
             kf_tracks.append(("JOC_Object_%d" % (oi + 1),
                               [(0.0, 0.0, 0.0, 0.0, max(duration_sec, 1e-6))]))
     adm_atmos.build_master(out_path, BedView(), ObjView(), kf_tracks,
-                           duration_sec, rate=rate)
+                           duration_sec, rate=rate,
+                           joc_binaural_mode=joc_binaural_mode)
     # 及时释放 Windows 文件句柄，允许 TemporaryDirectory 删除中间 raw。
     raw._mmap.close()
     return out_path
@@ -69,12 +70,14 @@ class StreamingMaster:
     channels 10..24.
     """
 
-    def __init__(self, out_path, duration_sec, rate=48000, block_samples=131072):
+    def __init__(self, out_path, duration_sec, rate=48000, block_samples=131072,
+                 joc_binaural_mode=4):
         if block_samples < 1536:
             raise ValueError("block_samples must be at least one E-AC-3 frame")
         self.out_path = os.fspath(out_path)
         self.duration_sec = float(duration_sec)
         self.rate = int(rate)
+        self.joc_binaural_mode = joc_binaural_mode
         self._sink = adm_atmos.Sink25(self.out_path, 25, self.rate)
         self._buffer = np.empty((int(block_samples), 25), dtype=np.float32)
         self._used = 0
@@ -112,7 +115,8 @@ class StreamingMaster:
             import adm_serializer
         axml = adm_serializer.build_axml(kf_tracks, self.duration_sec)
         chna = adm_atmos.build_chna()
-        dbmd = adm_atmos.build_dbmd(25)
+        dbmd = adm_atmos.build_dbmd(
+            25, joc_binaural_mode=self.joc_binaural_mode)
         trajectory_blocks = sum(len(track[1]) for track in kf_tracks)
         self.metadata_info = {
             "axml_bytes": len(axml),

@@ -2,6 +2,7 @@
 
 输出由 10 声道 7.1.2 bed 和 15 路对象组成；RF64 尺寸字段在写入完成后回填。
 """
+import operator
 import struct
 import numpy as np
 import xml.etree.ElementTree as ET
@@ -21,6 +22,14 @@ BED_POS = [(-1.0, 1.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0),
            (-1.0, -1.0, 0.0), (1.0, -1.0, 0.0), (-1.0, 0.0, 1.0), (1.0, 0.0, 1.0)]
 
 N_OBJ = 15
+JOC_BINAURAL_MODES = {
+    "off": 0,
+    "near": 1,
+    "far": 2,
+    "mid": 3,
+    "unspecified": 4,
+}
+JOC_BINAURAL_MODE_DEFAULT = "unspecified"
 
 def q_to_adm_xyz(q1, q2, q3):
     posX = min(1.0, round(q1 * 62 / 32767.0) / 62.0)
@@ -186,7 +195,11 @@ def _checksum(seg):
         s += b
     return (~s + 1) & 0xFF
 
-def build_dbmd(object_count=25):
+def build_dbmd(object_count=25, joc_binaural_mode=4):
+    """仅覆盖 segment 10 中 JOC object slots 10..24 的 mode 低 3 bit。"""
+    mode = operator.index(joc_binaural_mode)
+    if mode not in JOC_BINAURAL_MODES.values():
+        raise ValueError(f"invalid JOC binaural render mode: {mode}")
     out = bytearray(struct.pack("<I", 0x01000006))
     dd = bytearray(96)
     dd[1] = 0x47
@@ -209,6 +222,12 @@ def build_dbmd(object_count=25):
     ob[4] = object_count
     for i in range(5 + 262, len(ob)):
         ob[i] = 0x84
+    # sync (4), count (2), reserved (1), nine 15-byte config trims,
+    # then one trim-bypass byte per track before the headphone modes.
+    # Preserve the existing template's bed fields and trailing bytes.
+    object_modes = 4 + 2 + 1 + 9 * 15 + object_count
+    for i in range(10, min(object_count, 10 + N_OBJ)):
+        ob[object_modes + i] = (ob[object_modes + i] & 0xF8) | mode
     out.append(10); out += struct.pack("<H", len(ob)); out += bytes(ob)
     out.append(_checksum(ob))
     out += b"\x00\x00"
@@ -252,7 +271,7 @@ class Sink25:
         self.fp.close()
 
 def build_master(out_path, bed_mm, obj_mm, kf_tracks, duration_sec, rate=48000,
-                 block=480000):
+                 block=480000, joc_binaural_mode=4):
     n = min(bed_mm.shape[0], obj_mm.shape[0])
     try:
         from . import adm_serializer
@@ -261,7 +280,7 @@ def build_master(out_path, bed_mm, obj_mm, kf_tracks, duration_sec, rate=48000,
     serial_axml = adm_serializer.build_axml
     axml = serial_axml(kf_tracks, duration_sec)
     chna = build_chna()
-    dbmd = build_dbmd(25)
+    dbmd = build_dbmd(25, joc_binaural_mode=joc_binaural_mode)
     sink = Sink25(out_path, 25, rate)
     for st in range(0, n, block):
         en = min(n, st + block)

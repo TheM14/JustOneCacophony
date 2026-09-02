@@ -95,6 +95,18 @@ python main.py input.m4a --metadata-cache metadata_cache
 python main.py input.m4a --metadata-dir metadata_cache
 ```
 
+### Experimental binaural mode settings for JOC objects
+
+The binaural mode written here is a user-selected, experimental rendering hint for downstream ADM renderers. It is **not original binaural metadata extracted or recovered from the input E-AC-3 JOC bitstream**, nor does it represent the original mix's per-object binaural settings. The selected mode is applied uniformly to all 15 JOC objects; the default `unspecified` is this tool's default, not a mode detected in the source file.
+
+Use `--joc-binaural-mode off|near|far|mid|unspecified` to select a mode, encoded as `0|1|2|3|4` respectively. The default is `unspecified`:
+
+```powershell
+python main.py input.m4a --joc-binaural-mode mid
+```
+
+This option only sets the low 3 binaural-render-mode bits of the last 15 JOC object entries in ADM BWF DBMD segment 10, leaving the first 10 bed entries unchanged. It does not change PCM, object trajectories, or direct speaker rendering, and does not itself produce binaural stereo audio. The adjacent `.report.json` records the mode name and value in `joc_binaural_mode` and `joc_binaural_mode_value`; both are `null` for direct speaker output, where the option does not apply.
+
 ### OAMD time alignment
 
 Object trajectories and direct speaker rendering both default to a metadata delay of `1473 samples`. This value describes the theoretical mapping between decoder-output PCM and OAMD updates. The speaker renderer retains its existing 32-sample control block, so the default update lands on effective block boundary `1472`:

@@ -95,6 +95,18 @@ python main.py input.m4a --metadata-cache metadata_cache
 python main.py input.m4a --metadata-dir metadata_cache
 ```
 
+### 实验性 JOC 对象双耳模式设置
+
+这里写入的双耳模式是用户手动指定、供下游 ADM 渲染器使用的实验性渲染提示，**不是从输入 E-AC-3 JOC 码流中提取或还原的原始双耳元数据**，也不代表原始混音中各对象的双耳设置。所选模式会统一应用到 15 个 JOC 对象；默认 `unspecified` 只是本工具的默认值，并非从源文件检测到的模式。
+
+使用 `--joc-binaural-mode off|near|far|mid|unspecified` 选择模式，编码分别为 `0|1|2|3|4`，默认 `unspecified`：
+
+```powershell
+python main.py input.m4a --joc-binaural-mode mid
+```
+
+此选项仅设置 ADM BWF 的 DBMD segment 10 中后 15 个 JOC 对象的 binaural render mode 低 3 bit；前 10 个 bed 保持不变。它不改变 PCM、对象轨迹或直接扬声器渲染，也不直接生成双耳立体声音频。输出旁的 `.report.json` 用 `joc_binaural_mode` 和 `joc_binaural_mode_value` 记录模式名称与数值；直接扬声器输出时两者为 `null`，表示不适用。
+
 ### OAMD 时间对齐
 
 对象轨迹和直接扬声器渲染的 metadata delay 默认均为 `1473 samples`。该值描述 decoder 输出 PCM 与 OAMD 更新之间的理论时间映射；扬声器 renderer 仍使用现有的 32-sample control block，因此默认更新的实际 block boundary 为 `1472`：

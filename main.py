@@ -20,6 +20,7 @@ if str(SOURCE_DIR) not in sys.path:
 import numpy as np
 
 import adm_assemble
+import adm_atmos
 from adm_validate import validate
 from metadata import DirectPayloadIndex, PayloadIndex, write_summary
 import oamd_tracks
@@ -288,6 +289,11 @@ def build_parser():
     parser.add_argument("--duration", type=float, help="只处理开头指定秒数")
     parser.add_argument("--object-delay-samples", type=int, default=1473,
                         help="可选的对象 PCM/OAMD 时间补偿，默认 1473 samples")
+    parser.add_argument(
+        "--joc-binaural-mode", choices=tuple(adm_atmos.JOC_BINAURAL_MODES),
+        default=adm_atmos.JOC_BINAURAL_MODE_DEFAULT,
+        help="实验性 ADM DBMD JOC 对象双耳模式：off=0、near=1、far=2、mid=3、"
+             "unspecified=4（默认）；不改变 PCM 或直接扬声器渲染")
     parser.add_argument("--trajectory-mode", choices=("compact", "dense64"), default="compact",
                         help="对象轨迹表示；compact 用长线性插值压缩 AXML，dense64 保留逐 64-sample 块")
     parser.add_argument("--ffmpeg", default=os.environ.get("FFMPEG", "ffmpeg"))
@@ -431,7 +437,9 @@ def main(argv=None):
             info = (f"speaker layout={speaker_name}, format={speaker_actual_format}, "
                     f"peak={speaker_clip_info['peak']:.9g}")
         else:
-            master = adm_assemble.StreamingMaster(output, duration_sec, rate=RATE)
+            master = adm_assemble.StreamingMaster(
+                output, duration_sec, rate=RATE,
+                joc_binaural_mode=adm_atmos.JOC_BINAURAL_MODES[args.joc_binaural_mode])
             try:
                 render_seconds, renderer_backend, render_breakdown = timed_call(
                     timings, "render_and_stream", variant_call,
@@ -474,6 +482,9 @@ def main(argv=None):
         "gain_float32": float(gain),
         "object_delay_samples": None if speaker_mode else args.object_delay_samples,
         "trajectory_mode": None if speaker_mode else args.trajectory_mode,
+        "joc_binaural_mode": None if speaker_mode else args.joc_binaural_mode,
+        "joc_binaural_mode_value": (None if speaker_mode else
+                                    adm_atmos.JOC_BINAURAL_MODES[args.joc_binaural_mode]),
         "render_seconds": render_seconds,
         "render_breakdown": render_breakdown,
         "renderer_backend": renderer_backend,
