@@ -4,9 +4,9 @@
 
 > JustOneCacophony 是一个 E-AC-3 JOC 的实验性 / 测试实现，用于研究 JOC 的解析、重建、渲染以及相关数学过程。
 
-项目可以从常见 E-AC-3 JOC 码流中提取并解析 EMDF、ID14 JOC 参数和 ID11 OAMD 元数据，结合 FFmpeg 解码出的核心 5.1 PCM 重建 LFE 与 15 路对象 PCM，并输出 ADM BWF 或指定扬声器布局的 WAV。
+项目可以从常见 E-AC-3 JOC 码流中提取并解析 EMDF、ID14 JOC 参数和 ID11 OAMD 元数据，结合 FFmpeg 解码出的核心 5.1 PCM 重建 LFE 与 15 路对象 PCM，并输出 ADM BWF、指定扬声器布局的 WAV，或使用标准 SOFA HRTF 直接输出双耳 WAV。
 
-这是研究代码，不是完整、标准兼容或生产级的 Dolby JOC 解码器。它只覆盖当前已实现的码流形态；遇到未知变体时会明确报错，而不是假装一切都很和谐——如果哪里算错了，它可能就真的只剩 cacophony 了。
+这是研究代码，不是完整、标准兼容或生产级的 JOC 解码器。它只覆盖当前已实现的码流形态；遇到未知变体时会明确报错，而不是假装一切都很和谐——如果哪里算错了，它可能就真的只剩 cacophony 了。
 
 ## 当前功能
 
@@ -16,7 +16,9 @@
 - 通过 analysis QMF、参数插值、对象矩阵和 inverse QMF 重建 LFE + 15 路对象 PCM；
 - 输出 25 声道 ADM BWF：10 声道 7.1.2 bed（除 LFE 外静音）+ 15 个对象；
 - 直接渲染 `2.0`、`3.1`、`5.1`、`7.1`、`5.1.2`、`5.1.4`、`7.1.2`、`7.1.4`、`9.1.4`、`9.1.6`；
-- 输出 float32 或 PCM24 WAV，并在 PCM24 削波前提供明确处理策略；
+- 从 `pcm16 + ID11/OAMD` 直接运行公开 SOFA 双耳渲染，不生成临时 ADM BWF；
+- 双耳 DSP 全程使用 float64/complex128，并保留 961-sample latency compensation、跨帧状态和 room 尾声；
+- 直接输出统一支持 float32 或 PCM24 WAV，并在 PCM24 削波前提供明确处理策略；
 - 使用 NumPy 后端，或通过 `ctypes` 调用可选的 C++20 原生核；`auto` 模式在原生库不可用时回退到 Python；
 - 读取或写入 metadata sidecar，并生成元数据、运行时间和输出摘要。
 
@@ -30,15 +32,20 @@ M4A / E-AC-3
   ├─ ID11 OAMD → 对象位置与时间轨迹
   └─ LFE + 15 objects
        ├─ 25ch ADM BWF
-       └─ 指定布局的扬声器 WAV
+       ├─ 指定布局的扬声器 WAV
+       └─ ID11 直接时间轴 + SOFA HRTF → 双耳 WAV
 ```
 
-Python 与 C++ 后端使用同一组已记录的数学过程。原生核只处理状态密集的 DSP 和扬声器渲染，高层位流解析、ADM 组装与命令行逻辑仍在 Python 中。
+Python 与 C++ 后端在 JOC 对象重建、扬声器渲染和公开 SOFA 双耳渲染中使用同一组
+数学过程；native 双耳后端与 Python 参考实现逐值一致（差异 < 1e-9）。位流解析、
+OAMD 时间轴和命令行逻辑在 Python 中。
 
 ## 环境
 
 - Python 3.10+
 - NumPy 1.24+
+- h5py 3.8+
+- SciPy 1.10+
 - 独立的 FFmpeg 可执行程序；不需要 `ffmpeg-python`。默认从 `PATH` 查找，也可通过 `--ffmpeg` 指定可执行文件路径
 - 可选：支持 C++20 的 CMake 工具链，用于自行构建原生核
 
@@ -78,12 +85,50 @@ python main.py input.m4a --speaker-layout 5.1 --speaker-format int24
 python main.py input.m4a --speaker-layout 7.1.2 --speaker-output output.7.1.2.wav
 ```
 
-在非交互环境请求 PCM24 且可能削波时，需要显式选择处理方式：
+直接输出双耳渲染 WAV（普通对象仅 Near/Mid/Far，默认 Mid）。HRTF 输入支持三种来源：
+
+```powershell
+# 1) SOFA（缺省取 HRTF/binaural.sofa，也可显式指定）
+python main.py input.m4a --binaural
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa
+
+# 2) Rosella .personalized_headphone（缺省取 HRTF/binaural.personalized_headphone）
+python main.py input.m4a --binaural --personalized-headphone
+python main.py input.m4a --binaural --personalized-headphone C:\HRTF\subject.personalized_headphone
+
+# 3) .jochrtf 编译缓存
+python main.py input.m4a --binaural --compiled-hrtf-cache C:\HRTF\subject.jochrtf
+
+# 常用选项
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
+  --binaural-mode near
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
+  --hrtf-cache-policy disk
+python main.py input.m4a --binaural --binaural-output output.binaural.wav
+```
+
+三者都不指定时的自动选择顺序：`HRTF/binaural.sofa` → `output/hrtf-cache` 下唯一的
+`.jochrtf` → `HRTF/binaural.personalized_headphone`；都没有则报错并提示显式指定。
+
+- `.sofa` 是可移植的 source of truth；可以是自行扫描或任何来源的通用 HRTF 数据。
+- `.personalized_headphone` 是杜比官方软件个性化扫描得到的模型，其 JSON 解析由
+  本项目自行实现（`src/rosella_model.py`），不调用杜比软件。
+- `.jochrtf` 是从 SOFA 编译出的项目内部 cache，可删除、可从 SOFA 重建，默认写在
+  `output/hrtf-cache`。
+
+HRTF 数据统一放在 `HRTF/`（git 忽略）：默认 SOFA `HRTF/binaural.sofa`、默认模型
+`HRTF/binaural.personalized_headphone`。cache 含有源 HRTF 的变换数据，使用与再分发
+仍受源数据许可约束；格式边界、计算公式、状态、时间轴及发布注意事项见
+[双耳渲染](docs/binaural.md) 和 [第三方通知](THIRD_PARTY_NOTICES.md)。
+
+扬声器和双耳输出共享峰值检查、writer 与削波策略。在非交互环境请求 PCM24 且可能削波时，需要显式选择处理方式：
 
 ```powershell
 python main.py input.m4a --speaker-layout 5.1 --speaker-format int24 --clip-action abort
 python main.py input.m4a --speaker-layout 5.1 --speaker-format int24 --clip-action float32
 python main.py input.m4a --speaker-layout 5.1 --speaker-format int24 --clip-action continue
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
+  --binaural-format int24 --clip-action abort
 ```
 
 元数据与诊断：
@@ -95,17 +140,24 @@ python main.py input.m4a --metadata-cache metadata_cache
 python main.py input.m4a --metadata-dir metadata_cache
 ```
 
-### 实验性 JOC 对象双耳模式设置
+### 双耳渲染模式
 
-这里写入的双耳模式是用户手动指定、供下游 ADM 渲染器使用的实验性渲染提示，**不是从输入 E-AC-3 JOC 码流中提取或还原的原始双耳元数据**，也不代表原始混音中各对象的双耳设置。所选模式会统一应用到 15 个 JOC 对象；默认 `unspecified` 只是本工具的默认值，并非从源文件检测到的模式。
+`--binaural-mode off|near|mid|far` 选择双耳渲染模式，默认 `mid`，两种输出共用这一个选项：
 
-使用 `--joc-binaural-mode off|near|far|mid|unspecified` 选择模式，编码分别为 `0|1|2|3|4`，默认 `unspecified`：
+- **直接双耳渲染**（`--binaural`）：`off` 不可用（报错），near/mid/far 生效，默认 `mid`；
+- **ADM BWF**：DBMD segment 10 中后 15 个 JOC 对象的 binaural render mode 写
+  `off=0/near=1/far=2/mid=3`，前 10 个 bed 保持不变，默认 `mid`；`off` 用于显式
+  关闭双耳元数据提示。
 
 ```powershell
-python main.py input.m4a --joc-binaural-mode mid
+python main.py input.m4a --binaural-mode mid
+python main.py input.m4a --binaural-mode off   # 仅 ADM BWF：关闭 DBMD 双耳提示
 ```
 
-此选项仅设置 ADM BWF 的 DBMD segment 10 中后 15 个 JOC 对象的 binaural render mode 低 3 bit；前 10 个 bed 保持不变。它不改变 PCM、对象轨迹或直接扬声器渲染，也不直接生成双耳立体声音频。输出旁的 `.report.json` 用 `joc_binaural_mode` 和 `joc_binaural_mode_value` 记录模式名称与数值；直接扬声器输出时两者为 `null`，表示不适用。
+**默认 `mid` 是本工具人为指定的渲染提示**，不是从输入 E-AC-3 JOC 码流中提取或
+还原的原始双耳元数据，也不代表原始混音中各对象的双耳设置。该提示不改变 PCM、
+对象轨迹或直接扬声器渲染。输出旁的 `.report.json` 用 `binaural_mode`（模式名）
+和 `binaural_mode_value`（ADM 编码值，直接双耳输出时为 `null`）记录。
 
 ### OAMD 时间对齐
 
@@ -116,6 +168,15 @@ align32(1473) = 1472
 ```
 
 可分别用 `--object-delay-samples` 和 `--speaker-metadata-offset` 覆盖默认值。这里的 1473 不应与 inverse-QMF 的 640 项 filter/window state 混淆；后者是 QMF 状态长度，不是 metadata delay。
+
+直接双耳路径使用 `--object-delay-samples`。每个 ID11/OAMD event 先按 frame start、
+outer subpayload offset 与 block offset 落到绝对 sample timeline，再加该 delay；每个
+1536-sample 输入帧按三个连续 512-sample block 处理，并在每块的绝对起始 sample
+查询插值后的位置、更新方向和 profile。
+
+### 双耳计算
+
+双耳路径的 QMF、hybrid、方向场、距离、ITD、room、上述 512-sample 参数更新和 961-sample 延迟补偿见[双耳渲染数学](docs/binaural.md)。
 
 更多参数可查看：
 
@@ -152,6 +213,8 @@ JustOneCacophony/
 ├─ native/               C/C++ 加速核、C ABI 与必要表数据
 ├─ data/                 Python 运行时表数据
 ├─ lib/                  原生运行库投放目录（按需创建）
+├─ HRTF/                 用户 HRTF 数据目录（按需创建，git 忽略）
+├─ output/               输出目录（按需创建；.jochrtf 缓存默认在其 hrtf-cache 子目录）
 ├─ docs/                 数学与原生核文档（中英文）
 ├─ requirements.txt      Python 依赖
 ├─ README.md             中文说明
@@ -170,7 +233,8 @@ JustOneCacophony/
 - OAMD Q15 坐标转换；
 - 基于目标布局 region 的等功率声像；
 - 布局位置补偿与逐样本增益斜坡；
-- float32 与 PCM24 输出量化。
+- float32 与 PCM24 输出量化；
+- SOFA canonical importer、64-QMF/77-hybrid 投影、`36×2×77` 五阶方向 field、exactly-once delay/phase、项目 early/late room 与 special LFE。
 
 解码与渲染过程使用的公式见[数学说明](docs/math.md)。
 
@@ -178,13 +242,16 @@ JustOneCacophony/
 
 - 当前只覆盖常见 continuous EMDF transport；跨多个 audio-block skip field 的碎片化 transport 尚未覆盖。
 - Dense JOC 是当前主要路径；Sparse JOC 分支不应视为受支持能力。
-- 扬声器路径当前只覆盖普通点对象；extent、spread、divergence 等对象模式不在支持范围内。
+- 扬声器与 SOFA 双耳路径当前只覆盖普通点对象；extent、spread、diffuse、divergence、channel lock 等对象控制不在支持范围内。
 - OAMD trim element 会按声明边界校验并跳过；warp、balance 和 trim 参数不应用于当前原始对象轨迹或扬声器渲染。
 - 多数据点、少见参数带配置和特殊 OAMD 调度的覆盖度低于常见 12-band、单数据点素材。
 - 扬声器 limiter 不属于当前实现的主公式。
-- ADM 输出、原生库和扬声器布局仍需在更多平台、播放器与真实素材上确认互操作性。
+- SOFA importer 当前严格支持 `SimpleFreeFieldHRIR` FIR；其它 SOFA convention 需要显式 adapter。
+- 双耳 runtime 固定 48 kHz、五阶和一次选择一个 measurement-radius shell；公开双耳默认走 native 加速，原生库不可用时自动回退 Python。
+- ADM 输出、原生库、扬声器布局和双耳模型仍需在更多平台、播放器与真实素材上确认互操作性。
 
 ## 文档
 
 - [数学说明](docs/math.md) · [English](docs/math.en.md)
 - [原生核说明](docs/native.md) · [English](docs/native.en.md)
+- [双耳渲染](docs/binaural.md) · [English](docs/binaural.en.md)

@@ -116,7 +116,26 @@ Supported layouts:
 2.0  3.1  5.1  7.1  5.1.2  5.1.4  7.1.2  7.1.4  9.1.4  9.1.6
 ```
 
-## 6. Building
+## 6. Binaural-rendering ABI
+
+The shared library provides a 512-sample float64 binaural DSP interface:
+
+```c
+ejoc_binaural_renderer_handle ejoc_binaural_renderer_create(void);
+int ejoc_binaural_renderer_configure_kernels(...);
+int ejoc_binaural_renderer_configure_room(...);
+int ejoc_binaural_renderer_process(
+    ejoc_binaural_renderer_handle handle,
+    const double* input16_interleaved,   /* [512][16] */
+    const double* gains_complex,         /* [16][2][77][2] */
+    const double* room_sends,            /* [16] */
+    double output_gain,
+    double* output_stereo_interleaved);  /* [512][2] */
+```
+
+Python parses the model, evaluates the OAMD timeline, and supplies complex gains and room sends every 512 samples. The C++ handle owns QMF, hybrid, recursive-room, and QMF-synthesis state. Inputs, state, accumulation, and output are double/complex double.
+
+## 7. Building
 
 The CMake definition is `native/CMakeLists.txt`. Run from the repository root:
 
@@ -138,7 +157,7 @@ The MSVC configuration uses the static CRT. Other runtime dependencies depend on
 
 The repository does not include native binaries by default. A prebuilt Release runtime or a locally built runtime can be placed directly under `lib/`.
 
-## 7. Runtime lookup and fallback
+## 8. Runtime lookup and fallback
 
 Lookup order:
 
@@ -148,7 +167,7 @@ Lookup order:
 
 `--backend auto` falls back to NumPy when loading fails, and `--backend python` skips native discovery. The current CLI also prints the failure and falls back for `--backend native`; this existing behavior should not be read as successful native execution.
 
-## 8. Implementation boundaries
+## 9. Implementation boundaries
 
 - The native layer accepts only dense-JOC data already parsed by Python.
 - The ABI fixes a 1536-sample JOC frame, at most 15 objects, at most 23 parameter bands, and at most 2 data points.

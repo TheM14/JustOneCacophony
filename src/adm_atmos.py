@@ -234,11 +234,21 @@ def build_dbmd(object_count=25, joc_binaural_mode=4):
     return bytes(out)
 
 class Sink25:
+    """RF64 ADM BWF writer.
+
+    Header layout is fixed so that sizes can be patched without rereading the
+    file: RF64+size+WAVE (12) + ds64 chunk (8+28) + fmt chunk (8+16) + data
+    chunk header (8).  Sizes beyond 32 bits follow the RF64 convention: the
+    chunk size field holds 0xFFFFFFFF and the true value lives in ds64.
+    """
+    _DS64_BODY_OFFSET = 20
+    _DATA_SIZE_OFFSET = 76
+
     def __init__(self, path, channels, rate):
         self.ch = channels; self.rate = rate; self.frames = 0
         self.fp = open(path, "wb+")
         self.fp.write(b"RF64" + struct.pack("<I", 0xFFFFFFFF) + b"WAVE")
-        self._chunk(b"ds64", b"\x00" * 64)
+        self._chunk(b"ds64", b"\x00" * 28)
         self._chunk(b"fmt ", self._fmt())
         self._chunk(b"data", b"")
     def _chunk(self, cid, body):
@@ -259,14 +269,12 @@ class Sink25:
         self._chunk(b"chna", chna_bytes)
         self._chunk(b"dbmd", dbmd_bytes)
         self.fp.seek(0, 2); total = self.fp.tell()
-        self.fp.seek(0); head = self.fp.read()
-        m = head.find(b"data")
-        if m >= 0:
-            self.fp.seek(m + 4); self.fp.write(struct.pack("<I", data_len))
-        m = head.find(b"ds64")
-        if m >= 0:
-            self.fp.seek(m + 8)
-            self.fp.write(struct.pack("<QQQI", total - 8, data_len, self.frames, 0))
+        # RF64: 超过 32-bit 的 chunk size 字段写 0xFFFFFFFF，真实大小回填 ds64。
+        self.fp.seek(self._DATA_SIZE_OFFSET)
+        self.fp.write(struct.pack(
+            "<I", data_len if data_len <= 0xFFFFFFFF else 0xFFFFFFFF))
+        self.fp.seek(self._DS64_BODY_OFFSET)
+        self.fp.write(struct.pack("<QQQI", total - 8, data_len, self.frames, 0))
         self.fp.flush()
         self.fp.close()
 

@@ -8,6 +8,8 @@ find_package(Threads REQUIRED)
 add_library(eac3joc_core SHARED
     src/eac3joc_core.cpp
     src/speaker_renderer.cpp
+    src/binaural_renderer.cpp
+    src/sofa_binaural_renderer.cpp
     src/joc_huffman_tables.h
     src/qmf_tables.h
     src/speaker_layouts.h

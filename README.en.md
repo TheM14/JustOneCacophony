@@ -4,9 +4,9 @@
 
 > JustOneCacophony is an experimental/test implementation of E-AC-3 JOC for studying JOC parsing, reconstruction, rendering, and the associated mathematics.
 
-The project can extract and parse EMDF, ID14 JOC parameters, and ID11 OAMD metadata from common E-AC-3 JOC streams. It combines those data with the core 5.1 PCM decoded by FFmpeg, reconstructs LFE plus 15 object channels, and writes either ADM BWF or a WAV file for a selected speaker layout.
+The project can extract and parse EMDF, ID14 JOC parameters, and ID11 OAMD metadata from common E-AC-3 JOC streams. It combines those data with the core 5.1 PCM decoded by FFmpeg, reconstructs LFE plus 15 object channels, and writes ADM BWF, a WAV file for a selected speaker layout, or direct binaural stereo using a standard SOFA HRTF.
 
-This is research code, not a complete, standards-compliant, or production-grade Dolby JOC decoder. It covers only the stream forms currently implemented. Unknown variants fail explicitly—because when the math goes wrong, all that may remain is the cacophony.
+This is research code, not a complete, standards-compliant, or production-grade JOC decoder. It covers only the stream forms currently implemented. Unknown variants fail explicitly—because when the math goes wrong, all that may remain is the cacophony.
 
 ## Current features
 
@@ -16,7 +16,9 @@ This is research code, not a complete, standards-compliant, or production-grade 
 - Reconstruct LFE plus 15 object channels through analysis QMF, parameter interpolation, the object matrix, and inverse QMF.
 - Write a 25-channel ADM BWF: a 10-channel 7.1.2 bed (silent except for LFE) plus 15 objects.
 - Render directly to `2.0`, `3.1`, `5.1`, `7.1`, `5.1.2`, `5.1.4`, `7.1.2`, `7.1.4`, `9.1.4`, or `9.1.6`.
-- Write float32 or PCM24 WAV and require an explicit policy when PCM24 would clip.
+- Run public SOFA binaural rendering directly from `pcm16 + ID11/OAMD`, without a temporary ADM BWF.
+- Keep the binaural DSP in float64/complex128, including 961-sample latency compensation, cross-frame state, and the room tail.
+- Use a shared float32/PCM24 WAV writer and explicit PCM24 clipping policy for direct outputs.
 - Use the NumPy backend or an optional C++20 core through `ctypes`; `auto` falls back to Python when the native library is unavailable.
 - Read or write metadata sidecars and produce metadata, timing, and output reports.
 
@@ -30,15 +32,18 @@ M4A / E-AC-3
   ├─ ID11 OAMD → object positions and timing
   └─ LFE + 15 objects
        ├─ 25ch ADM BWF
-       └─ speaker WAV for the selected layout
+       ├─ speaker WAV for the selected layout
+       └─ direct ID11 timeline + SOFA HRTF → binaural WAV
 ```
 
-The Python and C++ backends follow the same documented mathematics. The native core handles the state-heavy DSP and speaker rendering; high-level bitstream parsing, ADM assembly, and CLI behavior remain in Python.
+The Python and C++ backends follow the same mathematics for JOC object reconstruction and speaker rendering. The public SOFA binaural backend currently runs in Python; bitstream parsing, the OAMD timeline, and CLI behavior also remain in Python.
 
 ## Requirements
 
 - Python 3.10+
 - NumPy 1.24+
+- h5py 3.8+
+- SciPy 1.10+
 - A standalone FFmpeg executable; `ffmpeg-python` is not required. FFmpeg is discovered through `PATH` by default or selected with `--ffmpeg`
 - Optional: CMake and a C++20 toolchain to build the native core
 
@@ -78,12 +83,58 @@ python main.py input.m4a --speaker-layout 5.1 --speaker-format int24
 python main.py input.m4a --speaker-layout 7.1.2 --speaker-output output.7.1.2.wav
 ```
 
-When PCM24 may clip in a non-interactive environment, select a policy explicitly:
+Write binaural stereo directly (ordinary objects are Near/Mid/Far only; Mid is
+the default). The HRTF input accepts three sources:
+
+```powershell
+# 1) SOFA (defaults to HRTF/binaural.sofa, or an explicit path)
+python main.py input.m4a --binaural
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa
+
+# 2) Rosella .personalized_headphone (defaults to HRTF/binaural.personalized_headphone)
+python main.py input.m4a --binaural --personalized-headphone
+python main.py input.m4a --binaural --personalized-headphone C:\HRTF\subject.personalized_headphone
+
+# 3) .jochrtf compiled cache
+python main.py input.m4a --binaural --compiled-hrtf-cache C:\HRTF\subject.jochrtf
+
+# Common options
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
+  --binaural-mode near
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
+  --hrtf-cache-policy disk
+python main.py input.m4a --binaural --binaural-output output.binaural.wav
+```
+
+With none of the three specified, resolution tries, in order:
+`HRTF/binaural.sofa`, the unique `.jochrtf` under `output/hrtf-cache`, then
+`HRTF/binaural.personalized_headphone`; if none exist, an error asks for an
+explicit path.
+
+- `.sofa` is the portable source of truth; it can hold self-scanned or any
+  generic HRTF data.
+- `.personalized_headphone` is a model produced by Dolby's official
+  personalization scan; its JSON parsing is implemented by this project
+  (`src/rosella_model.py`) and does not invoke any Dolby software.
+- `.jochrtf` is a project-internal cache compiled from SOFA; it is disposable,
+  rebuildable, and written to `output/hrtf-cache` by default.
+
+HRTF data lives under `HRTF/` (git-ignored): the default SOFA
+`HRTF/binaural.sofa` and the default model
+`HRTF/binaural.personalized_headphone`. Because the cache contains transformed
+HRTF data, its use and redistribution remain subject to the source dataset's
+terms. See [Binaural Rendering](docs/binaural.en.md) and
+[Third-party notices](THIRD_PARTY_NOTICES.md) for format boundaries, formulas,
+state, timing, and distribution considerations.
+
+Speaker and binaural output share peak analysis, the WAV writer, and clipping policy. When PCM24 may clip in a non-interactive environment, select a policy explicitly:
 
 ```powershell
 python main.py input.m4a --speaker-layout 5.1 --speaker-format int24 --clip-action abort
 python main.py input.m4a --speaker-layout 5.1 --speaker-format int24 --clip-action float32
 python main.py input.m4a --speaker-layout 5.1 --speaker-format int24 --clip-action continue
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
+  --binaural-format int24 --clip-action abort
 ```
 
 Metadata and diagnostics:
@@ -95,17 +146,29 @@ python main.py input.m4a --metadata-cache metadata_cache
 python main.py input.m4a --metadata-dir metadata_cache
 ```
 
-### Experimental binaural mode settings for JOC objects
+### Binaural render mode
 
-The binaural mode written here is a user-selected, experimental rendering hint for downstream ADM renderers. It is **not original binaural metadata extracted or recovered from the input E-AC-3 JOC bitstream**, nor does it represent the original mix's per-object binaural settings. The selected mode is applied uniformly to all 15 JOC objects; the default `unspecified` is this tool's default, not a mode detected in the source file.
+`--binaural-mode off|near|mid|far` selects the binaural render mode; the default
+is `mid`, and both outputs share this single option:
 
-Use `--joc-binaural-mode off|near|far|mid|unspecified` to select a mode, encoded as `0|1|2|3|4` respectively. The default is `unspecified`:
+- **Direct binaural rendering** (`--binaural`): `off` is rejected (error);
+  near/mid/far apply, defaulting to `mid`;
+- **ADM BWF**: the low 3 binaural-render-mode bits of the last 15 JOC object
+  entries in DBMD segment 10 carry `off=0/near=1/far=2/mid=3`, leaving the first
+  10 bed entries unchanged; the default is `mid`, and `off` explicitly disables
+  the binaural metadata hint.
 
 ```powershell
-python main.py input.m4a --joc-binaural-mode mid
+python main.py input.m4a --binaural-mode mid
+python main.py input.m4a --binaural-mode off   # ADM BWF only: disable the DBMD hint
 ```
 
-This option only sets the low 3 binaural-render-mode bits of the last 15 JOC object entries in ADM BWF DBMD segment 10, leaving the first 10 bed entries unchanged. It does not change PCM, object trajectories, or direct speaker rendering, and does not itself produce binaural stereo audio. The adjacent `.report.json` records the mode name and value in `joc_binaural_mode` and `joc_binaural_mode_value`; both are `null` for direct speaker output, where the option does not apply.
+**The default `mid` is a human-specified rendering hint**; it is not original
+binaural metadata extracted or recovered from the input E-AC-3 JOC bitstream,
+nor does it represent the original mix's per-object binaural settings. The hint
+does not change PCM, object trajectories, or direct speaker rendering. The
+adjacent `.report.json` records `binaural_mode` (the mode name) and
+`binaural_mode_value` (the ADM code; `null` for direct binaural output).
 
 ### OAMD time alignment
 
@@ -116,6 +179,17 @@ align32(1473) = 1472
 ```
 
 Override the two paths with `--object-delay-samples` and `--speaker-metadata-offset`, respectively. The 1473-sample timing offset is distinct from the 640-value inverse-QMF filter/window state; 640 is a QMF state length, not a metadata delay.
+
+The direct binaural path uses `--object-delay-samples`. Each ID11/OAMD event is
+placed on an absolute sample timeline from its frame start, outer-subpayload
+offset, and block offset, then shifted by that delay. Each 1536-sample input
+frame is processed as three consecutive 512-sample blocks; the interpolated
+position, direction, and profile are updated at each block's absolute starting
+sample.
+
+### Binaural calculation
+
+See [Binaural Rendering Mathematics](docs/binaural.en.md) for QMF, hybrid processing, direction fields, distance, ITD, room processing, the 512-sample parameter updates above, and 961-sample latency compensation.
 
 For all options:
 
@@ -150,8 +224,10 @@ JustOneCacophony/
 ├─ main.py               command-line entry point
 ├─ src/                  Python implementation modules
 ├─ native/               C/C++ acceleration core, C ABI, and required table data
-├─ data/                 runtime table data for Python
+├─ data/                 Python runtime table data
 ├─ lib/                  native runtime drop-in directory (create as needed)
+├─ HRTF/                 user HRTF data directory (create as needed, git-ignored)
+├─ output/               output directory (create as needed; the .jochrtf cache defaults to its hrtf-cache subdirectory)
 ├─ docs/                 math and native-core notes in both languages
 ├─ requirements.txt      Python dependency
 ├─ README.md             Chinese documentation
@@ -170,7 +246,8 @@ The main documented stages are:
 - OAMD Q15 coordinate conversion;
 - equal-power panning over target-layout regions;
 - layout-dependent position compensation and sample-wise gain ramps;
-- float32 and PCM24 output quantization.
+- float32 and PCM24 output quantization;
+- SOFA canonical import, 64-QMF/77-hybrid projection, `36×2×77` fifth-order fields, exactly-once delay/phase, project early/late room behavior, and special LFE.
 
 See the [mathematical notes](docs/math.en.md) for the equations used by the decoding and rendering process.
 
@@ -178,13 +255,16 @@ See the [mathematical notes](docs/math.en.md) for the equations used by the deco
 
 - Only the common contiguous EMDF transport is covered. Fragmented transport across multiple audio-block skip fields is not covered.
 - Dense JOC is the main path. The Sparse JOC branch should not be treated as supported.
-- The speaker path currently covers ordinary point objects; extent, spread, divergence, and similar modes are outside the supported scope.
+- The speaker and SOFA binaural paths currently cover ordinary point objects; extent, spread, diffuse, divergence, channel lock, and similar controls are outside the supported scope.
 - OAMD trim elements are boundary-checked and skipped; warp, balance, and trim parameters are not applied to raw object trajectories or speaker rendering.
 - Multi-data-point streams, uncommon band configurations, and unusual OAMD scheduling have less coverage than common 12-band, single-data-point material.
 - A speaker limiter is outside the current primary formula.
-- ADM output, native binaries, and speaker layouts still need broader interoperability checks across platforms, players, and real material.
+- The SOFA importer currently supports the strict `SimpleFreeFieldHRIR` FIR subset; other SOFA conventions require explicit adapters.
+- The binaural runtime is fixed at 48 kHz, fifth order, and one measurement-radius shell at a time; the public binaural backend defaults to the native accelerator and falls back to Python when the native library is unavailable.
+- ADM output, native binaries, speaker layouts, and binaural models still need broader interoperability checks across platforms, players, and real material.
 
 ## Documentation
 
 - [Mathematical notes](docs/math.en.md) · [中文](docs/math.md)
 - [Native-core notes](docs/native.en.md) · [中文](docs/native.md)
+- [Binaural rendering](docs/binaural.en.md) · [中文](docs/binaural.md)

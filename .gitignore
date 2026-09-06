@@ -1,5 +1,6 @@
 __pycache__/
 *.py[cod]
+.pytest_cache/
 
 .venv/
 venv/
@@ -15,3 +16,13 @@ metadata_cache/
 *.variant-error.json
 *.objects16.f32le
 
+HRTF/
+
+# User HRTF data and compiled caches are never committed:
+# SOFA/measurement data (conventionally under HRTF/), Dolby personalization
+# scan models, and rebuilt-from-SOFA .jochrtf caches.
+*.sofa
+*.personalized_headphone
+*.jochrtf
+
+# 测试与研究内容一律不入库（tests/ 全部忽略，无白名单）。

@@ -664,13 +664,13 @@ uint32_t EJOC_CALL ejoc_abi_version(void) {
 
 const char* EJOC_CALL ejoc_build_info(void) {
 #if defined(_MSC_VER)
-    return "eac3joc-core abi=1 compiler=MSVC fft=fixed64 speaker=double crt=static-by-build";
+    return "eac3joc-core abi=1 compiler=MSVC fft=fixed64 speaker=double binaural=double crt=static-by-build";
 #elif defined(__clang__)
-    return "eac3joc-core abi=1 compiler=Clang fft=fixed64 speaker=double";
+    return "eac3joc-core abi=1 compiler=Clang fft=fixed64 speaker=double binaural=double";
 #elif defined(__GNUC__)
-    return "eac3joc-core abi=1 compiler=GCC fft=fixed64 speaker=double";
+    return "eac3joc-core abi=1 compiler=GCC fft=fixed64 speaker=double binaural=double";
 #else
-    return "eac3joc-core abi=1 compiler=unknown fft=fixed64 speaker=double";
+    return "eac3joc-core abi=1 compiler=unknown fft=fixed64 speaker=double binaural=double";
 #endif
 }
 

@@ -116,7 +116,39 @@ int ejoc_speaker_renderer_process(
 2.0  3.1  5.1  7.1  5.1.2  5.1.4  7.1.2  7.1.4  9.1.4  9.1.6
 ```
 
-## 6. 构建
+## 6. 双耳渲染 ABI
+
+共享库提供 512-sample float64 双耳 DSP：
+
+```c
+ejoc_binaural_renderer_handle ejoc_binaural_renderer_create(void);
+int ejoc_binaural_renderer_configure_kernels(...);
+int ejoc_binaural_renderer_configure_room(...);
+int ejoc_binaural_renderer_process(
+    ejoc_binaural_renderer_handle handle,
+    const double* input16_interleaved,   /* [512][16] */
+    const double* gains_complex,         /* [16][2][77][2] */
+    const double* room_sends,            /* [16] */
+    double output_gain,
+    double* output_stereo_interleaved);  /* [512][2] */
+```
+
+Python 负责模型解析、OAMD 时间轴和每 512 samples 的 complex gains/room sends。C++ handle 保存 QMF、hybrid、递归 room 和 QMF synthesis 状态。全部输入、状态、乘加和输出均为 double/complex double。
+
+## 6.1 公开 SOFA 双耳渲染 ABI
+
+共享库同时提供完整的原生 SOFA 双耳渲染器（`ejoc_sofa_binaural_*`），它镜像
+Python `SofaBinauralBackend` 的全部数学：64-QMF/77-hybrid analysis/synthesis、
+五阶 ACN/N3D 实球谐方向场求值、whole-QMF-slot 逐对象 delay 历史、六面一阶
+image-source early reflections、共享 unitary FDN late room、LFE 120–180 Hz
+低通与 961-sample latency 语义。kernel 表、编译好的 HRTF 场与房间常数通过
+`configure_kernels/configure_field/configure_room` 一次上传；每 512-sample
+block 先 `set_source` 更新 16 个 source，再 `process` 输入 PCM；`process` 返回
+裁剪后的 stereo 样本数（首个 961 samples 被丢弃）。`finish` 以 64-sample 对齐的
+块排空尾音。Python 桥位于 `src/sofa_native_backend.py`，与 Python 参考实现逐值
+一致（差异 < 1e-9）；原生库缺失时 `main.py` 自动回退 Python。
+
+## 7. 构建
 
 CMake 定义位于 `native/CMakeLists.txt`。从仓库根目录运行：
 
@@ -138,7 +170,7 @@ MSVC 配置使用静态 CRT。其他运行时依赖由平台和工具链决定�
 
 仓库默认不附带原生二进制。预构建的 Release 运行库或自行构建的运行库均可直接放入 `lib/`。
 
-## 7. 运行时查找与回退
+## 8. 运行时查找与回退
 
 查找顺序为：
 
@@ -148,7 +180,7 @@ MSVC 配置使用静态 CRT。其他运行时依赖由平台和工具链决定�
 
 `--backend auto` 在加载失败时回退到 NumPy；`--backend python` 跳过原生探测。`--backend native` 当前也会打印失败原因后回退，这是现有 CLI 行为，不应理解为原生库已成功使用。
 
-## 8. 实现边界
+## 9. 实现边界
 
 - 原生层只接收 Python 已解析的 dense JOC 数据。
 - ABI 固定了 1536-sample JOC 帧、最多 15 个对象、最多 23 个参数带和最多 2 个数据点。
