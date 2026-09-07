@@ -99,7 +99,11 @@ cached = SofaBinauralBackend.from_compiled_cache(
 - 明确的 free-field/anechoic `RoomType`。
 
 receiver 左右顺序由几何决定，不能假定 `Data.IR` 的 receiver index。SOFA listener
-坐标为 $+X$ front、$+Y$ left、$+Z$ up；ADM 坐标为 $+X$ right、$+Y$ front、
+坐标为 $+X$ front、
+$+Y$ left、
+$+Z$ up；ADM 坐标为
+$+X$ right、
+$+Y$ front、
 $+Z$ up，转换为：
 
 $$\bigl(x_{\mathrm{SOFA}},\ y_{\mathrm{SOFA}},\ z_{\mathrm{SOFA}}\bigr) = \bigl(y_{\mathrm{ADM}},\ -x_{\mathrm{ADM}},\ z_{\mathrm{ADM}}\bigr)$$
@@ -144,7 +148,8 @@ ridge 为 `1e-3`，SH ridge 为 `1e-5`。同方向 measurement 先合并，再�
 公式计算。
 
 hybrid 分析核定义于 [3GPP TS 26.405 / ETSI TS 126 405](https://www.etsi.org/deliver/etsi_ts/126400_126499/126405/06.00.00_60/ts_126405v060000p.pdf)
-第 5.2.2 节（Table 1 的 $Q=8$/$Q=4$ 系数，delay 6）：
+第 5.2.2 节（Table 1 的 $Q=8$/
+$Q=4$ 系数，delay 6）：
 
 $$G_q^p[n] = g^p[n]\cdot\exp\!\Bigl(j\,\frac{2\pi}{Q^p}\bigl(q+\tfrac12\bigr)(n-6)\Bigr),\qquad n=0,\dots,12$$
 
@@ -155,15 +160,17 @@ $c_0,\dots,c_{639}$ 的多相重排：
 $$A_{r,t} = \frac{(-1)^t}{128}\,c_{63-r+64t},\qquad r=0,\dots,63,\ t=0,\dots,9$$
 
 QMF synthesis 表为上述 analysis 多相矩阵 $\mathbf{A}$ 的因果左逆，即求解
-$\mathbf{A}\,\mathbf{W}=\mathbf{P}$（$\mathbf{P}$ 为 577-sample 延迟置换；
+$\mathbf{A}\,\mathbf{W}=\mathbf{P}$（
+$\mathbf{P}$ 为 577-sample 延迟置换；
 全链 $961 = 577 + 6\times64$），以 rank-4 分解形式存储：
 
 $$W_{b,l} = \sum_{r=1}^{4} t_{b,l,r}\,\mathbf{b}_{b,r}^{\top}$$
 
-hybrid synthesis 表为 77→64 重组：高频带恒等 $Y_{3+b}=X_{16+b}$；低频带
-（$C_p$ 为 $8+4+4$ 子带划分）：
+hybrid synthesis 表为 77→64 重组：高频带恒等 $Y_{3+b}=X_{16+b}$；低频带（
+$C_p$ 为
+$8+4+4$ 子带划分）：
 
-$$Y_p = \sum_{q\in C_p}\Bigl(\operatorname{Re}X_q + j\,s_q\,\operatorname{Im}X_q\Bigr),\qquad s_q\in\{\pm1\}$$
+$$Y_p = \sum_{q\in C_p}\Bigl(\mathrm{Re}X_q + j\,s_q\,\mathrm{Im}X_q\Bigr),\qquad s_q\in\{\pm1\}$$
 
 loader 校验 archive 和每个数组的 SHA-256；table version、所有数组 hash 与
 77 个 band-center 参考值都属于 cache key。标准可公开获取不等于获准实施相关

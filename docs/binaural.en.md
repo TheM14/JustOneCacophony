@@ -109,8 +109,12 @@ The strict importer currently accepts:
 - an explicitly free-field/anechoic `RoomType`.
 
 Receiver order comes from geometry, never from the receiver array index. SOFA
-listener coordinates are $+X$ front, $+Y$ left, $+Z$ up; ADM coordinates are
-$+X$ right, $+Y$ front, $+Z$ up:
+listener coordinates are $+X$ front,
+$+Y$ left,
+$+Z$ up; ADM coordinates are
+$+X$ right,
+$+Y$ front,
+$+Z$ up:
 
 $$\bigl(x_{\mathrm{SOFA}},\ y_{\mathrm{SOFA}},\ z_{\mathrm{SOFA}}\bigr) = \bigl(y_{\mathrm{ADM}},\ -x_{\mathrm{ADM}},\ z_{\mathrm{ADM}}\bigr)$$
 
@@ -159,7 +163,8 @@ The fixed resource is `data/rosella_kernels.npz`, which implements publicly
 standardized filter banks, computable from the following formulas.
 
 The hybrid analysis kernels are defined in [3GPP TS 26.405 / ETSI TS 126 405](https://www.etsi.org/deliver/etsi_ts/126400_126499/126405/06.00.00_60/ts_126405v060000p.pdf),
-Section 5.2.2 (Table 1 $Q=8$/$Q=4$ coefficients, delay 6):
+Section 5.2.2 (Table 1 $Q=8$/
+$Q=4$ coefficients, delay 6):
 
 $$G_q^p[n] = g^p[n]\cdot\exp\!\Bigl(j\,\frac{2\pi}{Q^p}\bigl(q+\tfrac12\bigr)(n-6)\Bigr),\qquad n=0,\dots,12$$
 
@@ -170,17 +175,19 @@ reordering of the public 640-tap prototype $c_0,\dots,c_{639}$:
 $$A_{r,t} = \frac{(-1)^t}{128}\,c_{63-r+64t},\qquad r=0,\dots,63,\ t=0,\dots,9$$
 
 The QMF synthesis table is the causal left inverse of the analysis polyphase
-matrix $\mathbf{A}$, i.e. the solution of $\mathbf{A}\,\mathbf{W}=\mathbf{P}$
+matrix $\mathbf{A}$, i.e. the solution of
+$\mathbf{A}\,\mathbf{W}=\mathbf{P}$
 ($\mathbf{P}$ is the 577-sample delay permutation; total latency
 $961 = 577 + 6\times64$), stored as a rank-4 factorization:
 
 $$W_{b,l} = \sum_{r=1}^{4} t_{b,l,r}\,\mathbf{b}_{b,r}^{\top}$$
 
 The hybrid synthesis table is the 77→64 recombination: identity for the high
-bands, $Y_{3+b}=X_{16+b}$, and for the low bands ($C_p$ is the $8+4+4$ child
-partition):
+bands, $Y_{3+b}=X_{16+b}$, and for the low bands(
+$C_p$ is the
+$8+4+4$ child partition):
 
-$$Y_p = \sum_{q\in C_p}\Bigl(\operatorname{Re}X_q + j\,s_q\,\operatorname{Im}X_q\Bigr),\qquad s_q\in\{\pm1\}$$
+$$Y_p = \sum_{q\in C_p}\Bigl(\mathrm{Re}X_q + j\,s_q\,\mathrm{Im}X_q\Bigr),\qquad s_q\in\{\pm1\}$$
 
 The loader verifies the archive and every array by SHA-256; the table version,
 all array hashes, and the 77 reference band-center values are part of the cache

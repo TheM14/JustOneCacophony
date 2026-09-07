@@ -7,7 +7,8 @@
 
 64-QMF → 77-hybrid 结构与 13-tap 低带 prototype 定义于
 [3GPP TS 26.405 / ETSI TS 126 405](https://www.etsi.org/deliver/etsi_ts/126400_126499/126405/06.00.00_60/ts_126405v060000p.pdf)
-第 5.2.2 节（Table 1 的 $Q=8$/$Q=4$ 系数，delay 6）：
+第 5.2.2 节（Table 1 的 $Q=8$/
+$Q=4$ 系数，delay 6）：
 
 $$G_q^p[n] = g^p[n]\cdot\exp\!\Bigl(j\,\frac{2\pi}{Q^p}\bigl(q+\tfrac12\bigr)(n-6)\Bigr)$$
 
@@ -18,14 +19,15 @@ AAC/SBR 64 complex QMF bank；打包的 $64\times10$ 表是公开 640-tap protot
 $$A_{r,t} = \frac{(-1)^t}{128}\,c_{63-r+64t}$$
 
 QMF synthesis 表为 analysis 多相矩阵 $\mathbf{A}$ 的因果左逆
-$\mathbf{A}\,\mathbf{W}=\mathbf{P}$（$\mathbf{P}$ 为 577-sample 延迟置换；
+$\mathbf{A}\,\mathbf{W}=\mathbf{P}$（
+$\mathbf{P}$ 为 577-sample 延迟置换；
 全链 $961 = 577 + 6\times64$），rank-4 分解存储：
 
 $$W_{b,l} = \sum_{r=1}^{4} t_{b,l,r}\,\mathbf{b}_{b,r}^{\top}$$
 
 hybrid synthesis 表为 77→64 重组：高频带恒等 $Y_{3+b}=X_{16+b}$，低频带：
 
-$$Y_p = \sum_{q\in C_p}\Bigl(\operatorname{Re}X_q + j\,s_q\,\operatorname{Im}X_q\Bigr),\qquad s_q\in\{\pm1\}$$
+$$Y_p = \sum_{q\in C_p}\Bigl(\mathrm{Re}X_q + j\,s_q\,\mathrm{Im}X_q\Bigr),\qquad s_q\in\{\pm1\}$$
 
 相同数值可在 FFmpeg（`aacps_tablegen.h`、`aacsbrdata.h`）等公开实现中查到。
 

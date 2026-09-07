@@ -230,10 +230,10 @@ Write the 64 complex subbands as 128 interleaved real values in `src`. For $k=0\
 
 $$
 \begin{aligned}
-\operatorname{zone}[2k] &= \operatorname{src}[4k],\\
-\operatorname{zone}[2k+1] &= -\operatorname{src}[4k+1],\\
-\operatorname{zone}[126-2k] &= \operatorname{src}[4k+2],\\
-\operatorname{zone}[127-2k] &= \operatorname{src}[4k+3].
+\mathrm{zone}[2k] &= \mathrm{src}[4k],\\
+\mathrm{zone}[2k+1] &= -\mathrm{src}[4k+1],\\
+\mathrm{zone}[126-2k] &= \mathrm{src}[4k+2],\\
+\mathrm{zone}[127-2k] &= \mathrm{src}[4k+3].
 \end{aligned}
 $$
 
@@ -242,7 +242,7 @@ Treat `zone` as 64 complex values and apply an unnormalized 64-point FFT:
 $$
 F_k=
 \sum_{n=0}^{63}
-\operatorname{zone}_n
+\mathrm{zone}_n
 \exp\!\left(-j\frac{2\pi kn}{64}\right).
 $$
 
@@ -277,7 +277,7 @@ Object output is
 
 $$
 y_o[64t+r]=
-\operatorname{clip}\!\left(
+\mathrm{clip}\!\left(
 16\,\mathbf y_{o,t}[r],-1,1
 \right)G_{\mathrm{clip}},
 $$
@@ -290,7 +290,7 @@ LFE bypasses the object matrix and inverse QMF and uses a 1217-sample delay. Aft
 
 $$
 y_{\mathrm{LFE}}[n]=
-\operatorname{clip}\!\left(
+\mathrm{clip}\!\left(
 x_{\mathrm{LFE,core}}[n-1217],-1,1
 \right).
 $$
@@ -322,11 +322,11 @@ Their maximum runtime value is $32767/32768$, not exactly 1.
 For conversion to the ADM grid:
 
 $$
-k_1=\operatorname{round}\!\left(\frac{62q_1}{32767}\right),
+k_1=\mathrm{round}\!\left(\frac{62q_1}{32767}\right),
 \quad
-k_2=\operatorname{round}\!\left(\frac{62q_2}{32767}\right),
+k_2=\mathrm{round}\!\left(\frac{62q_2}{32767}\right),
 \quad
-k_3=\operatorname{round}\!\left(\frac{15q_3}{32767}\right),
+k_3=\mathrm{round}\!\left(\frac{15q_3}{32767}\right),
 $$
 
 $$
@@ -398,7 +398,7 @@ For 5.1-family layouts with one horizontal surround pair rather than separate si
 
 $$
 v_{\mathrm{floor}}=
-\operatorname{clamp}(2v,0,1).
+\mathrm{clamp}(2v,0,1).
 $$
 
 Other layouts use $v_{\mathrm{floor}}=v$.
@@ -441,15 +441,15 @@ $$
 Longitudinal and height weights are
 
 $$
-p_v=\operatorname{clamp}\left(\frac v{0.6},0,1\right),
+p_v=\mathrm{clamp}\left(\frac v{0.6},0,1\right),
 $$
 
 $$
-p_w=\operatorname{clamp}\left(\frac{w-0.2}{0.8},0,1\right),
+p_w=\mathrm{clamp}\left(\frac{w-0.2}{0.8},0,1\right),
 $$
 
 $$
-p=\operatorname{clamp}(p_v+p_w,0,1).
+p=\mathrm{clamp}(p_v+p_w,0,1).
 $$
 
 The linear compensation gain is
@@ -550,8 +550,8 @@ For PCM24 output, quantization is
 
 $$
 y_{24}[n]=
-\operatorname{trunc}\left(
-8388607\,\operatorname{clip}(y[n],-1,1)
+\mathrm{trunc}\left(
+8388607\,\mathrm{clip}(y[n],-1,1)
 \right).
 $$
 
