@@ -75,14 +75,12 @@ $$
 对对象 $o$、数据点 $d$、核心声道 $c$ 和参数带 $p$，编码差分 $\Delta_{o,d,c,p}$ 还原为
 
 $$
-Q_{o,d,c,0}
-=
+Q_{o,d,c,0}=
 \left(O_q+\Delta_{o,d,c,0}\right)\bmod N_q,
 $$
 
 $$
-Q_{o,d,c,p}
-=
+Q_{o,d,c,p}=
 \left(Q_{o,d,c,p-1}+\Delta_{o,d,c,p}\right)\bmod N_q,
 \qquad p>0.
 $$
