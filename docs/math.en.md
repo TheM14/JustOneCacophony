@@ -75,14 +75,12 @@ $$
 For object $o$, data point $d$, core channel $c$, and parameter band $p$, the coded difference $\Delta_{o,d,c,p}$ reconstructs to
 
 $$
-Q_{o,d,c,0}
-=
+Q_{o,d,c,0}=
 \left(O_q+\Delta_{o,d,c,0}\right)\bmod N_q,
 $$
 
 $$
-Q_{o,d,c,p}
-=
+Q_{o,d,c,p}=
 \left(Q_{o,d,c,p-1}+\Delta_{o,d,c,p}\right)\bmod N_q,
 \qquad p>0.
 $$
@@ -92,8 +90,7 @@ $$
 The dequantized matrix coefficient is
 
 $$
-D_{o,d,c,p}
-=
+D_{o,d,c,p}=
 \left(Q_{o,d,c,p}-\frac{N_q}{2}\right)
 \frac{820}{4096(1+q_i)}.
 $$
@@ -105,8 +102,7 @@ The effective denominator is therefore 4096 in coarse mode and 8192 in fine mode
 If the clipgain field consists of integer $x$ and mantissa $y$, then
 
 $$
-G_{\mathrm{clip}}
-=
+G_{\mathrm{clip}}=
 1+\frac{y}{32}2^{x-4}.
 $$
 
@@ -152,8 +148,7 @@ $$
 $$
 
 $$
-M_{o,c,b,t}
-=
+M_{o,c,b,t}=
 (1-\alpha_t)P_{o,c,b}
 +\alpha_tD_{o,c,p(b)}.
 $$
@@ -181,8 +176,7 @@ $$
 Let $\mathcal A_b$ denote the 64-band analysis-QMF operator with polyphase history state. Then
 
 $$
-X_{c,b,t}
-=
+X_{c,b,t}=
 \mathcal A_b\!\left(
 \widetilde x_c[64t],\ldots,\widetilde x_c[64t+63];
 \mathbf s^{\mathrm A}_{c,t}
@@ -210,8 +204,7 @@ $$
 Band 0 of each surround channel additionally passes through a 21-tap complex FIR:
 
 $$
-\widehat X_{c,0,t}
-=
+\widehat X_{c,0,t}=
 \sum_{k=0}^{20}h_kX_{c,0,t-k}.
 $$
 
@@ -222,8 +215,7 @@ These delays and filter histories are decoder state and cannot be reset independ
 For each object $o$, subband $b$, and slot $t$, the object's frequency-domain value is a linear combination of the five core channels:
 
 $$
-Z_{o,b,t}
-=
+Z_{o,b,t}=
 \sum_{c=0}^{4}
 M_{o,c,b,t}\widehat X_{c,b,t}.
 $$
@@ -248,8 +240,7 @@ $$
 Treat `zone` as 64 complex values and apply an unnormalized 64-point FFT:
 
 $$
-F_k
-=
+F_k=
 \sum_{n=0}^{63}
 \operatorname{zone}_n
 \exp\!\left(-j\frac{2\pi kn}{64}\right).
@@ -260,8 +251,7 @@ $$
 Define the rotation coefficient
 
 $$
-r_k
-=
+r_k=
 \frac12\left(
 \sin\frac{\pi k}{128}
 +j\cos\frac{\pi k}{128}
@@ -277,8 +267,7 @@ $$
 Let $\mathcal S$ denote polyphase synthesis with a 640-value synthesis window and cross-slot state:
 
 $$
-\mathbf y_{o,t}
-=
+\mathbf y_{o,t}=
 \mathcal S\!\left(
 \mathbf R_{o,t},W,\mathbf s^{\mathrm S}_{o,t}
 \right).
@@ -287,8 +276,7 @@ $$
 Object output is
 
 $$
-y_o[64t+r]
-=
+y_o[64t+r]=
 \operatorname{clip}\!\left(
 16\,\mathbf y_{o,t}[r],-1,1
 \right)G_{\mathrm{clip}},
@@ -301,8 +289,7 @@ where $r=0\ldots63$. Synthesis state must advance continuously by slot.
 LFE bypasses the object matrix and inverse QMF and uses a 1217-sample delay. After the input and output scale factors cancel:
 
 $$
-y_{\mathrm{LFE}}[n]
-=
+y_{\mathrm{LFE}}[n]=
 \operatorname{clip}\!\left(
 x_{\mathrm{LFE,core}}[n-1217],-1,1
 \right).
@@ -313,8 +300,7 @@ $$
 The lateral and longitudinal grids use $N=62$; the height grid uses $N=15$. The quantizer is
 
 $$
-q_N(k)
-=
+q_N(k)=
 \min\!\left(
 32767,
 \left\lfloor\frac{32768k}{N}+\frac12\right\rfloor
@@ -404,16 +390,14 @@ $$
 The two-dimensional point gain is
 
 $$
-\mathbf G_{\mathrm{2D}}(u,v)
-=
+\mathbf G_{\mathrm{2D}}(u,v)=
 \mathbf h(u)\odot\mathbf v(v).
 $$
 
 For 5.1-family layouts with one horizontal surround pair rather than separate side and rear pairs, the longitudinal coordinate is
 
 $$
-v_{\mathrm{floor}}
-=
+v_{\mathrm{floor}}=
 \operatorname{clamp}(2v,0,1).
 $$
 
@@ -424,8 +408,7 @@ Other layouts use $v_{\mathrm{floor}}=v$.
 Three-dimensional layouts compute floor gain $\mathbf G_f$ and height gain $\mathbf G_h$ separately:
 
 $$
-\mathbf G_{\mathrm{point}}(u,v,w)
-=
+\mathbf G_{\mathrm{point}}(u,v,w)=
 \cos\left(\frac\pi2w\right)\mathbf G_f
 +
 \sin\left(\frac\pi2w\right)\mathbf G_h.
@@ -450,8 +433,7 @@ $$
 Maximum position compensation is
 
 $$
-A_{\max}
-=
+A_{\max}=
 -\max\left(4.5-1.5H-3F,0\right)
 \quad\text{dB}.
 $$
@@ -479,8 +461,7 @@ $$
 The object's target-gain vector is
 
 $$
-\mathbf G_{\mathrm{target}}
-=
+\mathbf G_{\mathrm{target}}=
 G_{\mathrm{object}}
 G_{\mathrm{pos}}
 \mathbf G_{\mathrm{point}}.
@@ -491,8 +472,7 @@ $$
 The coded position of an OAMD update is
 
 $$
-s_{\mathrm{coded}}
-=
+s_{\mathrm{coded}}=
 s_{\mathrm{frame}}
 +s_{\mathrm{outer}}
 +s_{\mathrm{OAMD}}
@@ -502,16 +482,15 @@ $$
 The theoretical update position on the decoder-output PCM timeline is
 
 $$
-s_{\mathrm{theoretical}}
-=s_{\mathrm{coded}}+d_{\mathrm{decoder}},
+s_{\mathrm{theoretical}}=
+s_{\mathrm{coded}}+d_{\mathrm{decoder}},
 \qquad d_{\mathrm{decoder}}=1473.
 $$
 
 The speaker renderer retains the existing processing-block length $B=32$, so the aligned update point is
 
 $$
-\widehat s
-=
+\widehat s=
 B\left\lfloor
 \frac{s_{\mathrm{theoretical}}+B/2-1}{B}
 \right\rfloor.
@@ -522,8 +501,7 @@ Thus, for frame-aligned updates, `align32(1473)=1472`. The 1473 value is the the
 For ramp duration $D$, the number of blocks is
 
 $$
-K
-=
+K=
 \left\lfloor
 \frac{D+B/2-1}{B}
 \right\rfloor.
@@ -550,8 +528,7 @@ If no new metadata update intervenes, this is equivalent to a sample-wise linear
 For target output channel $c$:
 
 $$
-y_c[n]
-=
+y_c[n]=
 \delta_{c,\mathrm{LFE}}x_{\mathrm{LFE}}[n]
 +
 \sum_{o=1}^{15}x_o[n]g_{o,c}[n].
@@ -560,8 +537,7 @@ $$
 Here
 
 $$
-\delta_{c,\mathrm{LFE}}
-=
+\delta_{c,\mathrm{LFE}}=
 \begin{cases}
 1, & c\text{ is the target layout's LFE channel},\\
 0, & \text{otherwise}.
@@ -573,8 +549,7 @@ A layout without LFE output does not mix input LFE into other channels. After ob
 For PCM24 output, quantization is
 
 $$
-y_{24}[n]
-=
+y_{24}[n]=
 \operatorname{trunc}\left(
 8388607\,\operatorname{clip}(y[n],-1,1)
 \right).

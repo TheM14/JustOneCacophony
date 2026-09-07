@@ -90,8 +90,7 @@ $$
 矩阵系数的去量化值为
 
 $$
-D_{o,d,c,p}
-=
+D_{o,d,c,p}=
 \left(Q_{o,d,c,p}-\frac{N_q}{2}\right)
 \frac{820}{4096(1+q_i)}.
 $$
@@ -103,8 +102,7 @@ $$
 若 clipgain 字段由整数 $x$ 和尾数 $y$ 组成，则
 
 $$
-G_{\mathrm{clip}}
-=
+G_{\mathrm{clip}}=
 1+\frac{y}{32}2^{x-4}.
 $$
 
@@ -150,8 +148,7 @@ $$
 $$
 
 $$
-M_{o,c,b,t}
-=
+M_{o,c,b,t}=
 (1-\alpha_t)P_{o,c,b}
 +\alpha_tD_{o,c,p(b)}.
 $$
@@ -179,8 +176,7 @@ $$
 令 $\mathcal A_b$ 表示带 polyphase 历史状态的 64-band analysis-QMF 算子，则
 
 $$
-X_{c,b,t}
-=
+X_{c,b,t}=
 \mathcal A_b\!\left(
 \widetilde x_c[64t],\ldots,\widetilde x_c[64t+63];
 \mathbf s^{\mathrm A}_{c,t}
@@ -208,8 +204,7 @@ $$
 环绕声道的 band 0 还经过 21-tap 复 FIR：
 
 $$
-\widehat X_{c,0,t}
-=
+\widehat X_{c,0,t}=
 \sum_{k=0}^{20}h_kX_{c,0,t-k}.
 $$
 
@@ -220,8 +215,7 @@ $$
 对每个对象 $o$、子带 $b$ 和时槽 $t$，对象频域值为五个核心声道的线性组合：
 
 $$
-Z_{o,b,t}
-=
+Z_{o,b,t}=
 \sum_{c=0}^{4}
 M_{o,c,b,t}\widehat X_{c,b,t}.
 $$
@@ -246,8 +240,7 @@ $$
 把 `zone` 重新视为 64 个复数后执行未归一化 64 点 FFT：
 
 $$
-F_k
-=
+F_k=
 \sum_{n=0}^{63}
 \operatorname{zone}_n
 \exp\!\left(-j\frac{2\pi kn}{64}\right).
@@ -258,8 +251,7 @@ $$
 定义旋转系数
 
 $$
-r_k
-=
+r_k=
 \frac12\left(
 \sin\frac{\pi k}{128}
 +j\cos\frac{\pi k}{128}
@@ -275,8 +267,7 @@ $$
 令 $\mathcal S$ 表示带 640 项 synthesis window 和跨时槽状态的 polyphase 合成算子：
 
 $$
-\mathbf y_{o,t}
-=
+\mathbf y_{o,t}=
 \mathcal S\!\left(
 \mathbf R_{o,t},W,\mathbf s^{\mathrm S}_{o,t}
 \right).
@@ -285,8 +276,7 @@ $$
 对象输出为
 
 $$
-y_o[64t+r]
-=
+y_o[64t+r]=
 \operatorname{clip}\!\left(
 16\,\mathbf y_{o,t}[r],-1,1
 \right)G_{\mathrm{clip}},
@@ -299,8 +289,7 @@ $$
 LFE 不经过对象矩阵或 inverse QMF，而是使用 1217-sample 延迟。输入与输出端的比例因子抵消后：
 
 $$
-y_{\mathrm{LFE}}[n]
-=
+y_{\mathrm{LFE}}[n]=
 \operatorname{clip}\!\left(
 x_{\mathrm{LFE,core}}[n-1217],-1,1
 \right).
@@ -311,8 +300,7 @@ $$
 横向和纵向网格使用 $N=62$，高度网格使用 $N=15$。量化函数为
 
 $$
-q_N(k)
-=
+q_N(k)=
 \min\!\left(
 32767,
 \left\lfloor\frac{32768k}{N}+\frac12\right\rfloor
@@ -402,16 +390,14 @@ $$
 二维点增益为
 
 $$
-\mathbf G_{\mathrm{2D}}(u,v)
-=
+\mathbf G_{\mathrm{2D}}(u,v)=
 \mathbf h(u)\odot\mathbf v(v).
 $$
 
 对于只有一对水平环绕、没有独立 side/rear 两对的 5.1 系列布局，纵向坐标使用
 
 $$
-v_{\mathrm{floor}}
-=
+v_{\mathrm{floor}}=
 \operatorname{clamp}(2v,0,1).
 $$
 
@@ -422,8 +408,7 @@ $$
 三维布局分别计算地面层增益 $\mathbf G_f$ 和高度层增益 $\mathbf G_h$：
 
 $$
-\mathbf G_{\mathrm{point}}(u,v,w)
-=
+\mathbf G_{\mathrm{point}}(u,v,w)=
 \cos\left(\frac\pi2w\right)\mathbf G_f
 +
 \sin\left(\frac\pi2w\right)\mathbf G_h.
@@ -448,8 +433,7 @@ $$
 最大位置补偿为
 
 $$
-A_{\max}
-=
+A_{\max}=
 -\max\left(4.5-1.5H-3F,0\right)
 \quad\text{dB}.
 $$
@@ -477,8 +461,7 @@ $$
 对象的目标增益向量为
 
 $$
-\mathbf G_{\mathrm{target}}
-=
+\mathbf G_{\mathrm{target}}=
 G_{\mathrm{object}}
 G_{\mathrm{pos}}
 \mathbf G_{\mathrm{point}}.
@@ -489,8 +472,7 @@ $$
 OAMD 更新的编码位置为
 
 $$
-s_{\mathrm{coded}}
-=
+s_{\mathrm{coded}}=
 s_{\mathrm{frame}}
 +s_{\mathrm{outer}}
 +s_{\mathrm{OAMD}}
@@ -500,16 +482,15 @@ $$
 decoder 输出 PCM timeline 上的理论更新位置为
 
 $$
-s_{\mathrm{theoretical}}
-=s_{\mathrm{coded}}+d_{\mathrm{decoder}},
+s_{\mathrm{theoretical}}=
+s_{\mathrm{coded}}+d_{\mathrm{decoder}},
 \qquad d_{\mathrm{decoder}}=1473.
 $$
 
 扬声器 renderer 保留现有的处理块长度 $B=32$，更新点对齐为
 
 $$
-\widehat s
-=
+\widehat s=
 B\left\lfloor
 \frac{s_{\mathrm{theoretical}}+B/2-1}{B}
 \right\rfloor.
@@ -520,8 +501,7 @@ $$
 给定 ramp duration $D$，block 数为
 
 $$
-K
-=
+K=
 \left\lfloor
 \frac{D+B/2-1}{B}
 \right\rfloor.
@@ -548,8 +528,7 @@ $$
 对目标输出声道 $c$：
 
 $$
-y_c[n]
-=
+y_c[n]=
 \delta_{c,\mathrm{LFE}}x_{\mathrm{LFE}}[n]
 +
 \sum_{o=1}^{15}x_o[n]g_{o,c}[n].
@@ -558,8 +537,7 @@ $$
 其中
 
 $$
-\delta_{c,\mathrm{LFE}}
-=
+\delta_{c,\mathrm{LFE}}=
 \begin{cases}
 1, & c\text{ 为目标布局的 LFE},\\
 0, & \text{其他声道}.
@@ -571,8 +549,7 @@ $$
 若输出 PCM24，量化关系为
 
 $$
-y_{24}[n]
-=
+y_{24}[n]=
 \operatorname{trunc}\left(
 8388607\,\operatorname{clip}(y[n],-1,1)
 \right).
