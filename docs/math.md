@@ -177,7 +177,7 @@ $$
 
 $$
 X_{c,b,t}=
-\mathcal A_b\!\left(
+\mathcal A_b\left(
 \widetilde x_c[64t],\ldots,\widetilde x_c[64t+63];
 \mathbf s^{\mathrm A}_{c,t}
 \right).
@@ -243,7 +243,7 @@ $$
 F_k=
 \sum_{n=0}^{63}
 \mathrm{zone}_n
-\exp\!\left(-j\frac{2\pi kn}{64}\right).
+\exp\left(-j\frac{2\pi kn}{64}\right).
 $$
 
 ### 7.2 调制与合成
@@ -268,7 +268,7 @@ $$
 
 $$
 \mathbf y_{o,t}=
-\mathcal S\!\left(
+\mathcal S\left(
 \mathbf R_{o,t},W,\mathbf s^{\mathrm S}_{o,t}
 \right).
 $$
@@ -277,7 +277,7 @@ $$
 
 $$
 y_o[64t+r]=
-\mathrm{clip}\!\left(
+\mathrm{clip}\left(
 16\,\mathbf y_{o,t}[r],-1,1
 \right)G_{\mathrm{clip}},
 $$
@@ -290,7 +290,7 @@ LFE 不经过对象矩阵或 inverse QMF，而是使用 1217-sample 延迟。输
 
 $$
 y_{\mathrm{LFE}}[n]=
-\mathrm{clip}\!\left(
+\mathrm{clip}\left(
 x_{\mathrm{LFE,core}}[n-1217],-1,1
 \right).
 $$
@@ -301,7 +301,7 @@ $$
 
 $$
 q_N(k)=
-\min\!\left(
+\min\left(
 32767,
 \left\lfloor\frac{32768k}{N}+\frac12\right\rfloor
 \right).
@@ -322,11 +322,11 @@ $$
 转换为 ADM 网格时：
 
 $$
-k_1=\mathrm{round}\!\left(\frac{62q_1}{32767}\right),
+k_1=\mathrm{round}\left(\frac{62q_1}{32767}\right),
 \quad
-k_2=\mathrm{round}\!\left(\frac{62q_2}{32767}\right),
+k_2=\mathrm{round}\left(\frac{62q_2}{32767}\right),
 \quad
-k_3=\mathrm{round}\!\left(\frac{15q_3}{32767}\right),
+k_3=\mathrm{round}\left(\frac{15q_3}{32767}\right),
 $$
 
 $$

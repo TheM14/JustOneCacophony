@@ -166,7 +166,7 @@ The hybrid analysis kernels are defined in [3GPP TS 26.405 / ETSI TS 126 405](ht
 Section 5.2.2 (Table 1 $Q=8$/
 $Q=4$ coefficients, delay 6):
 
-$$G_q^p[n] = g^p[n]\cdot\exp\!\Bigl(j\,\frac{2\pi}{Q^p}\bigl(q+\tfrac12\bigr)(n-6)\Bigr),\qquad n=0,\dots,12$$
+$$G_q^p[n] = g^p[n]\cdot\exp\Bigl(j\,\frac{2\pi}{Q^p}\bigl(q+\tfrac12\bigr)(n-6)\Bigr),\qquad n=0,\dots,12$$
 
 The QMF analysis table is the MPEG-4 AAC/SBR 64 complex QMF bank of
 ISO/IEC 14496-3/AMD1:2003, subclause 4.B.18.2, stored as the polyphase

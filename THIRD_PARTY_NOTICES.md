@@ -10,7 +10,7 @@
 第 5.2.2 节（Table 1 的 $Q=8$/
 $Q=4$ 系数，delay 6）：
 
-$$G_q^p[n] = g^p[n]\cdot\exp\!\Bigl(j\,\frac{2\pi}{Q^p}\bigl(q+\tfrac12\bigr)(n-6)\Bigr)$$
+$$G_q^p[n] = g^p[n]\cdot\exp\Bigl(j\,\frac{2\pi}{Q^p}\bigl(q+\tfrac12\bigr)(n-6)\Bigr)$$
 
 64-band QMF analysis 即 ISO/IEC 14496-3/AMD1:2003 第 4.B.18.2 节的 MPEG-4
 AAC/SBR 64 complex QMF bank；打包的 $64\times10$ 表是公开 640-tap prototype 的

@@ -177,7 +177,7 @@ Let $\mathcal A_b$ denote the 64-band analysis-QMF operator with polyphase histo
 
 $$
 X_{c,b,t}=
-\mathcal A_b\!\left(
+\mathcal A_b\left(
 \widetilde x_c[64t],\ldots,\widetilde x_c[64t+63];
 \mathbf s^{\mathrm A}_{c,t}
 \right).
@@ -243,7 +243,7 @@ $$
 F_k=
 \sum_{n=0}^{63}
 \mathrm{zone}_n
-\exp\!\left(-j\frac{2\pi kn}{64}\right).
+\exp\left(-j\frac{2\pi kn}{64}\right).
 $$
 
 ### 7.2 Modulation and synthesis
@@ -268,7 +268,7 @@ Let $\mathcal S$ denote polyphase synthesis with a 640-value synthesis window an
 
 $$
 \mathbf y_{o,t}=
-\mathcal S\!\left(
+\mathcal S\left(
 \mathbf R_{o,t},W,\mathbf s^{\mathrm S}_{o,t}
 \right).
 $$
@@ -277,7 +277,7 @@ Object output is
 
 $$
 y_o[64t+r]=
-\mathrm{clip}\!\left(
+\mathrm{clip}\left(
 16\,\mathbf y_{o,t}[r],-1,1
 \right)G_{\mathrm{clip}},
 $$
@@ -290,7 +290,7 @@ LFE bypasses the object matrix and inverse QMF and uses a 1217-sample delay. Aft
 
 $$
 y_{\mathrm{LFE}}[n]=
-\mathrm{clip}\!\left(
+\mathrm{clip}\left(
 x_{\mathrm{LFE,core}}[n-1217],-1,1
 \right).
 $$
@@ -301,7 +301,7 @@ The lateral and longitudinal grids use $N=62$; the height grid uses $N=15$. The 
 
 $$
 q_N(k)=
-\min\!\left(
+\min\left(
 32767,
 \left\lfloor\frac{32768k}{N}+\frac12\right\rfloor
 \right).
@@ -322,11 +322,11 @@ Their maximum runtime value is $32767/32768$, not exactly 1.
 For conversion to the ADM grid:
 
 $$
-k_1=\mathrm{round}\!\left(\frac{62q_1}{32767}\right),
+k_1=\mathrm{round}\left(\frac{62q_1}{32767}\right),
 \quad
-k_2=\mathrm{round}\!\left(\frac{62q_2}{32767}\right),
+k_2=\mathrm{round}\left(\frac{62q_2}{32767}\right),
 \quad
-k_3=\mathrm{round}\!\left(\frac{15q_3}{32767}\right),
+k_3=\mathrm{round}\left(\frac{15q_3}{32767}\right),
 $$
 
 $$
