@@ -44,7 +44,7 @@ The Python and C++ backends follow the same mathematics for JOC object reconstru
 - NumPy 1.24+
 - h5py 3.8+
 - SciPy 1.10+
-- A standalone FFmpeg executable; `ffmpeg-python` is not required. FFmpeg is discovered through `PATH` by default or selected with `--ffmpeg`
+- A standalone FFmpeg executable; `ffmpeg-python` is not required. FFmpeg is discovered through `PATH` by default or selected with `--ffmpeg`. On startup the decoder options are probed with `ffmpeg -h decoder=eac3`: a missing E-AC-3 decoder or `-drc_scale` is a hard error, while a missing `-target_level` only fails when `--eac3-target-level` is used
 - Optional: CMake and a C++20 toolchain to build the native core
 
 Install the Python dependency in a project-specific environment:
@@ -145,6 +145,40 @@ python main.py input.m4a --metadata-only --print-metadata frames
 python main.py input.m4a --metadata-cache metadata_cache
 python main.py input.m4a --metadata-dir metadata_cache
 ```
+
+### E-AC-3 decode-side dynamic range and level
+
+By default FFmpeg applies the stream `dynrng` dynamic range compression when
+decoding E-AC-3 (`-drc_scale 1`). The core 5.1 PCM is the input of JOC object
+reconstruction, and `dynrng` is playback-time gain, so it is inherited linearly
+by every object and every output (ADM, speaker, binaural). This tool therefore
+decodes at **full dynamic range** by default:
+
+```powershell
+python main.py input.m4a                            # default: -drc_scale 0, full range
+python main.py input.m4a --eac3-drc-scale 1         # reproduce consumer playback
+python main.py input.m4a --eac3-drc-scale 0.5       # apply half of it
+python main.py input.m4a --eac3-target-level -27    # dialnorm-referenced level
+```
+
+- `--eac3-drc-scale` (`0`–`6`, default `0`) maps to FFmpeg `-drc_scale`: the gain
+  of each E-AC-3 block is `dynrng factor ^ value`. `0` disables DRC, `1` is the
+  author's intent, and `>1` is asymmetric (loud parts fully compressed, quiet
+  parts enhanced).
+- `--eac3-target-level` (`-31`–`0`, default `0` = off) maps to FFmpeg
+  `-target_level`: a static per-frame gain of about `target_level - dialnorm` dB,
+  independent of and stackable with `--eac3-drc-scale`. dialnorm is a per-stream
+  property (measured Apple Music Atmos streams are about `-18` to `-19` dB, so
+  `-27` is roughly `8`–`9` dB of attenuation).
+- The level change is expected: compared with the FFmpeg default, measured
+  tracks move by `0` to `-2.15` dB peak and `0` to `-1.69` dB RMS (direction
+  depends on the stream `dynrng`), so `output_clip.peak` and the PCM24 clipping
+  decision in `.report.json` change accordingly.
+- `--gain-db` is a static gain applied **after** reconstruction (float64 on the
+  binaural path) and is not the same thing as decode-side DRC, which is
+  block-varying; do not use `--gain-db` to cancel it.
+- The `ffmpeg` field of `.report.json` records the FFmpeg version and the decode
+  options that were actually passed (`version`, `eac3_decode_options`).
 
 ### Binaural render mode
 

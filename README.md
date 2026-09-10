@@ -46,7 +46,7 @@ OAMD 时间轴和命令行逻辑在 Python 中。
 - NumPy 1.24+
 - h5py 3.8+
 - SciPy 1.10+
-- 独立的 FFmpeg 可执行程序；不需要 `ffmpeg-python`。默认从 `PATH` 查找，也可通过 `--ffmpeg` 指定可执行文件路径
+- 独立的 FFmpeg 可执行程序；不需要 `ffmpeg-python`。默认从 `PATH` 查找，也可通过 `--ffmpeg` 指定可执行文件路径。启动时会探测 `ffmpeg -h decoder=eac3`：缺 E-AC-3 解码器或 `-drc_scale` 直接报错，缺 `-target_level` 只在使用 `--eac3-target-level` 时报错
 - 可选：支持 C++20 的 CMake 工具链，用于自行构建原生核
 
 建议在项目专用虚拟环境中安装依赖：
@@ -139,6 +139,23 @@ python main.py input.m4a --metadata-only --print-metadata frames
 python main.py input.m4a --metadata-cache metadata_cache
 python main.py input.m4a --metadata-dir metadata_cache
 ```
+
+### E-AC-3 解码级动态范围与电平
+
+FFmpeg 解码 E-AC-3 时默认施加码流 `dynrng` 动态范围压缩（`-drc_scale 1`）。核心 5.1 PCM 是 JOC 对象重建的输入，而 `dynrng` 属于回放期增益，会被线性继承到全部对象与成品（ADM／扬声器／双耳），因此本工具默认按**全动态范围**解码：
+
+```powershell
+python main.py input.m4a                            # 默认：-drc_scale 0，全动态范围
+python main.py input.m4a --eac3-drc-scale 1         # 复现消费者回放（码流作者意图）
+python main.py input.m4a --eac3-drc-scale 0.5       # 施加一半
+python main.py input.m4a --eac3-target-level -27    # 按码流 dialnorm 归一化电平
+```
+
+- `--eac3-drc-scale`（`0`～`6`，默认 `0`）对应 FFmpeg 的 `-drc_scale`：每个 E-AC-3 block 的增益为 `dynrng 因子 ^ 该值`。`0` 关闭 DRC；`1` 为码流作者意图；`>1` 非对称（响处全压、轻处增强）。
+- `--eac3-target-level`（`-31`～`0`，默认 `0` 不施加）对应 FFmpeg 的 `-target_level`：按每帧 dialnorm 施加静态增益，约 `target_level - dialnorm` dB，与 `--eac3-drc-scale` 相互独立、可叠加。dialnorm 是逐码流属性（实测 Apple Music Atmos 流约 `-18`～`-19` dB，故 `-27` 约等于衰减 `8`～`9` dB）。
+- 电平变化是预期的：与 FFmpeg 默认值相比，实测曲目峰值变化 `0`～`-2.15` dB、RMS `0`～`-1.69` dB（方向取决于码流 `dynrng`），`.report.json` 的 `output_clip.peak` 与 int24 削波判定会随之变化。
+- `--gain-db` 是**重建之后**的静态增益（双耳路径 float64），与解码级 DRC 不是一回事；解码级 DRC 是按 block 时变的，不要用 `--gain-db` 去抵消它。
+- `.report.json` 的 `ffmpeg` 字段记录 FFmpeg 版本与实际下发的解码选项（`version`、`eac3_decode_options`）。
 
 ### 双耳渲染模式
 

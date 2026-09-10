@@ -6,6 +6,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -50,6 +51,9 @@ from variant_error import UnsupportedVariantError, write_variant_report
 RATE = 48000
 FRAME_SAMPLES = 1536
 DEFAULT_OUTPUT_DIR = PROJECT_DIR / "output"
+EAC3_DRC_SCALE_MAX = 6.0
+EAC3_TARGET_LEVEL_RANGE = (-31, 0)
+EAC3_DECODER_OPTION_RE = re.compile(r"(?m)^\s*-([A-Za-z0-9_]+)\s+<")
 
 
 def resolve_output(source, requested=None, speaker_layout=None, *, binaural=False):
@@ -183,6 +187,53 @@ def timed_call(timings, name, function, *args, **kwargs):
         timings[name] = time.perf_counter() - started
 
 
+def probe_eac3_decoder_options(ffmpeg):
+    """读取 ``ffmpeg -h decoder=eac3`` 暴露的 AVOption 名。"""
+    result = subprocess.run(
+        [ffmpeg, "-hide_banner", "-h", "decoder=eac3"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace")
+    options = frozenset(EAC3_DECODER_OPTION_RE.findall(result.stdout or ""))
+    # decoder 名不存在时 ffmpeg 依然返回 0，因此以“解析不到任何选项”为失败。
+    if not options:
+        raise RuntimeError(
+            "无法读取 FFmpeg 的 eac3 解码器选项（ffmpeg -h decoder=eac3）；"
+            "需要带 E-AC-3 解码器的构建")
+    return options
+
+
+def ffmpeg_version(ffmpeg):
+    """FFmpeg 版本字符串；探测失败返回空串，不影响渲染。"""
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-hide_banner", "-version"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    lines = (result.stdout or "").splitlines()
+    line = lines[0].strip() if lines else ""
+    prefix = "ffmpeg version "
+    return line[len(prefix):].strip() if line.startswith(prefix) else line
+
+
+def eac3_decode_options(drc_scale, target_level, available):
+    """构造 ``-i`` 之前的 E-AC-3 解码选项，返回 ``(argv, report 片段)``。"""
+    if "drc_scale" not in available:
+        raise RuntimeError(
+            "FFmpeg 的 eac3 解码器缺少 -drc_scale，无法关闭码流 DRC")
+    # -drc_scale 始终显式下发：0（全动态范围）不是 ffmpeg 的默认值。
+    argv = ["-drc_scale", format(float(drc_scale), ".10g")]
+    if target_level:
+        if "target_level" not in available:
+            raise RuntimeError(
+                "FFmpeg 的 eac3 解码器不支持 -target_level；请升级 FFmpeg "
+                "或去掉 --eac3-target-level")
+        argv += ["-target_level", str(int(target_level))]
+    applied = {"drc_scale": float(drc_scale), "target_level": int(target_level)}
+    return argv, applied
+
+
 def extract_eac3(ffmpeg, source, target):
     if source.suffix.lower() in (".eac3", ".ec3"):
         return source
@@ -192,10 +243,10 @@ def extract_eac3(ffmpeg, source, target):
     return target
 
 
-def decode_core(ffmpeg, eac3, target, duration_sec=None):
+def decode_core(ffmpeg, eac3, target, duration_sec=None, *, options=()):
     # 5.1(side) 的 f32le 顺序为 FL FR FC LFE SL SR；JOC 使用其中 0,1,2,4,5。
-    command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-i", str(eac3),
-               "-map", "0:a:0", "-vn"]
+    command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", *options,
+               "-i", str(eac3), "-map", "0:a:0", "-vn"]
     if duration_sec is not None:
         command.extend(["-t", f"{duration_sec:.9f}"])
     command.extend(["-ac", "6", "-ar", str(RATE),
@@ -480,6 +531,12 @@ def build_parser():
     parser.add_argument("--trajectory-mode", choices=("compact", "dense64"), default="compact",
                         help="ADM 对象轨迹表示；直接双耳路径不序列化 AXML")
     parser.add_argument("--ffmpeg", default=os.environ.get("FFMPEG", "ffmpeg"))
+    parser.add_argument("--eac3-drc-scale", type=float, default=0.0,
+                        help="E-AC-3 解码器 -drc_scale：0=关闭码流 dynrng（全动态范围），"
+                             "1=码流作者意图，>1 非对称；默认 0")
+    parser.add_argument("--eac3-target-level", type=int, default=0,
+                        help="E-AC-3 解码器 -target_level：按码流 dialnorm 归一化电平，"
+                             "增益约 target_level - dialnorm dB；0=不施加，默认 0")
     parser.add_argument("--backend", choices=("auto", "native", "python"), default="auto",
                         help="JOC/扬声器 DSP 后端；SOFA 双耳 DSP 当前使用 Python")
     parser.add_argument("--native-library", type=Path,
@@ -568,9 +625,28 @@ def main(argv=None):
     gain = np.float32(gain_float64)
     if not math.isfinite(gain_float64) or not np.isfinite(gain):
         raise ValueError("gain-db 超出支持范围")
+    if (not math.isfinite(args.eac3_drc_scale)
+            or not 0.0 <= args.eac3_drc_scale <= EAC3_DRC_SCALE_MAX):
+        raise ValueError(f"eac3-drc-scale 必须在 0..{EAC3_DRC_SCALE_MAX:g} 之间")
+    if not (EAC3_TARGET_LEVEL_RANGE[0] <= args.eac3_target_level
+            <= EAC3_TARGET_LEVEL_RANGE[1]):
+        raise ValueError("eac3-target-level 必须在 -31..0 之间")
     binaural_hrtf_input = resolve_binaural_hrtf_input(
         args, required=binaural_mode and not args.metadata_only)
     ffmpeg = executable(args.ffmpeg, "FFmpeg")
+    decode_options = ()
+    decode_option_info = None
+    if not args.metadata_only:
+        available = probe_eac3_decoder_options(ffmpeg)
+        decode_options, applied = eac3_decode_options(
+            args.eac3_drc_scale, args.eac3_target_level, available)
+        decode_option_info = {
+            "version": ffmpeg_version(ffmpeg),
+            "eac3_decode_options": applied,
+        }
+        print(f"[decode] ffmpeg {decode_option_info['version']}  "
+              f"drc_scale={args.eac3_drc_scale:g}  "
+              f"target_level={args.eac3_target_level}", flush=True)
 
     total_started = time.perf_counter()
     timings = {}
@@ -606,7 +682,8 @@ def main(argv=None):
 
         bed_path = timed_call(
             timings, "decode_core", decode_core,
-            ffmpeg, eac3, temp_dir / "core51_f32le.raw", duration_sec)
+            ffmpeg, eac3, temp_dir / "core51_f32le.raw", duration_sec,
+            options=decode_options)
         raw_path = (output.with_name(output.name + ".objects16.f32le")
                     if args.keep_raw else None)
         master = None
@@ -887,6 +964,7 @@ def main(argv=None):
         "sha256": output_sha,
         "python": platform.python_version(),
         "numpy": np.__version__,
+        "ffmpeg": decode_option_info,
     }
     report_path = Path(str(output) + ".report.json")
     report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

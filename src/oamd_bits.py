@@ -1,26 +1,9 @@
 """OAMD 位载荷 → 16 个对象槽的 q1/q2/q3 增量状态。
 
-解析依据 ETSI TS 103 420 V1.2.1（Backwards-compatible object audio carriage
-using Enhanced AC-3）clause 5：
-
-* 5.5.2 ``object_audio_metadata_payload()``：版本、对象数、program assignment、
-  element 目录；
-* 5.5.3 ``program_assignment()``：bed / ISF / dynamic 三类对象及其数量；
-* 5.5.4 ``oa_element_md()``：element id、字节长度、alternate data id；
-* 5.5.5/5.5.6/5.5.7 object_element/md_update_info/block_update_info：
-  ``start_sample = sample_offset + 32 * block_offset_factor``；
-* 5.5.9/5.5.10/5.5.11 object_info_block/object_basic_info/object_render_info：
-  逐对象的位置字段；bed 与 ISF 对象不携带 render info；
-* 5.6.1.1.8~5.6.1.1.11 pos3D_X/Y/Z：横向/纵向 62 格、高度 15 格 + 符号位。
-
-槽 0 是 bed/LFE；槽 1..15 对应输出 ch1..15 的对象元数据。bed/ISF 对象与
-``b_object_not_active`` 对象没有位置字段（5.5.9），保持上一帧位置。
-
-element 目录由声明长度驱动，因此 alternate_object_data_present、任意对象数、
-多 element（trim/extended/未知 id 按声明边界跳过）都能解析。个别编码器写出的
-``oa_element_size`` 比实际内容短（例如 Dolby 测试信号
-``Audio_ID_..._special_6ch_..._ddp_joc.mp4`` 的 ID11 少 2 字节），此时以结构解析
-出的实际位置为准，并把差异放进 ``diagnostics``，不当作变体错误。
+依据 ETSI TS 103 420 V1.2.1 clause 5。槽 0 为 bed/LFE，槽 1..15 为输出
+ch1..15；bed/ISF/未激活对象没有位置字段，保持上一帧位置。element 目录按声明长度
+驱动，未知 element 按边界跳过；个别编码器的 ``oa_element_size`` 比实际内容短时以
+结构解析为准，差异记入 ``diagnostics``，不算变体错误。
 """
 import numpy as np
 
