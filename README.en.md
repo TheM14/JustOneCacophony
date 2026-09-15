@@ -288,7 +288,6 @@ See the [mathematical notes](docs/math.en.md) for the equations used by the deco
 ## Known limitations
 
 - Only the common contiguous EMDF transport is covered. Fragmented transport across multiple audio-block skip fields is not covered.
-- Dense JOC is the main path. The Sparse JOC branch should not be treated as supported.
 - The speaker and SOFA binaural paths currently cover ordinary point objects; extent, spread, diffuse, divergence, channel lock, and similar controls are outside the supported scope.
 - OAMD trim elements are boundary-checked and skipped; warp, balance, and trim parameters are not applied to raw object trajectories or speaker rendering.
 - Multi-data-point streams, uncommon band configurations, and unusual OAMD scheduling have less coverage than common 12-band, single-data-point material.

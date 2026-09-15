@@ -42,7 +42,7 @@ int ejoc_renderer_process(
     float* output16_planar);       /* [16][1536] */
 ```
 
-Python performs dense-JOC Huffman decoding, differential reconstruction, and dequantization before the call. Sparse JOC is not silently passed to the dense native path.
+Python performs JOC Huffman decoding, differential reconstruction, and dequantization before the call, with the dense and sparse syntaxes sharing one entry point. The native core consumes the already dequantized `dq` in double precision, and both syntaxes have the same layout at that ABI.
 
 Thread control is exposed as:
 

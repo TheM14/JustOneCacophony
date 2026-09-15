@@ -42,7 +42,7 @@ int ejoc_renderer_process(
     float* output16_planar);       /* [16][1536] */
 ```
 
-Dense JOC 的 Huffman 解码、差分还原和去量化先在 Python 中完成。Sparse JOC 不会被静默送入 dense 原生路径。
+JOC 的 Huffman 解码、差分还原和去量化先在 Python 中完成，dense 与 sparse 两条语法共用同一条入口。原生核心消费已去量化的 `dq`（double），两条语法在该 ABI 上布局一致。
 
 线程接口为：
 

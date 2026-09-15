@@ -4,7 +4,7 @@
 
 本文只说明 JustOneCacophony 研究路径中使用的信号模型和公式：JOC 参数如何与核心 PCM 结合并重建对象信号，以及 OAMD 坐标如何转换为扬声器增益。
 
-这些公式描述项目当前研究的 dense JOC 与普通点对象路径，不代表对所有 E-AC-3 JOC 变体的完整定义。
+这些公式描述项目当前研究的 JOC 矩阵参数（dense 与 sparse 两条差分语法）与普通点对象路径，不代表对所有 E-AC-3 JOC 变体的完整定义。
 
 ## 1. 总体路径与记号
 
@@ -52,9 +52,11 @@ $$
 N_f=1536=24\times64.
 $$
 
-## 2. Dense JOC 矩阵参数
+## 2. JOC 矩阵参数
 
-### 2.1 差分还原
+每个对象、每个数据点的量化矩阵 `joc_mix_mtx_q` 都定义在 $N_q$ 个量化级上。标志位 `b_joc_sparse` 选择两条差分语法之一：dense 为每个核心声道各送一路 MTX 差分，sparse 每参数带只送一个 active 声道与一路系数差分。
+
+### 2.1 Dense 差分还原
 
 令 `quant_idx` 为 $q_i\in\{0,1\}$，量化级数为
 
@@ -85,7 +87,49 @@ Q_{o,d,c,p}=
 \qquad p>0.
 $$
 
-### 2.2 去量化
+### 2.2 Sparse 差分还原
+
+令 $I_{o,d,p}$ 为 `joc_channel_idx` 符号（IDX），$V_{o,d,p}$ 为 `joc_vec` 符号（VEC），$N_c\in\{5,7\}$ 为核心声道数。每参数带只有一个 active 声道
+
+$$
+A_{o,d,p}=
+\begin{cases}
+I_{o,d,0}, & p=0,\\[2pt]
+\left(A_{o,d,p-1}+I_{o,d,p}\right)\bmod N_c, & p>0,
+\end{cases}
+$$
+
+其中 $I_{o,d,0}$ 是 3 bit 绝对声道号，其余 IDX 符号是相对上一个 **active 声道**的增量。系数是一个跨参数带连续的单累加器
+
+$$
+\kappa_{o,d,-1}=O^{(s)}_q,\qquad
+\kappa_{o,d,p}=
+\left(\kappa_{o,d,p-1}+V_{o,d,p}\right)\bmod N_q,
+$$
+
+sparse 起点比 dense 的中心偏移高两个量化级：
+
+$$
+O^{(s)}_q=
+\begin{cases}
+50, & q_i=0,\\
+100, & q_i=1.
+\end{cases}
+$$
+
+active 声道切换时累加器**不**重置。完整矩阵为
+
+$$
+Q_{o,d,c,p}=
+\begin{cases}
+\kappa_{o,d,p}, & c=A_{o,d,p},\\[2pt]
+\dfrac{N_q}{2}, & c\neq A_{o,d,p}.
+\end{cases}
+$$
+
+非 active 项取 $N_q/2$，即去量化后恰为 0。
+
+### 2.3 去量化
 
 矩阵系数的去量化值为
 
@@ -97,7 +141,7 @@ $$
 
 因此 coarse 模式的有效分母为 4096，fine 模式为 8192。
 
-### 2.3 JOC clipgain
+### 2.4 JOC clipgain
 
 若 clipgain 字段由整数 $x$ 和尾数 $y$ 组成，则
 
@@ -557,7 +601,7 @@ $$
 
 ## 14. 公式适用范围
 
-- JOC 矩阵部分描述 dense JOC；Sparse JOC 使用不同的稀疏系数/索引路径。
+- JOC 矩阵部分同时描述 dense MTX 与 sparse IDX/VEC 两条差分语法。
 - 扬声器声像部分描述普通点对象；extent、spread、divergence 等模式需要额外模型。
 - 多个 OAMD position block 必须按其时间顺序调度。
 - limiter 属于独立后处理，不包含在上述混音公式中。

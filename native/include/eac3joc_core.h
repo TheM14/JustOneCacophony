@@ -53,8 +53,9 @@ Fixed array layouts used by ejoc_renderer_process():
   output16     [16][1536]
 
 Only objects selected by object_mask are read from the descriptor arrays.
-Sparse JOC must be rejected by the caller; this ABI accepts already dequantized
-dense matrix coefficients.
+dq carries already dequantized matrix coefficients in double precision; the
+caller performs the JOC bitstream differential decoding for both dense and
+sparse objects, so this ABI is identical for both syntaxes.
 */
 
 EJOC_API uint32_t EJOC_CALL ejoc_abi_version(void);

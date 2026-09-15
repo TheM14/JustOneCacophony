@@ -208,8 +208,6 @@ class NativeJocRenderer:
         for object_index, info in enumerate(out["objs"]):
             if not info["present"]:
                 continue
-            if info["sparse"]:
-                raise ValueError("native core does not accept unvalidated Sparse JOC")
             bands = int(info["n_bands"])
             points = int(info["n_dpoints"])
             if bands > MAX_BANDS or points > MAX_DPOINTS:

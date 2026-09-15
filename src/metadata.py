@@ -246,20 +246,6 @@ def inspect(index, limit=None, print_frames=False):
                     "parser_error": str(exc),
                     "repair_hint": "检查 JOC header、对象数、参数带、Huffman 或扩展字段",
                 }) from exc
-        sparse = [i for i, obj in enumerate(parsed["objs"]) if obj["present"] and obj["sparse"]]
-        if sparse:
-            raise UnsupportedVariantError(
-                "joc", "sparse_joc",
-                "发现尚未验证的 Sparse JOC 帧",
-                frame=frame_number,
-                details={
-                    "sparse_objects": sparse,
-                    "downmix_config": parsed["dmx_config_idx"],
-                    "extension_config": parsed["ext_config_idx"],
-                    "objects": parsed["n_objects"],
-                    "payload": bytes_descriptor(subs[14]),
-                    "repair_hint": "需要 Sparse JOC 实际样本及对应输出建立回归后再启用",
-                })
         if parsed["n_channels"] != 5 or parsed["n_objects"] > 15:
             raise UnsupportedVariantError(
                 "joc", "unsupported_configuration",

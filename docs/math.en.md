@@ -4,7 +4,7 @@
 
 This document covers only the signal model and formulas used in the JustOneCacophony research path: how JOC parameters combine with core PCM to reconstruct object signals, and how OAMD coordinates become speaker gains.
 
-The formulas describe the dense-JOC and ordinary point-object paths studied by the project. They are not a complete definition of every E-AC-3 JOC variant.
+The formulas describe the JOC matrix parameters (both the dense and the sparse differential syntax) and the ordinary point-object paths studied by the project. They are not a complete definition of every E-AC-3 JOC variant.
 
 ## 1. Overall path and notation
 
@@ -52,9 +52,11 @@ $$
 N_f=1536=24\times64.
 $$
 
-## 2. Dense-JOC matrix parameters
+## 2. JOC matrix parameters
 
-### 2.1 Differential reconstruction
+For every object and data point, the quantized matrix `joc_mix_mtx_q` is defined on $N_q$ quantization levels. The `b_joc_sparse` flag selects one of two differential syntaxes: dense sends one MTX difference per core channel, while sparse sends one active channel plus one coefficient difference per parameter band.
+
+### 2.1 Dense differential reconstruction
 
 Let `quant_idx` be $q_i\in\{0,1\}$. The number of quantization levels is
 
@@ -85,7 +87,49 @@ Q_{o,d,c,p}=
 \qquad p>0.
 $$
 
-### 2.2 Dequantization
+### 2.2 Sparse differential reconstruction
+
+Let $I_{o,d,p}$ be the `joc_channel_idx` symbol (IDX), $V_{o,d,p}$ the `joc_vec` symbol (VEC), and $N_c\in\{5,7\}$ the number of core channels. Each parameter band has exactly one active channel:
+
+$$
+A_{o,d,p}=
+\begin{cases}
+I_{o,d,0}, & p=0,\\[2pt]
+\left(A_{o,d,p-1}+I_{o,d,p}\right)\bmod N_c, & p>0,
+\end{cases}
+$$
+
+where $I_{o,d,0}$ is a 3-bit absolute channel index and every later IDX symbol is an increment relative to the previous **active channel**. The coefficient is a single accumulator running across parameter bands:
+
+$$
+\kappa_{o,d,-1}=O^{(s)}_q,\qquad
+\kappa_{o,d,p}=
+\left(\kappa_{o,d,p-1}+V_{o,d,p}\right)\bmod N_q,
+$$
+
+with a sparse starting point two quantization levels above the dense center offset:
+
+$$
+O^{(s)}_q=
+\begin{cases}
+50, & q_i=0,\\
+100, & q_i=1.
+\end{cases}
+$$
+
+The accumulator is **not** reset when the active channel changes. The complete matrix is
+
+$$
+Q_{o,d,c,p}=
+\begin{cases}
+\kappa_{o,d,p}, & c=A_{o,d,p},\\[2pt]
+\dfrac{N_q}{2}, & c\neq A_{o,d,p}.
+\end{cases}
+$$
+
+Non-active entries take $N_q/2$, which dequantizes to exactly 0.
+
+### 2.3 Dequantization
 
 The dequantized matrix coefficient is
 
@@ -97,7 +141,7 @@ $$
 
 The effective denominator is therefore 4096 in coarse mode and 8192 in fine mode.
 
-### 2.3 JOC clipgain
+### 2.4 JOC clipgain
 
 If the clipgain field consists of integer $x$ and mantissa $y$, then
 
@@ -557,7 +601,7 @@ $$
 
 ## 14. Scope of the formulas
 
-- The JOC matrix section describes dense JOC; Sparse JOC uses a different sparse coefficient/index path.
+- The JOC matrix section covers both the dense MTX and the sparse IDX/VEC differential syntax.
 - The speaker-panning section describes ordinary point objects; extent, spread, divergence, and similar modes require additional models.
 - Multiple OAMD position blocks must be scheduled in time order.
 - A limiter is separate post-processing and is not included in the mixing equations above.
