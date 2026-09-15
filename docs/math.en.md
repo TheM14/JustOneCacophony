@@ -89,7 +89,7 @@ $$
 
 ### 2.2 Sparse differential reconstruction
 
-Let $I_{o,d,p}$ be the `joc_channel_idx` symbol (IDX), $V_{o,d,p}$ the `joc_vec` symbol (VEC), and $N_c\in\{5,7\}$ the number of core channels. Each parameter band has exactly one active channel:
+Let $I_{o,d,p}$ be the `joc_channel_idx` symbol (IDX), $V_{o,d,p}$ the `joc_vec` symbol (VEC), and $N_c\in\lbrace5,7\rbrace$ the number of core channels. Each parameter band has exactly one active channel:
 
 $$
 A_{o,d,p}=

@@ -89,7 +89,7 @@ $$
 
 ### 2.2 Sparse 差分还原
 
-令 $I_{o,d,p}$ 为 `joc_channel_idx` 符号（IDX），$V_{o,d,p}$ 为 `joc_vec` 符号（VEC），$N_c\in\{5,7\}$ 为核心声道数。每参数带只有一个 active 声道
+令 $I_{o,d,p}$ 为 `joc_channel_idx` 符号（IDX）， $V_{o,d,p}$ 为 `joc_vec` 符号（VEC）， $N_c\in\lbrace5,7\rbrace$ 为核心声道数。每参数带只有一个 active 声道
 
 $$
 A_{o,d,p}=
