@@ -94,7 +94,7 @@ Let $I_{o,d,p}$ be the `joc_channel_idx` symbol (IDX), $V_{o,d,p}$ the `joc_vec`
 $$
 A_{o,d,p}=
 \begin{cases}
-I_{o,d,0}, & p=0,\\[2pt]
+I_{o,d,0}, & p=0,\\
 \left(A_{o,d,p-1}+I_{o,d,p}\right)\bmod N_c, & p>0,
 \end{cases}
 $$
@@ -122,7 +122,7 @@ The accumulator is **not** reset when the active channel changes. The complete m
 $$
 Q_{o,d,c,p}=
 \begin{cases}
-\kappa_{o,d,p}, & c=A_{o,d,p},\\[2pt]
+\kappa_{o,d,p}, & c=A_{o,d,p},\\
 \dfrac{N_q}{2}, & c\neq A_{o,d,p}.
 \end{cases}
 $$

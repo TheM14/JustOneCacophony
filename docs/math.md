@@ -94,7 +94,7 @@ $$
 $$
 A_{o,d,p}=
 \begin{cases}
-I_{o,d,0}, & p=0,\\[2pt]
+I_{o,d,0}, & p=0,\\
 \left(A_{o,d,p-1}+I_{o,d,p}\right)\bmod N_c, & p>0,
 \end{cases}
 $$
@@ -122,7 +122,7 @@ active 声道切换时累加器**不**重置。完整矩阵为
 $$
 Q_{o,d,c,p}=
 \begin{cases}
-\kappa_{o,d,p}, & c=A_{o,d,p},\\[2pt]
+\kappa_{o,d,p}, & c=A_{o,d,p},\\
 \dfrac{N_q}{2}, & c\neq A_{o,d,p}.
 \end{cases}
 $$
