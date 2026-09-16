@@ -11,7 +11,7 @@ This is research code, not a complete, standards-compliant, or production-grade 
 ## Current features
 
 - Scan common contiguous EMDF containers in E-AC-3 sync frames.
-- Parse ID14 dense JOC parameters, Huffman data, differential matrices, and `joc_clipgain`.
+- Parse ID14 dense / sparse JOC parameters, Huffman data, differential matrices, and `joc_clipgain`.
 - Parse ID11 OAMD position updates and build object trajectories.
 - Reconstruct LFE plus 15 object channels through analysis QMF, parameter interpolation, the object matrix, and inverse QMF.
 - Write a 25-channel ADM BWF: a 10-channel 7.1.2 bed (silent except for LFE) plus 15 objects.

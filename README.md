@@ -11,7 +11,7 @@
 ## 当前功能
 
 - 扫描 E-AC-3 同步帧中的常见连续 EMDF 容器；
-- 解析 ID14 dense JOC 参数、Huffman 数据、差分矩阵与 `joc_clipgain`；
+- 解析 ID14 dense / sparse JOC 参数、Huffman 数据、差分矩阵与 `joc_clipgain`；
 - 解析 ID11 OAMD 位置更新并生成对象轨迹；
 - 通过 analysis QMF、参数插值、对象矩阵和 inverse QMF 重建 LFE + 15 路对象 PCM；
 - 输出 25 声道 ADM BWF：10 声道 7.1.2 bed（除 LFE 外静音）+ 15 个对象；
