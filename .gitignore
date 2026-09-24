@@ -1,0 +1,12 @@
+/build/
+/output/
+/out/
+/traces/
+/vectors/
+/testdata/
+/devtools/
+.vs/
+.vscode/
+CMakeUserPresets.json
+__pycache__/
+*.spool.f32

@@ -1,0 +1,38 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -C Release
+
+      # Publish the install tree: the shared library and the CLI.
+      - name: Stage
+        run: cmake --install build --config Release --prefix stage
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: joc-core-${{ runner.os }}
+          path: |
+            stage/bin/*
+            stage/lib/*
+          if-no-files-found: error
