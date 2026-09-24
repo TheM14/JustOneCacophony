@@ -13,6 +13,7 @@
 #include <io.h>
 #else
 #include <cstdlib>
+#include <unistd.h>
 #endif
 
 namespace joc::fs_utf8 {

@@ -1,5 +1,6 @@
 #include "joc_core/objects16.h"
 
+#include <cstdint>
 #include <cstdio>
 
 namespace joc::joc {

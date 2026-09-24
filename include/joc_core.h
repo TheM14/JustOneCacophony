@@ -357,7 +357,7 @@ typedef enum joc_clip_action {
 typedef enum joc_hrtf_cache_policy {
     JOC_HRTF_CACHE_NONE = 0,   /* compile and discard */
     JOC_HRTF_CACHE_MEMORY = 1, /* compile and keep in this process (default) */
-    JOC_HRTF_CACHE_DISK = 2    /* compile, reuse and write <cache_dir>/*.jochrtf */
+    JOC_HRTF_CACHE_DISK = 2    /* compile, reuse and write <cache_dir>/<name>.jochrtf */
 } joc_hrtf_cache_policy;
 
 enum { JOC_TASK_F_SKIP_SHA256 = 1u, JOC_TASK_F_KEEP_INTERMEDIATE = 2u,
