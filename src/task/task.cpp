@@ -1209,7 +1209,7 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
             }
             render_options.object_delay_samples = cfg.object_delay_samples;
             render_options.tail_seconds = cfg.tail_seconds;
-            render_options.output_gain = std::pow(10.0, cfg.gain_db / 20.0);
+            render_options.output_gain = 1.0;
             if (status.ok()) {
                 status = rosella.open(model, render_options);
             }
