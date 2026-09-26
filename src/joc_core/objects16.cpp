@@ -52,6 +52,15 @@ Status rebuild_objects16(ejoc_renderer_handle handle, const joc_frame_params& pa
     }
 
     out16->assign(static_cast<std::size_t>(JOC_OUTPUT_CHANNELS) * JOC_FRAME_SAMPLES, 0.0f);
+    // band-0 的 21-tap DC 补偿只在 downmix 配置 3/4 下启用，其余配置 band 0
+    // 走与其他 band 相同的处理。
+    const bool dc_filter = params.dmx_config_idx == 3 || params.dmx_config_idx == 4;
+    if (ejoc_renderer_set_dc_filter(handle, dc_filter ? 1u : 0u) != 0) {
+        if (error != nullptr) {
+            *error = "ejoc_renderer_set_dc_filter failed";
+        }
+        return Status::fail(JOC_ERR_RENDER_FAILED, stage::kDsp, "ejoc_renderer_set_dc_filter failed");
+    }
     const int result = ejoc_renderer_process(
         handle, bed5_planar, lfe, params.present_mask, n_bands, n_dpoints, slope_idx, offset_ts,
         dq.data(), params.clipgain, 0.0625f, gain, out16->data());
