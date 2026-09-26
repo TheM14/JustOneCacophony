@@ -5,6 +5,18 @@ from adm_atmos import q_to_adm_xyz
 from oamd_bits import JocFieldState, frame_update
 from variant_error import UnsupportedVariantError
 
+# 元数据更新时刻按渲染器处理块对齐，与 Dolby 的 processing_block_size 及
+# speaker_renderer 的 block_size 落在同一网格。
+METADATA_BLOCK_SAMPLES = 32
+
+
+def align_metadata_sample(sample, block_samples=METADATA_BLOCK_SAMPLES):
+    """把更新时刻量化到处理块边界。"""
+    block = int(block_samples)
+    if block <= 0:
+        raise ValueError("block_samples must be positive")
+    return block * ((int(sample) + block // 2 - 1) // block)
+
 
 def _lerp_xyz(start, target, amount):
     return tuple(a + (b - a) * amount for a, b in zip(start, target))
@@ -18,18 +30,19 @@ def _append_point(points, sample, xyz, interpolation_samples):
         points.append(item)
 
 
-def _expand_events_dense64(events, total_samples, rate, update_quantum_samples,
+def _expand_events_dense64(events, total_samples, rate, update_block_samples,
                            object_delay_samples, object_index):
     if not events:
         return [(0.0, 0.0, 0.0, 0.0, total_samples / float(rate), 0.0)]
 
+    block = int(update_block_samples)
     # 初始位置从成品 sample 0 起有效；合成延迟只作用于后续位置变化。
     current = events[0][1]
     points = []
     _append_point(points, 0, current, 0)
 
     for event_index, (coded_start, target, ramp_samples) in enumerate(events[1:], 1):
-        start = coded_start + object_delay_samples
+        start = align_metadata_sample(coded_start + object_delay_samples, block)
         if start >= total_samples:
             break
         if start < points[-1][0]:
@@ -43,15 +56,16 @@ def _expand_events_dense64(events, total_samples, rate, update_quantum_samples,
         if start > points[-1][0]:
             _append_point(points, start, current, 0)
 
-        effective_ramp = max(0, int(ramp_samples) - update_quantum_samples)
-        if effective_ramp == 0:
+        ramp = max(0, int(ramp_samples))
+        if ramp == 0:
             _append_point(points, start, target, 0)
             current = target
             continue
 
-        end = start + math.ceil(effective_ramp / update_quantum_samples) * update_quantum_samples
+        end = start + math.ceil(ramp / block) * block
         if event_index + 1 < len(events):
-            next_start = events[event_index + 1][0] + object_delay_samples
+            next_start = align_metadata_sample(
+                events[event_index + 1][0] + object_delay_samples, block)
             if next_start < end:
                 raise UnsupportedVariantError(
                     "oamd", "overlapping_position_ramps",
@@ -61,23 +75,23 @@ def _expand_events_dense64(events, total_samples, rate, update_quantum_samples,
                         "ramp_start_sample": start,
                         "ramp_end_sample": end,
                         "next_update_sample": next_start,
-                        "repair_hint": "按 64-sample 状态机截断旧 ramp，再从当前插值位置启动新 ramp",
+                        "repair_hint": "按 32-sample 状态机截断旧 ramp，再从当前插值位置启动新 ramp",
                     })
 
-        # 逐位置更新节拍复现状态机。1536-sample ramp 在首次 64-sample
-        # 更新后剩余 1472 samples，因此共有 23 个中间/终点坐标。
-        future = effective_ramp
+        # 从对齐后的更新点起按处理块推进，整条 ramp 覆盖 ramp_samples 个样本；
+        # 几何式逼近望远镜化简为精确线性，每个中间点都落在真实 ramp 上。
+        future = ramp
         elapsed = 0
         position = current
         while future > 0:
-            amount = min(update_quantum_samples / float(future), 1.0)
+            amount = min(block / float(future), 1.0)
             position = _lerp_xyz(position, target, amount)
-            elapsed += update_quantum_samples
+            elapsed += block
             sample = start + elapsed
             if sample >= total_samples:
                 break
-            _append_point(points, sample, position, update_quantum_samples)
-            future -= update_quantum_samples
+            _append_point(points, sample, position, block)
+            future -= block
         current = target
 
     blocks = []
@@ -94,16 +108,14 @@ def _expand_events_dense64(events, total_samples, rate, update_quantum_samples,
 
 
 
-def _compact_events(events, total_samples, rate, update_quantum_samples,
+def _compact_events(events, total_samples, rate, update_block_samples,
                     object_delay_samples, object_index):
     """Represent each linear OAMD ramp with one ADM interpolation block.
 
-    The existing dense64 representation keeps the old position at ``start``,
-    writes its first interpolated target at ``start + quantum``, and lets ADM
-    interpolate that block over one quantum. Consequently, the interpreted
-    motion begins at ``start + quantum`` and reaches the final target at
-    ``start + ramp_duration``. This compact form preserves that timing with one
-    target block whose interpolationLength is ``ramp_duration - quantum``.
+    The update instant is quantized to the processing block boundary, the motion
+    starts there immediately, and ``interpolationLength`` spans the full
+    ``ramp_duration``. The interpreted motion therefore covers
+    ``[align(start), align(start) + ramp_duration]``.
     """
     if not events:
         return [(0.0, 0.0, 0.0, 0.0, total_samples / float(rate), 0.0)]
@@ -112,15 +124,16 @@ def _compact_events(events, total_samples, rate, update_quantum_samples,
     current = events[0][1]
     _append_point(points, 0, current, 0)
 
+    block = int(update_block_samples)
     for event_index, (coded_start, target, ramp_samples) in enumerate(events[1:], 1):
-        event_start = coded_start + object_delay_samples
+        event_start = align_metadata_sample(coded_start + object_delay_samples, block)
         if event_start >= total_samples:
             break
-        effective_ramp = max(0, int(ramp_samples) - update_quantum_samples)
-        block_start = event_start + (update_quantum_samples if effective_ramp else 0)
+        ramp = max(0, int(ramp_samples))
+        block_start = event_start
         if block_start >= total_samples:
             break
-        ramp_end = block_start + effective_ramp
+        ramp_end = block_start + ramp
 
         if block_start < points[-1][0]:
             raise UnsupportedVariantError(
@@ -131,9 +144,9 @@ def _compact_events(events, total_samples, rate, update_quantum_samples,
 
         if event_index + 1 < len(events):
             next_coded_start, _, next_ramp_samples = events[event_index + 1]
-            next_event_start = next_coded_start + object_delay_samples
-            next_effective = max(0, int(next_ramp_samples) - update_quantum_samples)
-            next_block_start = next_event_start + (update_quantum_samples if next_effective else 0)
+            next_event_start = align_metadata_sample(
+                next_coded_start + object_delay_samples, block)
+            next_block_start = next_event_start
             if next_block_start < ramp_end:
                 raise UnsupportedVariantError(
                     "oamd", "overlapping_compact_position_ramps",
@@ -147,10 +160,10 @@ def _compact_events(events, total_samples, rate, update_quantum_samples,
                     })
 
         block_target = target
-        block_interpolation = effective_ramp
+        block_interpolation = ramp
         available = total_samples - block_start
-        if effective_ramp > available:
-            block_target = _lerp_xyz(current, target, available / float(effective_ramp))
+        if ramp > available:
+            block_target = _lerp_xyz(current, target, available / float(ramp))
             block_interpolation = available
         _append_point(points, block_start, block_target, block_interpolation)
         current = target
@@ -168,25 +181,26 @@ def _compact_events(events, total_samples, rate, update_quantum_samples,
     return blocks
 
 
-def _expand_events(events, total_samples, rate, update_quantum_samples,
+def _expand_events(events, total_samples, rate, update_block_samples,
                    object_delay_samples, object_index, trajectory_mode):
     if trajectory_mode == "compact":
-        return _compact_events(events, total_samples, rate, update_quantum_samples,
+        return _compact_events(events, total_samples, rate, update_block_samples,
                                object_delay_samples, object_index)
     if trajectory_mode == "dense64":
-        return _expand_events_dense64(events, total_samples, rate, update_quantum_samples,
+        return _expand_events_dense64(events, total_samples, rate, update_block_samples,
                                       object_delay_samples, object_index)
     raise ValueError(f"未知 trajectory_mode: {trajectory_mode}")
 
 def build_adm_tracks(index, frames=None, rate=48000, frame_samples=1536,
-                     update_quantum_samples=64, object_delay_samples=1473,
-                     trajectory_mode="compact"):
+                     update_block_samples=METADATA_BLOCK_SAMPLES,
+                     object_delay_samples=1473, trajectory_mode="compact"):
     """从统一 metadata index 构造 15 条 ADM 轨迹。
 
     返回 ``[(name, [(rtime,x,y,z,duration,interpolation), ...]), ...]``。
-    OAMD 的内外层 sample offset、block offset 和 ramp 均保留。
+    OAMD 的内外层 sample offset、block offset 和 ramp 均保留；更新时刻量化到
+    ``update_block_samples`` 的块边界，ramp 覆盖完整的 ramp_duration。
     ``trajectory_mode="compact"`` 用一个长 ADM interpolation block 表示每条
-    线性 ramp；``dense64`` 保留逐 64-sample 展开作为兼容回退。
+    线性 ramp；``dense64`` 保留逐块展开作为兼容回退。
     ``object_delay_samples`` 将位置更新与对象 PCM 的 decoder 输出时刻对齐。
     slot1..15 与对象 PCM ch1..15 一一对应。
     """
@@ -221,7 +235,7 @@ def build_adm_tracks(index, frames=None, rate=48000, frame_samples=1536,
     return [
         (f"JOC_Object_{obj}",
          _expand_events(events[obj - 1], total_samples, rate,
-                        update_quantum_samples, object_delay_samples, obj,
+                        update_block_samples, object_delay_samples, obj,
                         trajectory_mode))
         for obj in range(1, 16)
     ]

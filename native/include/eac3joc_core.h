@@ -64,6 +64,15 @@ EJOC_API ejoc_renderer_handle EJOC_CALL ejoc_renderer_create(void);
 EJOC_API void EJOC_CALL ejoc_renderer_destroy(ejoc_renderer_handle handle);
 EJOC_API int EJOC_CALL ejoc_renderer_reset(ejoc_renderer_handle handle);
 EJOC_API int EJOC_CALL ejoc_renderer_set_threads(ejoc_renderer_handle handle, uint32_t total_threads);
+/*
+Enables or disables the Ls/Rs band-0 21-tap DC compensation. The caller derives
+it from the JOC downmix configuration: only configurations 3 and 4 enable the
+filter. When disabled, band 0 keeps the common per-band processing (surround
+delay plus -j rotation) instead of being overwritten by the FIR. The delay line
+and DC history advance either way, so the flag may change between frames.
+Defaults to enabled when never called.
+*/
+EJOC_API int EJOC_CALL ejoc_renderer_set_dc_filter(ejoc_renderer_handle handle, uint32_t enabled);
 EJOC_API uint32_t EJOC_CALL ejoc_renderer_thread_count(ejoc_renderer_handle handle);
 EJOC_API const char* EJOC_CALL ejoc_renderer_last_error(ejoc_renderer_handle handle);
 

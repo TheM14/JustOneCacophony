@@ -130,8 +130,12 @@ _SURROUND_DC_B = np.array([
 _SURROUND_DC_C = _SURROUND_DC_B + 1j * _SURROUND_DC_A
 
 
-def surround_post_frame(x, delay, dc_hist):
-    """处理 Ls/Rs 的 10 槽延迟、-j 旋转和 band-0 FIR。"""
+def surround_post_frame(x, delay, dc_hist, apply_dc_filter=True):
+    """处理 Ls/Rs 的 10 槽延迟、-j 旋转和 band-0 FIR。
+
+    ``apply_dc_filter=False`` 时跳过 band-0 的 21-tap DC 补偿，只做延迟与
+    -j 旋转；延迟线与 DC 历史仍照常推进，便于逐帧切换。
+    """
     src = np.asarray(x, dtype=np.complex128)
     qdelay = np.asarray(delay, dtype=np.complex128).copy()
     hist = np.asarray(dc_hist, dtype=np.complex128).copy()
@@ -144,8 +148,9 @@ def surround_post_frame(x, delay, dc_hist):
         block = -1j * queued[:, :4, :]
         qdelay = queued[:, 4:, :]
         dc_buf = np.concatenate((hist, current[:, :, 0]), axis=1)
-        windows = np.lib.stride_tricks.sliding_window_view(dc_buf, 21, axis=1)
-        block[:, :, 0] = 2.0 * np.sum(windows * _SURROUND_DC_C[None, None, :], axis=2)
+        if apply_dc_filter:
+            windows = np.lib.stride_tricks.sliding_window_view(dc_buf, 21, axis=1)
+            block[:, :, 0] = 2.0 * np.sum(windows * _SURROUND_DC_C[None, None, :], axis=2)
         hist = dc_buf[:, 4:]
         out[:, :, group:group + 4] = block.transpose(0, 2, 1)
     return out, qdelay, hist

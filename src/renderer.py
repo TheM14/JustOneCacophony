@@ -13,7 +13,7 @@ output_scale:
 """
 import numpy as np
 
-from joc_decode import parse_joc, diff_decode, dequantize
+from joc_decode import DC_FILTER_DMX_CONFIGS, parse_joc, diff_decode, dequantize
 from joc_qmf import (N, QMF5_WINDOW, qmf_analysis_frame,
                      surround_post_frame, interp_matrix)
 from evo_unpack import unpack_evolution
@@ -60,11 +60,12 @@ class JocRenderer:
         mix_dq = dequantize(out, mix_q)
         return out, mix_q, mix_dq
 
-    def qmf_x(self, bed5, phase_new=0.0625):
+    def qmf_x(self, bed5, phase_new=0.0625, apply_dc_filter=True):
         """核心 5ch PCM → 对象矩阵使用的复数 QMF ``x``。
 
         先以 float32 对当前帧应用 phase；phase 变化时仅前 256 个样本从旧值
         线性过渡。缩放后的 L/R/C 延迟 10 槽，Ls/Rs 不延迟，再进入分析 QMF。
+        ``apply_dc_filter`` 控制 Ls/Rs band-0 的 21-tap DC 补偿。
         """
         pcm = np.asarray(bed5, dtype=np.float32)
         if pcm.shape != (5, 1536):
@@ -87,7 +88,8 @@ class JocRenderer:
         x, self._analysis_fifo = qmf_analysis_frame(self._analysis_fifo, blocks)
         self._analysis_phase = new_phase
         x[3:], self._surround_qmf_delay, self._surround_dc_hist = surround_post_frame(
-            x[3:], self._surround_qmf_delay, self._surround_dc_hist)
+            x[3:], self._surround_qmf_delay, self._surround_dc_hist,
+            apply_dc_filter=apply_dc_filter)
         return x
 
     def object_z(self, out, mix_dq, x):
@@ -244,7 +246,9 @@ class JocRenderer:
     def render_subpayloads(self, subs, bed5_pcm, lfe_pcm=None):
         """以已拆出的 EMDF payload 字典渲染一帧，避免绑定 transport 容器。"""
         out, mix_q, mix_dq = self.decode_subpayloads(subs)
-        x = self.qmf_x(bed5_pcm)
+        x = self.qmf_x(
+            bed5_pcm,
+            apply_dc_filter=out["dmx_config_idx"] in DC_FILTER_DMX_CONFIGS)
         self._last_x = x.copy()
         z_all = self.object_z(out, mix_dq, x)
         # joc_clipgain 在对象逆 QMF 后应用，并与用户 output_scale 分离。

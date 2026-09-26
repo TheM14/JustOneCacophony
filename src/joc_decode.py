@@ -35,6 +35,8 @@ def _load_huff_tables():
 H = _load_huff_tables()
 
 JOC_NUM_CHANNELS = {0: 5, 1: 7, 2: 7, 3: 5, 4: 7}          # Table 33
+# band-0 的 21-tap DC 补偿只在 downmix 配置 3/4 下启用。
+DC_FILTER_DMX_CONFIGS = (3, 4)
 JOC_NUM_BANDS = {0: 1, 1: 3, 2: 5, 3: 7, 4: 9, 5: 12, 6: 15, 7: 23}  # Table 35
 JOC_NUM_QUANT = {0: 96, 1: 192}                            # Table 51
 # dense 的量化零点就是 nquant/2；sparse 的递推起点比它高 2 个量化步。

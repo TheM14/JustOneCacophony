@@ -125,6 +125,10 @@ public:
         return error_[0] ? error_ : "";
     }
 
+    void set_dc_filter(const bool enabled) noexcept {
+        dc_filter_enabled_ = enabled;
+    }
+
     int process(
         const float* bed5,
         const float* lfe,
@@ -305,16 +309,18 @@ private:
                 for (int i = 0; i < 4; ++i) {
                     dc_buffer[20 + i] = current[i][0];
                 }
-                for (int slot = 0; slot < 4; ++slot) {
-                    Complex sum{0.0, 0.0};
-                    for (int tap = 0; tap < 21; ++tap) {
-                        const Complex sample = dc_buffer[slot + tap];
-                        const double cr = kDcB[tap];
-                        const double ci = kDcA[tap];
-                        sum.re += sample.re * cr - sample.im * ci;
-                        sum.im += sample.re * ci + sample.im * cr;
+                if (dc_filter_enabled_) {
+                    for (int slot = 0; slot < 4; ++slot) {
+                        Complex sum{0.0, 0.0};
+                        for (int tap = 0; tap < 21; ++tap) {
+                            const Complex sample = dc_buffer[slot + tap];
+                            const double cr = kDcB[tap];
+                            const double ci = kDcA[tap];
+                            sum.re += sample.re * cr - sample.im * ci;
+                            sum.im += sample.re * ci + sample.im * cr;
+                        }
+                        x_[channel][0][group + slot] = {2.0 * sum.re, 2.0 * sum.im};
                     }
-                    x_[channel][0][group + slot] = {2.0 * sum.re, 2.0 * sum.im};
                 }
                 for (int i = 0; i < 20; ++i) {
                     surround_history_[surround][i] = dc_buffer[i + 4];
@@ -641,6 +647,8 @@ private:
     float analysis_phase_;
     alignas(64) Complex surround_delay_[2][10][64];
     alignas(64) Complex surround_history_[2][20];
+    // band-0 的 21-tap DC 补偿开关；仅 downmix 配置 3/4 由调用方置位。
+    bool dc_filter_enabled_ = true;
     alignas(64) double lfe_delay_[kLfeDelay];
     alignas(64) double matrix_previous_[15][5][64];
     alignas(64) double synthesis_state_[15][640];
@@ -694,6 +702,14 @@ int EJOC_CALL ejoc_renderer_set_threads(ejoc_renderer_handle handle, uint32_t to
         return -1;
     }
     return static_cast<ejoc::Renderer*>(handle)->set_threads(total_threads);
+}
+
+int EJOC_CALL ejoc_renderer_set_dc_filter(ejoc_renderer_handle handle, uint32_t enabled) {
+    if (!handle) {
+        return -1;
+    }
+    static_cast<ejoc::Renderer*>(handle)->set_dc_filter(enabled != 0);
+    return 0;
 }
 
 uint32_t EJOC_CALL ejoc_renderer_thread_count(ejoc_renderer_handle handle) {

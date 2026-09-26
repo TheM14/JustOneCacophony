@@ -14,7 +14,7 @@ import sys
 import numpy as np
 
 from evo_unpack import unpack_evolution
-from joc_decode import dequantize, diff_decode, parse_joc
+from joc_decode import DC_FILTER_DMX_CONFIGS, dequantize, diff_decode, parse_joc
 
 FRAME_SAMPLES = 1536
 MAX_OBJECTS = 15
@@ -88,6 +88,9 @@ def _load_library(path):
     lib.ejoc_renderer_reset.restype = ctypes.c_int
     lib.ejoc_renderer_set_threads.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
     lib.ejoc_renderer_set_threads.restype = ctypes.c_int
+    if hasattr(lib, "ejoc_renderer_set_dc_filter"):
+        lib.ejoc_renderer_set_dc_filter.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+        lib.ejoc_renderer_set_dc_filter.restype = ctypes.c_int
     lib.ejoc_renderer_thread_count.argtypes = [ctypes.c_void_p]
     lib.ejoc_renderer_thread_count.restype = ctypes.c_uint32
     lib.ejoc_renderer_last_error.argtypes = [ctypes.c_void_p]
@@ -225,6 +228,21 @@ class NativeJocRenderer:
             self._dq[object_index, :points, :, :bands] = values
         return mask
 
+    def _set_dc_filter(self, dmx_config_idx):
+        """band-0 的 21-tap DC 补偿只在 downmix 配置 3/4 下启用。"""
+        enabled = dmx_config_idx in DC_FILTER_DMX_CONFIGS
+        setter = getattr(self._lib, "ejoc_renderer_set_dc_filter", None)
+        if setter is None:
+            if not enabled:
+                raise RuntimeError(
+                    "native library has no ejoc_renderer_set_dc_filter; rebuild "
+                    "eac3joc_core to disable the band-0 DC filter for "
+                    f"dmx_config_idx={dmx_config_idx}")
+            return
+        result = setter(self._handle, 1 if enabled else 0)
+        if result != 0:
+            self._raise_native("set_dc_filter", result)
+
     def render_frame(self, payload_bytes, bed5_pcm, lfe_pcm=None):
         subs, _ = unpack_evolution(payload_bytes, loose=True)
         return self.render_subpayloads(subs, bed5_pcm, lfe_pcm)
@@ -233,6 +251,7 @@ class NativeJocRenderer:
         self._require_open()
         out, _, mix_dq = self.decode_subpayloads(subs)
         object_mask = self._pack_frame(out, mix_dq)
+        self._set_dc_filter(out["dmx_config_idx"])
         bed5 = np.ascontiguousarray(bed5_pcm, dtype=np.float32)
         if bed5.shape != (CORE_CHANNELS, FRAME_SAMPLES):
             raise ValueError(f"core PCM shape must be (5,1536), got {bed5.shape}")

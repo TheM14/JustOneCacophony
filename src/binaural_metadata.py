@@ -7,9 +7,8 @@ import numpy as np
 
 from adm_atmos import q_to_adm_xyz
 from oamd_bits import JocFieldState, frame_update
+from oamd_tracks import align_metadata_sample
 from variant_error import UnsupportedVariantError
-
-OAMD_UPDATE_QUANTUM_SAMPLES = 64
 
 
 @dataclass(frozen=True)
@@ -154,11 +153,8 @@ class OamdPositionTimeline:
             self.payload_count += 1
             return
 
-        ramp_duration = int(update["ramp_duration_samples"])
-        effective_ramp = max(0, ramp_duration - OAMD_UPDATE_QUANTUM_SAMPLES)
-        transition_start = coded_event + object_delay
-        if effective_ramp:
-            transition_start += OAMD_UPDATE_QUANTUM_SAMPLES
+        effective_ramp = max(0, int(update["ramp_duration_samples"]))
+        transition_start = align_metadata_sample(coded_event + object_delay)
         for index, target in enumerate(targets):
             if self.previous_targets[index] == target:
                 continue
