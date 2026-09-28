@@ -7,6 +7,8 @@
 #include "adm/adm_metadata.h"
 #include "foundation/status.h"
 #include "hrtf/jochrtf.h"
+#include "hrtf/rosella_model.h"
+#include "hrtf/sofa_cache.h"
 #include "joc_bitstream/joc_parser.h"
 #include "joc_core/objects16.h"
 
@@ -53,6 +55,11 @@ void Stream::reset_state() {
     if (binaural_ready_) {
         binaural_.reset();
     }
+    if (rosella_ready_) {
+        rosella_.reset();
+    }
+    rosella_pending_.clear();
+    rosella_read_offset_ = 0;
 }
 
 Status Stream::create(const Config& config) {
@@ -96,28 +103,74 @@ Status Stream::create(const Config& config) {
         output_channels_ = speaker_.layout.channel_count;
     } else if (config_.output == JOC_STREAM_OUT_BINAURAL) {
         binaural_enabled_ = true;
-        hrtf::Field field;
-        hrtf::Kernels kernels;
-        Status status = hrtf::load_jochrtf(config_.hrtf_path, &field);
-        if (status.ok()) {
-            status = config_.kernels_path.empty()
-                         ? (kernels = hrtf::builtin_kernels(), Status::success())
-                         : hrtf::load_kernels(config_.kernels_path, &kernels);
+        // The HRTF input precedence is joc_task_config's: a Rosella
+        // .personalized_headphone wins over a SOFA that the library compiles, and
+        // the compiled .jochrtf (hrtf_path) stays the fallback input.
+        if (!config_.personalized_headphone_path.empty()) {
+            hrtf::RosellaModel model;
+            Status status =
+                hrtf::load_personalized_headphone(config_.personalized_headphone_path, &model);
+            hrtf::RosellaRenderOptions render_options;
+            if (config_.binaural_mode == JOC_BINAURAL_NEAR) {
+                render_options.profile = hrtf::RosellaProfile::Near;
+            } else if (config_.binaural_mode == JOC_BINAURAL_FAR) {
+                render_options.profile = hrtf::RosellaProfile::Far;
+            }
+            render_options.object_delay_samples = config_.object_delay_samples;
+            render_options.tail_seconds = config_.tail_seconds;
+            if (status.ok()) {
+                status = rosella_.open(model, render_options);
+            }
+            if (!status.ok()) {
+                return Status::fail(status.code(), stage::kRender,
+                                    "binaural setup failed: " + status.message());
+            }
+            rosella_ready_ = true;
+            output_channels_ = 2;
+        } else {
+            hrtf::Field field;
+            hrtf::Kernels kernels;
+            Status status = Status::success();
+            if (!config_.hrtf_sofa_path.empty()) {
+                // The .jochrtf is an internal cache: the SOFA is the user-facing input.
+                hrtf::SofaFieldRequest request;
+                request.sofa_path = config_.hrtf_sofa_path;
+                request.options.shell_radius_m = config_.hrtf_radius_m;
+                request.cache_dir = config_.hrtf_cache_dir;
+                switch (config_.hrtf_cache_policy) {
+                    case JOC_HRTF_CACHE_NONE: request.policy = hrtf::CachePolicy::None; break;
+                    case JOC_HRTF_CACHE_DISK: request.policy = hrtf::CachePolicy::Disk; break;
+                    default: request.policy = hrtf::CachePolicy::Memory; break;
+                }
+                std::string cache_path;
+                status = hrtf::load_or_compile_sofa_field(request, &field, &cache_path);
+                if (!status.ok()) {
+                    return Status::fail(status.code(), stage::kRender,
+                                        "binaural setup failed: " + status.message());
+                }
+            } else {
+                status = hrtf::load_jochrtf(config_.hrtf_path, &field);
+            }
+            if (status.ok()) {
+                status = config_.kernels_path.empty()
+                             ? (kernels = hrtf::builtin_kernels(), Status::success())
+                             : hrtf::load_kernels(config_.kernels_path, &kernels);
+            }
+            binaural::Profile profile = binaural::Profile::Mid;
+            if (status.ok() && config_.binaural_mode == JOC_BINAURAL_NEAR) {
+                profile = binaural::Profile::Near;
+            } else if (status.ok() && config_.binaural_mode == JOC_BINAURAL_FAR) {
+                profile = binaural::Profile::Far;
+            }
+            if (status.ok()) {
+                status = binaural_.open(field, kernels, profile);
+            }
+            if (!status.ok()) {
+                return status;
+            }
+            binaural_ready_ = true;
+            output_channels_ = 2;
         }
-        binaural::Profile profile = binaural::Profile::Mid;
-        if (status.ok() && config_.binaural_mode == JOC_BINAURAL_NEAR) {
-            profile = binaural::Profile::Near;
-        } else if (status.ok() && config_.binaural_mode == JOC_BINAURAL_FAR) {
-            profile = binaural::Profile::Far;
-        }
-        if (status.ok()) {
-            status = binaural_.open(field, kernels, profile);
-        }
-        if (!status.ok()) {
-            return status;
-        }
-        binaural_ready_ = true;
-        output_channels_ = 2;
     } else {
         output_channels_ = JOC_OUTPUT_CHANNELS;
     }
@@ -273,6 +326,9 @@ Status Stream::render_objects16(const std::vector<float>& objects16) {
         info_.samples_out += kFrameSamples;
         return Status::success();
     }
+    if (rosella_ready_) {
+        return render_rosella_objects16(objects16);
+    }
 
     const Status submitted =
         binaural_.submit_frame(objects16.data(),
@@ -293,6 +349,55 @@ Status Stream::render_objects16(const std::vector<float>& objects16) {
     return Status::success();
 }
 
+// The Rosella runtime is driven exactly like the SOFA runtime (the same frame,
+// update, frame index, outer offset and object delay), but it renders in chunks
+// of its own size (64 frames by default), so a frame usually yields either
+// nothing or a whole chunk.  Its output therefore waits in a FIFO and is released
+// one frame's worth at a time, which keeps the stream's contract intact: pushing
+// one syncframe leaves exactly JOC_FRAME_SAMPLES samples for the caller to pull,
+// and nothing is dropped or counted twice.  pull() and flush() release the rest.
+Status Stream::render_rosella_objects16(const std::vector<float>& objects16) {
+    const Status submitted =
+        rosella_.submit_frame(objects16.data(),
+                              pending_metadata_.has_update ? &pending_metadata_.update : nullptr,
+                              static_cast<std::int64_t>(info_.frames_out),
+                              pending_metadata_.outer_offset,
+                              static_cast<std::int64_t>(config_.object_delay_samples));
+    if (!submitted.ok()) {
+        return submitted;
+    }
+    std::vector<double> produced;
+    rosella_.take_output(&produced);
+    if (!produced.empty()) {
+        rosella_pending_.insert(rosella_pending_.end(), produced.begin(), produced.end());
+    }
+    release_rosella_output(kFrameSamples);
+    info_.frames_out++;
+    // Counted as the runtime produces it, which is also how the SOFA path counts:
+    // the totals are identical, only the frame they appear on differs.
+    info_.samples_out += produced.size() / 2u;
+    return Status::success();
+}
+
+void Stream::release_rosella_output(std::size_t limit) {
+    if (!rosella_ready_ || limit == 0u) {
+        return;
+    }
+    const std::size_t count = std::min(limit, rosella_pending_samples());
+    if (count == 0u) {
+        return;
+    }
+    const std::size_t values = count * 2u;
+    for (std::size_t index = 0; index < values; ++index) {
+        output_.push_back(static_cast<float>(rosella_pending_[rosella_read_offset_ + index]));
+    }
+    rosella_read_offset_ += values;
+    if (rosella_read_offset_ == rosella_pending_.size()) {
+        rosella_pending_.clear();
+        rosella_read_offset_ = 0;
+    }
+}
+
 Status Stream::pull(float* destination, std::size_t capacity_samples, std::size_t* produced) {
     if (produced != nullptr) {
         *produced = 0;
@@ -300,6 +405,10 @@ Status Stream::pull(float* destination, std::size_t capacity_samples, std::size_
     if (destination == nullptr || produced == nullptr) {
         return Status::fail(JOC_ERR_INVALID_ARGUMENT, stage::kOutput, "null pull buffer");
     }
+    // Rendered Rosella samples that the frame-at-a-time release above has not
+    // handed over yet are still the caller's to take; releasing them here keeps
+    // buffered_samples() and the amount pull() can deliver the same number.
+    release_rosella_output(capacity_samples);
     const std::size_t available = buffered_samples();
     const std::size_t count = std::min(capacity_samples, available);
     if (count != 0u) {
@@ -332,12 +441,28 @@ Status Stream::flush() {
         }
         info_.samples_out += tail.size() / 2u;
     }
+    if (rosella_ready_) {
+        std::vector<double> tail;
+        const Status drained =
+            rosella_.finish(rosella_.finish_capacity(config_.tail_seconds), &tail);
+        if (!drained.ok()) {
+            return drained;
+        }
+        // Everything the runtime produced as the program is released first: the
+        // tail only sounds after it.  The program samples were already counted by
+        // render_rosella_objects16, so only the tail is added here.
+        release_rosella_output(rosella_pending_samples());
+        for (const double value : tail) {
+            output_.push_back(static_cast<float>(value));
+        }
+        info_.samples_out += tail.size() / 2u;
+    }
     info_.ended = 1;
     return Status::success();
 }
 
 Status Stream::reset() {
-    if (rebuilder_ == nullptr && !speaker_enabled_ && !binaural_ready_ &&
+    if (rebuilder_ == nullptr && !speaker_enabled_ && !binaural_ready_ && !rosella_ready_ &&
         config_.input != JOC_STREAM_IN_PCM_OBJECTS16) {
         return Status::fail(JOC_ERR_STATE, stage::kRender, "stream is not created");
     }

@@ -25,6 +25,12 @@
 
 #include "joc_core.h"
 
+/* JOC_STATIC (building the sources directly into an application): joc_core.h above already installs the empty JOC_API. */
+#if defined(JOC_STATIC) && !defined(JOC_API)
+  #define JOC_API
+  #define JOC_CALL __cdecl
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -58,6 +64,16 @@ typedef struct joc_stream_config {
     double gain_db;                   /* default 0 */
     uint32_t native_threads;
     uint32_t reserved;
+    /* Binaural HRTF input, the same three shapes joc_task_config accepts: when
+     * hrtf_sofa_path is set the library compiles it with hrtf_cache_policy /
+     * hrtf_cache_dir / hrtf_radius_m and hrtf_path is unused; when
+     * personalized_headphone_path is set the Rosella runtime renders instead.
+     * hrtf_path stays the fallback/advanced input that reads a .jochrtf directly. */
+    const char* hrtf_sofa_path;              /* SOFA SimpleFreeFieldHRIR input */
+    const char* personalized_headphone_path; /* Rosella .personalized_headphone input */
+    const char* hrtf_cache_dir;              /* disk cache directory for SOFA compilation */
+    uint32_t hrtf_cache_policy;              /* joc_hrtf_cache_policy: 0 none, 1 memory, 2 disk */
+    double hrtf_radius_m;                    /* SOFA measurement-radius shell, default 1.0 */
 } joc_stream_config;
 
 typedef struct joc_stream_buffer {

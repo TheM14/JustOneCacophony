@@ -9,6 +9,7 @@
 #include "binaural/binaural_runtime.h"
 #include "eac3_transport/eac3_reader.h"
 #include "foundation/status.h"
+#include "hrtf/rosella_renderer.h"
 #include "joc_core.h"
 #include "joc_stream.h"
 #include "oamd/oamd_parser.h"
@@ -28,6 +29,13 @@ struct Config {
     std::uint32_t object_delay_samples = 1473;
     double gain_db = 0.0;
     std::uint32_t native_threads = 0;
+    // The three HRTF shapes of joc_task_config, in its precedence order: a Rosella
+    // model wins over a SOFA, and hrtf_path (.jochrtf) is the fallback.
+    std::string hrtf_sofa_path;
+    std::string personalized_headphone_path;
+    std::string hrtf_cache_dir;
+    std::uint32_t hrtf_cache_policy = JOC_HRTF_CACHE_MEMORY;
+    double hrtf_radius_m = 1.0;
 };
 
 struct Info {
@@ -67,14 +75,26 @@ public:
     Status reset();
 
     const Info& info() const { return info_; }
-    // Per-channel sample count, not the interleaved float count.
+    // Per-channel sample count, not the interleaved float count.  The Rosella
+    // runtime renders in its own chunk size, so its output waits in a FIFO before
+    // it is released one frame at a time; those samples are rendered and unpulled
+    // as well, so the reported backlog has to include them.
     std::size_t buffered_samples() const {
-        return output_channels_ != 0u ? (output_.size() - read_offset_) / output_channels_ : 0u;
+        return output_channels_ != 0u
+                   ? (output_.size() - read_offset_) / output_channels_ + rosella_pending_samples()
+                   : 0u;
     }
 
 private:
     Status process_ready_frames();
     Status render_objects16(const std::vector<float>& objects16);
+    Status render_rosella_objects16(const std::vector<float>& objects16);
+    // Moves at most `limit` rendered stereo samples per channel out of the FIFO
+    // into output_, oldest sample first.
+    void release_rosella_output(std::size_t limit);
+    std::size_t rosella_pending_samples() const {
+        return rosella_ready_ ? (rosella_pending_.size() - rosella_read_offset_) / 2u : 0u;
+    }
     void reset_state();
 
     Config config_;
@@ -92,9 +112,13 @@ private:
     ejoc_renderer_handle rebuilder_ = nullptr;
     speaker::SpeakerStep speaker_;
     binaural::SofaBinauralRuntime binaural_;
+    hrtf::RosellaRuntime rosella_;
+    std::vector<double> rosella_pending_;
+    std::size_t rosella_read_offset_ = 0;
     bool speaker_enabled_ = false;
     bool binaural_enabled_ = false;
     bool binaural_ready_ = false;
+    bool rosella_ready_ = false;
     float gain_ = 1.0f;
 };
 
