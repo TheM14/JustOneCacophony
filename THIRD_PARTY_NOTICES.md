@@ -1,31 +1,8 @@
 # Third-party notices / 第三方通知
 
-本仓库包含 JustOneCacophony 原生库的逐字节副本（下称"复用文件"），以及遵循公开标准实现的
-滤波器组表。本文件记录这些来源、公开标准依据与权利边界。
-
-## 复用文件
-
-以下文件是本项目（JustOneCacophony，MIT）原生 C++ 库的逐字节副本，不修改、不追加注释：
-
-| 本仓库路径 | 上游路径 | SHA-256（前 16 位） |
-|---|---|---|
-| `src/joc_core/eac3joc_core.cpp` | `native/src/eac3joc_core.cpp` | `1978eea64a2616fa` |
-| `src/joc_core/qmf_tables.h` | `native/src/qmf_tables.h` | `c205ea187e956e87` |
-| `src/speaker/speaker_renderer.cpp` | `native/src/speaker_renderer.cpp` | `96f36f40daf86eec` |
-| `src/speaker/speaker_layouts.h` | `native/src/speaker_layouts.h` | `51e24c11be09787f` |
-| `src/binaural/binaural_renderer.cpp` | `native/src/binaural_renderer.cpp` | `d579803f0f5a6699` |
-| `src/joc_bitstream/joc_huffman_tables.h` | `native/src/joc_huffman_tables.h` | `698498b3778d88db` |
-| `include/eac3joc_core.h` | `native/include/eac3joc_core.h` | `7392f48dfd840656` |
-
-上游修订：`6bc2c2885666bb151bb66af93472199af9a99b81`。
-
-## 派生文件
-
-`src/binaural/sofa_binaural_renderer.cpp` 是上游 `native/src/sofa_binaural_renderer.cpp` 的派生
-实现：同一 `ejoc_sofa_binaural_*` C ABI，增加表提升、结果记忆化、输入校验与 SIMD 派发。它
-**不属于**逐字节副本，也不受"不得修改"约束，但来源固定为上述上游修订，对应上游源文件的
-SHA-256 为 `81b485e4c71907672ab308ddc382284acf29161cee93d7906785a4cce58941c7`，输出与原
-实现逐位相同（见该文件头部的验证记录）。
+本文件记录 64-QMF / 77-hybrid 滤波器组表（`src/hrtf/public_filterbank.h`、
+`src/joc_core/qmf_tables.h`）与 JOC Huffman 表（`src/joc_bitstream/joc_huffman_tables.h`）
+的公开标准来源，以及 HRTF 数据与专利的边界说明。
 
 ## 公开标准来源
 
