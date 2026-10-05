@@ -7,10 +7,10 @@
 
 #include "simd/cpu_probe.h"
 
-#if defined(_M_X64)
+#if defined(_M_X64) || defined(_M_IX86)
 #include <immintrin.h>
 #include <intrin.h>
-#elif defined(__x86_64__)
+#elif defined(__x86_64__) || defined(__i386__)
 #include <cpuid.h>
 #endif
 
@@ -21,10 +21,13 @@
 namespace joc::simd {
 namespace {
 
-// ------------------------------------------------------------------- x86-64 --
-#if defined(_M_X64) || defined(__x86_64__)
+// ---------------------------------------------------------------------- x86 --
+// Both pointer sizes are probed: AVX2 is not an x86-64-only ISA, and gating this
+// on _M_X64 / __x86_64__ left every 32-bit x86 build reporting "no features",
+// which pinned the dispatcher to the scalar kernels.
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
 
-#if defined(_M_X64)
+#if defined(_M_X64) || defined(_M_IX86)
 
 // CPUID tells us what the silicon can do; XCR0 tells us whether the OS saves the
 // state the wider registers need.  Both have to agree, or the first AVX
@@ -53,7 +56,7 @@ CpuFeatures probe_x86() noexcept {
     return features;
 }
 
-#else  // GCC/Clang on x86-64
+#else  // GCC/Clang on x86
 
 // The compiler runtime performs the same CPUID + XGETBV probe (libgcc's cpuinfo
 // checks XCR0 before it reports AVX), which keeps this file free of inline

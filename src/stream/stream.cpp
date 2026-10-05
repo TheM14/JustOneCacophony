@@ -221,7 +221,7 @@ Status Stream::push_eac3(const std::uint8_t* data, std::size_t size, std::size_t
         }
         metadata_.push_back(entry);
     }
-    return process_ready_frames();
+    return process_ready_frames(false);
 }
 
 Status Stream::push_bed(const float* interleaved6, std::size_t samples, std::size_t* consumed) {
@@ -235,7 +235,7 @@ Status Stream::push_bed(const float* interleaved6, std::size_t samples, std::siz
         bed_pending_.insert(bed_pending_.end(), interleaved6,
                             interleaved6 + samples * kBedChannels);
     }
-    return process_ready_frames();
+    return process_ready_frames(false);
 }
 
 Status Stream::push_objects16(const float* planar16, std::size_t samples, std::size_t* consumed) {
@@ -267,8 +267,13 @@ Status Stream::push_objects16(const float* planar16, std::size_t samples, std::s
     return Status::success();
 }
 
-Status Stream::process_ready_frames() {
+Status Stream::process_ready_frames(bool drain_all) {
     while (bed_pending_.size() / kBedChannels >= kFrameSamples && !metadata_.empty()) {
+        // Stop before rendering what the caller is not about to take: the frames
+        // stay queued, in order, and are rendered by a later push or by flush().
+        if (!drain_all && buffered_samples() >= kMaxRenderAheadSamples) {
+            break;
+        }
         const FrameMetadata entry = metadata_.front();
         metadata_.pop_front();
 
@@ -429,6 +434,13 @@ Status Stream::pull(float* destination, std::size_t capacity_samples, std::size_
 }
 
 Status Stream::flush() {
+    // Input has ended, so the render-ahead bound has nothing left to wait for:
+    // every frame still queued has to reach the renderer before its tail is
+    // drained, or the end of the file would be dropped.
+    const Status remaining = process_ready_frames(true);
+    if (!remaining.ok()) {
+        return remaining;
+    }
     if (binaural_ready_) {
         std::vector<double> tail;
         const Status drained =

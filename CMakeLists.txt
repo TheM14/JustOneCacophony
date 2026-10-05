@@ -124,6 +124,8 @@ set(JOC_INTERNAL_SOURCES
 # The x86-64 baseline is SSE2 and there is no SSE2 unit on purpose: a 128-bit
 # SSE2 register is the register a scalar double already occupies, so SSE2 cannot
 # widen double-precision arithmetic and hand-written SSE2 would only add moves.
+# 32-bit x86 does take the AVX2 unit: AVX2 is not an x86-64-only ISA, and it is
+# the only vector path such a build can have.
 # AArch64 needs no probe either; ASIMD is architectural, and the NEON unit is
 # how a vector path gets selected there.
 # ---------------------------------------------------------------------------
@@ -141,12 +143,18 @@ if(CMAKE_SIZEOF_VOID_P EQUAL 8)
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(ARM64|arm64|aarch64|AARCH64)$")
         set(JOC_ARCH aarch64)
     endif()
+elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(i[3-6]86|x86|X86|IA32)$")
+        set(JOC_ARCH x86_32)
+    endif()
 endif()
 if(NOT JOC_ARCH AND DEFINED CMAKE_CXX_COMPILER_ARCHITECTURE_ID)
     if(CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "x64")
         set(JOC_ARCH x86_64)
     elseif(CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "ARM64")
         set(JOC_ARCH aarch64)
+    elseif(CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "X86")
+        set(JOC_ARCH x86_32)
     endif()
 endif()
 
@@ -172,6 +180,19 @@ if(JOC_ARCH STREQUAL "x86_64")
         else()
             set_source_files_properties(src/simd/kernels_intrin_avx512.cpp
                 PROPERTIES COMPILE_OPTIONS "-mavx512f")
+        endif()
+    endif()
+elseif(JOC_ARCH STREQUAL "x86_32")
+    # AVX2 only: 32-bit mode addresses ZMM0-7, so the AVX-512 unit is not a fit.
+    if(JOC_ENABLE_AVX2)
+        list(APPEND JOC_SIMD_SOURCES src/simd/kernels_intrin_avx2.cpp)
+        list(APPEND JOC_SIMD_DEFINES JOC_SIMD_HAVE_AVX2=1)
+        if(MSVC)
+            set_source_files_properties(src/simd/kernels_intrin_avx2.cpp
+                PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
+        else()
+            set_source_files_properties(src/simd/kernels_intrin_avx2.cpp
+                PROPERTIES COMPILE_OPTIONS "-mavx2")
         endif()
     endif()
 elseif(JOC_ARCH STREQUAL "aarch64")

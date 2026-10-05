@@ -85,8 +85,18 @@ public:
                    : 0u;
     }
 
+    // A push renders every frame it makes ready, and the caller decides how far
+    // its demuxer runs ahead of playback.  Without a bound, a demuxer that runs
+    // far ahead turns its whole read-ahead burst into latency on whichever pull()
+    // happens to follow it: the samples are not wasted, but they are rendered at
+    // the worst possible moment.  Rendering therefore stops once this many
+    // samples are rendered and unpulled; flush() lifts the bound so the frames
+    // still waiting when the input ends are drained rather than dropped.
+    static constexpr std::size_t kMaxRenderAheadSamples = 16384;
+
 private:
-    Status process_ready_frames();
+    // `drain_all` ignores kMaxRenderAheadSamples and renders every ready frame.
+    Status process_ready_frames(bool drain_all);
     Status render_objects16(const std::vector<float>& objects16);
     Status render_rosella_objects16(const std::vector<float>& objects16);
     // Moves at most `limit` rendered stereo samples per channel out of the FIFO
