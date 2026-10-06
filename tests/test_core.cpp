@@ -1,5 +1,6 @@
 // Unit tests for the engine's self-contained parts: no test data files, no
 // reference implementation, no external framework.  Run with `ctest` or directly.
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <cstdint>
@@ -30,6 +31,7 @@
 #include "io/wav_writer.h"
 #include "io/zip_reader.h"
 #include "oamd/oamd_parser.h"
+#include "stream/stream.h"
 
 namespace {
 
@@ -707,6 +709,83 @@ void test_builtin_kernel_tables() {
           "f5beb3220e4530fcf28e7f4da7f07e821074265d118c911d61a590e00753a573");
 }
 
+// Drives one objects16 stream over `block` and returns what it renders.  With
+// `frame_at_a_time` each push carries a single frame; otherwise the whole batch
+// goes in at once.  `peak` reports the largest backlog a push left behind.
+std::vector<float> drive_objects16_stream(const std::vector<float>& block, std::size_t frames,
+                                          bool frame_at_a_time, std::size_t* peak) {
+    constexpr std::size_t kFrameValues = JOC_OUTPUT_CHANNELS * JOC_FRAME_SAMPLES;
+    joc::stream::Stream stream;
+    joc::stream::Config config;
+    config.input = JOC_STREAM_IN_PCM_OBJECTS16;
+    config.output = JOC_STREAM_OUT_SPEAKER;
+    config.layout = "5.1";
+    const joc::Status created = stream.create(config);
+    CHECK(created.ok());
+    if (!created.ok()) {
+        return {};
+    }
+    const std::size_t channels = stream.info().output_channels;
+    CHECK(channels != 0u);
+    std::vector<float> pulled(4096u * channels);
+    std::vector<float> rendered;
+    const auto drain = [&] {
+        for (;;) {
+            std::size_t produced = 0;
+            const joc::Status status = stream.pull(pulled.data(), 4096u, &produced);
+            CHECK(status.ok());
+            if (!status.ok() || produced == 0u) {
+                return;
+            }
+            rendered.insert(rendered.end(), pulled.begin(),
+                            pulled.begin() + static_cast<std::ptrdiff_t>(produced * channels));
+        }
+    };
+
+    std::size_t consumed = 0;
+    while (consumed < frames) {
+        const std::size_t count = frame_at_a_time ? 1u : frames - consumed;
+        std::size_t taken = 0;
+        const joc::Status pushed = stream.push_objects16(
+            block.data() + consumed * kFrameValues, count * JOC_FRAME_SAMPLES, &taken);
+        CHECK(pushed.ok());
+        if (!pushed.ok()) {
+            return rendered;
+        }
+        // A push takes everything it is given; only the rendering is bounded.
+        CHECK(taken == count * JOC_FRAME_SAMPLES);
+        *peak = std::max(*peak, stream.buffered_samples());
+        consumed += taken / JOC_FRAME_SAMPLES;
+        drain();
+    }
+    CHECK(stream.flush().ok());
+    drain();
+    return rendered;
+}
+
+// A push renders every frame it makes ready, so the stream bounds how far ahead of
+// the caller it renders.  A batch pushed at once must therefore leave a bounded
+// backlog, and it must render the same samples as pushing one frame at a time.
+void test_stream_render_ahead() {
+    constexpr std::size_t kFrames = 32;
+    constexpr std::size_t kFrameValues = JOC_OUTPUT_CHANNELS * JOC_FRAME_SAMPLES;
+    std::vector<float> block(kFrames * kFrameValues);
+    for (std::size_t index = 0; index < block.size(); ++index) {
+        block[index] = static_cast<float>(std::sin(static_cast<double>(index) * 0.0007) * 0.25);
+    }
+
+    std::size_t frame_peak = 0;
+    const std::vector<float> reference =
+        drive_objects16_stream(block, kFrames, true, &frame_peak);
+    std::size_t batch_peak = 0;
+    const std::vector<float> batched = drive_objects16_stream(block, kFrames, false, &batch_peak);
+
+    CHECK(!reference.empty());
+    CHECK(batched == reference);
+    // The batch is larger than the bound, so it cannot all be rendered at once.
+    CHECK(batch_peak < kFrames * JOC_FRAME_SAMPLES / 2u);
+}
+
 }  // namespace
 
 int main() {
@@ -728,6 +807,7 @@ int main() {
     test_sofa_reader_errors();
     test_hrtf_cache_policy();
     test_rosella_model_errors();
+    test_stream_render_ahead();
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

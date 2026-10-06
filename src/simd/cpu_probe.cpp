@@ -22,9 +22,7 @@ namespace joc::simd {
 namespace {
 
 // ---------------------------------------------------------------------- x86 --
-// Both pointer sizes are probed: AVX2 is not an x86-64-only ISA, and gating this
-// on _M_X64 / __x86_64__ left every 32-bit x86 build reporting "no features",
-// which pinned the dispatcher to the scalar kernels.
+// AVX2 is not an x86-64-only ISA, so both pointer sizes are probed.
 #if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
 
 #if defined(_M_X64) || defined(_M_IX86)

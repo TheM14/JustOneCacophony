@@ -39,14 +39,14 @@ typedef struct joc_stream joc_stream;
 
 typedef enum joc_stream_input {
     JOC_STREAM_IN_EAC3 = 0,          /* bare E-AC-3 syncframes (the metadata stream) */
-    JOC_STREAM_IN_PCM_OBJECTS16 = 1, /* 16-channel objects16, decoded by the host   */
+    JOC_STREAM_IN_PCM_OBJECTS16 = 1, /* objects16 frames, planar [16][1536] each    */
     JOC_STREAM_IN_CORE_PCM = 3       /* the 5.1 core PCM of the pushed E-AC-3 frames */
 } joc_stream_input;
 
 typedef enum joc_stream_output {
-    JOC_STREAM_OUT_PCM_OBJECTS16 = 0, /* planar [16][samples] float32        */
-    JOC_STREAM_OUT_SPEAKER = 1,       /* interleaved [samples][channels] f32 */
-    JOC_STREAM_OUT_BINAURAL = 2       /* interleaved [samples][2] f32        */
+    JOC_STREAM_OUT_PCM_OBJECTS16 = 0, /* objects16 frames, planar [16][1536] each    */
+    JOC_STREAM_OUT_SPEAKER = 1,       /* interleaved [samples][channels] f32         */
+    JOC_STREAM_OUT_BINAURAL = 2       /* interleaved [samples][2] f32                */
 } joc_stream_output;
 
 typedef struct joc_stream_config {

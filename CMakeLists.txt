@@ -260,7 +260,9 @@ endif()
 if(JOC_BUILD_TESTS)
     enable_testing()
     add_executable(joc_tests tests/test_core.cpp)
-    target_link_libraries(joc_tests PRIVATE joc_core_impl)
+    # The stream tests reach the core the shared library exports, so the static
+    # library alone is not enough to link them.
+    target_link_libraries(joc_tests PRIVATE joc_core_impl joc_core)
     target_include_directories(joc_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     add_test(NAME core COMMAND joc_tests)
     # The public headers must stay valid C and C++: these targets exist to prove it.

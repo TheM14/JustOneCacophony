@@ -38,7 +38,10 @@ void Stream::reset_state() {
     reader_ = eac3::FrameReader();
     metadata_.clear();
     bed_pending_.clear();
+    bed_read_offset_ = 0;
     objects16_.clear();
+    objects_pending_.clear();
+    objects_read_offset_ = 0;
     output_.clear();
     read_offset_ = 0;
     info_ = Info();
@@ -245,54 +248,82 @@ Status Stream::push_objects16(const float* planar16, std::size_t samples, std::s
     if (planar16 == nullptr || samples == 0u) {
         return Status::success();
     }
-    // Rendered immediately: the host has already done the JOC rebuild.
+    // Queued as whole frames, each planar [16][kFrameSamples]: the shape the
+    // objects16 output writes, so a host can feed a batch back unchanged.
+    constexpr std::size_t kFrameValues =
+        static_cast<std::size_t>(JOC_OUTPUT_CHANNELS) * kFrameSamples;
     for (std::size_t offset = 0; offset < samples; offset += kFrameSamples) {
         const std::size_t count = std::min(kFrameSamples, samples - offset);
-        std::vector<float> frame(static_cast<std::size_t>(JOC_OUTPUT_CHANNELS) * kFrameSamples,
-                                 0.0f);
+        const std::size_t base = objects_pending_.size();
+        const float* frame = planar16 + (offset / kFrameSamples) * kFrameValues;
+        objects_pending_.resize(base + kFrameValues, 0.0f);
         for (std::size_t channel = 0; channel < JOC_OUTPUT_CHANNELS; ++channel) {
-            std::memcpy(frame.data() + channel * kFrameSamples,
-                        planar16 + channel * samples + offset, count * sizeof(float));
+            std::memcpy(objects_pending_.data() + base + channel * kFrameSamples,
+                        frame + channel * kFrameSamples, count * sizeof(float));
         }
-        ++info_.frames_in;
-        info_.samples_in += count;
-        const Status rendered = render_objects16(frame);
+    }
+    return process_objects16_frames(false);
+}
+
+Status Stream::process_objects16_frames(bool drain_all) {
+    constexpr std::size_t kFrameValues =
+        static_cast<std::size_t>(JOC_OUTPUT_CHANNELS) * kFrameSamples;
+    while (objects_pending_.size() - objects_read_offset_ >= kFrameValues) {
+        // Leave the rest queued, in order, for a later push or for flush().
+        if (!drain_all && buffered_samples() >= kMaxRenderAheadSamples) {
+            break;
+        }
+        const auto first = objects_pending_.begin() +
+                           static_cast<std::ptrdiff_t>(objects_read_offset_);
+        objects_frame_.assign(first, first + static_cast<std::ptrdiff_t>(kFrameValues));
+        objects_read_offset_ += kFrameValues;
+        const Status rendered = render_objects16(objects_frame_);
         if (!rendered.ok()) {
             return rendered;
         }
-        if (count != kFrameSamples) {
-            break;  // a partial frame is dropped; the host should push whole frames
-        }
+        ++info_.frames_in;
+        info_.samples_in += kFrameSamples;
+    }
+    if (objects_read_offset_ == objects_pending_.size()) {
+        objects_pending_.clear();
+        objects_read_offset_ = 0;
+    } else if (objects_read_offset_ >= (1u << 20)) {
+        // Erasing from the front moves the remainder, so it is only worth doing
+        // once the consumed prefix is large enough to pay for the move.
+        objects_pending_.erase(
+            objects_pending_.begin(),
+            objects_pending_.begin() + static_cast<std::ptrdiff_t>(objects_read_offset_));
+        objects_read_offset_ = 0;
     }
     return Status::success();
 }
 
 Status Stream::process_ready_frames(bool drain_all) {
-    while (bed_pending_.size() / kBedChannels >= kFrameSamples && !metadata_.empty()) {
-        // Stop before rendering what the caller is not about to take: the frames
-        // stay queued, in order, and are rendered by a later push or by flush().
+    while (bed_pending_.size() - bed_read_offset_ >= kFrameSamples * kBedChannels &&
+           !metadata_.empty()) {
+        // Leave the rest queued, in order, for a later push or for flush().
         if (!drain_all && buffered_samples() >= kMaxRenderAheadSamples) {
             break;
         }
         const FrameMetadata entry = metadata_.front();
         metadata_.pop_front();
 
-        std::vector<float> bed5(static_cast<std::size_t>(JOC_CORE_CHANNELS) * kFrameSamples, 0.0f);
-        std::vector<float> lfe(kFrameSamples, 0.0f);
+        const float* bed = bed_pending_.data() + bed_read_offset_;
+        bed5_.resize(static_cast<std::size_t>(JOC_CORE_CHANNELS) * kFrameSamples);
+        lfe_.resize(kFrameSamples);
         for (std::size_t sample = 0; sample < kFrameSamples; ++sample) {
             for (std::size_t channel = 0; channel < JOC_CORE_CHANNELS; ++channel) {
-                bed5[channel * kFrameSamples + sample] =
-                    bed_pending_[sample * kBedChannels + kCoreChannels[channel]];
+                bed5_[channel * kFrameSamples + sample] =
+                    bed[sample * kBedChannels + kCoreChannels[channel]];
             }
-            lfe[sample] = bed_pending_[sample * kBedChannels + kLfeChannel];
+            lfe_[sample] = bed[sample * kBedChannels + kLfeChannel];
         }
-        bed_pending_.erase(bed_pending_.begin(),
-                           bed_pending_.begin() + static_cast<std::ptrdiff_t>(kFrameSamples *
-                                                                             kBedChannels));
+        bed_read_offset_ += kFrameSamples * kBedChannels;
+        compact_bed_pending();
 
         std::string error;
-        const Status rebuilt = joc::rebuild_objects16(rebuilder_, entry.params, bed5.data(),
-                                                      lfe.data(), gain_, &objects16_, &error);
+        const Status rebuilt = joc::rebuild_objects16(rebuilder_, entry.params, bed5_.data(),
+                                                      lfe_.data(), gain_, &objects16_, &error);
         if (!rebuilt.ok()) {
             return Status::fail(rebuilt.code(), stage::kDsp, error);
         }
@@ -305,6 +336,22 @@ Status Stream::process_ready_frames(bool drain_all) {
         info_.samples_in += kFrameSamples;
     }
     return Status::success();
+}
+
+void Stream::compact_bed_pending() {
+    if (bed_read_offset_ == 0) {
+        return;
+    }
+    if (bed_read_offset_ == bed_pending_.size()) {
+        bed_pending_.clear();
+        bed_read_offset_ = 0;
+    } else if (bed_read_offset_ >= (1u << 20)) {
+        // Erasing from the front moves the remainder, so it is only worth doing
+        // once the consumed prefix is large enough to pay for the move.
+        bed_pending_.erase(bed_pending_.begin(),
+                           bed_pending_.begin() + static_cast<std::ptrdiff_t>(bed_read_offset_));
+        bed_read_offset_ = 0;
+    }
 }
 
 Status Stream::render_objects16(const std::vector<float>& objects16) {
@@ -324,6 +371,7 @@ Status Stream::render_objects16(const std::vector<float>& objects16) {
         if (!stepped.ok()) {
             return Status::fail(stepped.code(), stage::kRender, error);
         }
+        output_.reserve(output_.size() + speaker_.output.size());
         for (const double value : speaker_.output) {
             output_.push_back(static_cast<float>(value));
         }
@@ -344,13 +392,13 @@ Status Stream::render_objects16(const std::vector<float>& objects16) {
     if (!submitted.ok()) {
         return submitted;
     }
-    std::vector<double> produced;
-    binaural_.take_output(&produced);
-    for (const double value : produced) {
+    binaural_.take_output(&produced_);
+    output_.reserve(output_.size() + produced_.size());
+    for (const double value : produced_) {
         output_.push_back(static_cast<float>(value));
     }
     info_.frames_out++;
-    info_.samples_out += produced.size() / 2u;
+    info_.samples_out += produced_.size() / 2u;
     return Status::success();
 }
 
@@ -371,16 +419,15 @@ Status Stream::render_rosella_objects16(const std::vector<float>& objects16) {
     if (!submitted.ok()) {
         return submitted;
     }
-    std::vector<double> produced;
-    rosella_.take_output(&produced);
-    if (!produced.empty()) {
-        rosella_pending_.insert(rosella_pending_.end(), produced.begin(), produced.end());
+    rosella_.take_output(&produced_);
+    if (!produced_.empty()) {
+        rosella_pending_.insert(rosella_pending_.end(), produced_.begin(), produced_.end());
     }
     release_rosella_output(kFrameSamples);
     info_.frames_out++;
     // Counted as the runtime produces it, which is also how the SOFA path counts:
     // the totals are identical, only the frame they appear on differs.
-    info_.samples_out += produced.size() / 2u;
+    info_.samples_out += produced_.size() / 2u;
     return Status::success();
 }
 
@@ -393,6 +440,7 @@ void Stream::release_rosella_output(std::size_t limit) {
         return;
     }
     const std::size_t values = count * 2u;
+    output_.reserve(output_.size() + values);
     for (std::size_t index = 0; index < values; ++index) {
         output_.push_back(static_cast<float>(rosella_pending_[rosella_read_offset_ + index]));
     }
@@ -434,12 +482,15 @@ Status Stream::pull(float* destination, std::size_t capacity_samples, std::size_
 }
 
 Status Stream::flush() {
-    // Input has ended, so the render-ahead bound has nothing left to wait for:
-    // every frame still queued has to reach the renderer before its tail is
-    // drained, or the end of the file would be dropped.
+    // Input has ended, so drain what the cap held back: nothing else will
+    // trigger rendering.
     const Status remaining = process_ready_frames(true);
     if (!remaining.ok()) {
         return remaining;
+    }
+    const Status objects = process_objects16_frames(true);
+    if (!objects.ok()) {
+        return objects;
     }
     if (binaural_ready_) {
         std::vector<double> tail;
@@ -448,6 +499,7 @@ Status Stream::flush() {
         if (!drained.ok()) {
             return drained;
         }
+        output_.reserve(output_.size() + tail.size());
         for (const double value : tail) {
             output_.push_back(static_cast<float>(value));
         }
@@ -464,6 +516,7 @@ Status Stream::flush() {
         // tail only sounds after it.  The program samples were already counted by
         // render_rosella_objects16, so only the tail is added here.
         release_rosella_output(rosella_pending_samples());
+        output_.reserve(output_.size() + tail.size());
         for (const double value : tail) {
             output_.push_back(static_cast<float>(value));
         }

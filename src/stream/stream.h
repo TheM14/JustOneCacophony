@@ -85,13 +85,8 @@ public:
                    : 0u;
     }
 
-    // A push renders every frame it makes ready, and the caller decides how far
-    // its demuxer runs ahead of playback.  Without a bound, a demuxer that runs
-    // far ahead turns its whole read-ahead burst into latency on whichever pull()
-    // happens to follow it: the samples are not wasted, but they are rendered at
-    // the worst possible moment.  Rendering therefore stops once this many
-    // samples are rendered and unpulled; flush() lifts the bound so the frames
-    // still waiting when the input ends are drained rather than dropped.
+    // Cap on rendered samples that have not been pulled.  A push renders what it
+    // makes ready, so a caller that feeds faster than it pulls renders ahead.
     static constexpr std::size_t kMaxRenderAheadSamples = 16384;
 
 private:
@@ -106,6 +101,10 @@ private:
         return rosella_ready_ ? (rosella_pending_.size() - rosella_read_offset_) / 2u : 0u;
     }
     void reset_state();
+    // Drops the bed samples that have already been rendered, keeping the rest.
+    void compact_bed_pending();
+    // Renders the queued objects16 frames, bounded by kMaxRenderAheadSamples.
+    Status process_objects16_frames(bool drain_all);
 
     Config config_;
     Info info_;
@@ -113,7 +112,12 @@ private:
     std::deque<FrameMetadata> metadata_;
     FrameMetadata pending_metadata_;
     std::vector<float> bed_pending_;
-    std::vector<std::uint8_t> frame_copy_;
+    std::size_t bed_read_offset_ = 0;
+    std::vector<float> bed5_;
+    std::vector<float> lfe_;
+    std::vector<float> objects_pending_;
+    std::size_t objects_read_offset_ = 0;
+    std::vector<float> objects_frame_;
     std::vector<float> objects16_;
     std::vector<float> output_;
     std::size_t read_offset_ = 0;
@@ -125,6 +129,7 @@ private:
     hrtf::RosellaRuntime rosella_;
     std::vector<double> rosella_pending_;
     std::size_t rosella_read_offset_ = 0;
+    std::vector<double> produced_;
     bool speaker_enabled_ = false;
     bool binaural_enabled_ = false;
     bool binaural_ready_ = false;
