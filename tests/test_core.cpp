@@ -32,6 +32,7 @@
 #include "io/zip_reader.h"
 #include "oamd/oamd_parser.h"
 #include "stream/stream.h"
+#include "task/task.h"
 
 namespace {
 
@@ -171,6 +172,58 @@ void test_mini_json() {
     std::vector<joc::json::Member> duplicate;
     CHECK(!joc::json::parse_object(R"({"a":1,"a":2})", &duplicate, &error));
     CHECK(!joc::json::parse_object("[1,2]", &duplicate, &error));
+}
+
+void test_json_text() {
+    // Escaping matches json.dumps(..., ensure_ascii=False): the named escapes,
+    // \u00XX for the other control characters, UTF-8 bytes passed through.
+    CHECK(joc::json::quote("") == "\"\"");
+    CHECK(joc::json::quote("a\"b\\c") == "\"a\\\"b\\\\c\"");
+    CHECK(joc::json::quote("x\ny\tz") == "\"x\\ny\\tz\"");
+    CHECK(joc::json::quote(std::string("\b\f", 2u)) == "\"\\b\\f\"");
+    CHECK(joc::json::quote("\x01") == "\"\\u0001\"");
+    CHECK(joc::json::quote("月と私") == "\"月と私\"");
+
+    // Two-space indentation, one member per line, no trailing newline.
+    CHECK(joc::json::pretty_object({}) == "{}");
+    const std::string document = joc::json::pretty_object({
+        {"status", "0"},
+        {"message", joc::json::quote("cannot open C:\\out\\a.wav")},
+    });
+    CHECK(document == "{\n  \"status\": 0,\n  \"message\": "
+                      "\"cannot open C:\\\\out\\\\a.wav\"\n}");
+    std::vector<joc::json::Member> members;
+    std::string error;
+    CHECK(joc::json::parse_object(document, &members, &error));
+    std::string message;
+    CHECK(joc::json::as_string(*joc::json::find(members, "message"), &message) &&
+          message == "cannot open C:\\out\\a.wav");
+}
+
+void test_task_result_json() {
+    joc_task_result result{};
+    result.struct_size = sizeof(result);
+    result.status = JOC_TASK_FAILED;
+    result.error_code = JOC_ERR_OUTPUT_OPEN;
+    std::snprintf(result.error_stage, sizeof(result.error_stage), "%s", "output");
+    // A Windows path and a quote in the message: the document has to stay valid.
+    std::snprintf(result.error_message, sizeof(result.error_message), "%s",
+                  "cannot write \"C:\\out\\a.wav\"");
+    result.output_peak = 1.5;
+    result.t_total = 6.355818;
+    std::string text;
+    CHECK(joc::task::result_to_json(result, &text).ok());
+    CHECK(text.find("\n  \"error_message\": ") != std::string::npos);
+    std::vector<joc::json::Member> members;
+    std::string error;
+    CHECK(joc::json::parse_object(text, &members, &error));
+    std::string message;
+    CHECK(joc::json::as_string(*joc::json::find(members, "error_message"), &message) &&
+          message == "cannot write \"C:\\out\\a.wav\"");
+    double number = 0.0;
+    CHECK(joc::json::as_number(*joc::json::find(members, "output_peak"), &number) && number == 1.5);
+    CHECK(joc::json::as_number(*joc::json::find(members, "t_total"), &number) &&
+          number == 6.355818);
 }
 
 void test_npy() {
@@ -795,6 +848,8 @@ int main() {
     test_variable_bits();
     test_eac3_frame_bytes();
     test_mini_json();
+    test_json_text();
+    test_task_result_json();
     test_npy();
     test_oamd_and_adm_helpers();
     test_int24_packing();

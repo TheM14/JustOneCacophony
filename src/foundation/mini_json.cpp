@@ -7,6 +7,8 @@ namespace joc::json {
 
 namespace {
 
+const char kHexDigits[] = "0123456789abcdef";
+
 void skip_space(const std::string& text, std::size_t* index) {
     while (*index < text.size() &&
            (text[*index] == ' ' || text[*index] == '\t' || text[*index] == '\n' ||
@@ -108,6 +110,50 @@ bool read_compound(const std::string& text, std::size_t* index, std::string* out
 }
 
 }  // namespace
+
+std::string quote(const std::string& text) {
+    std::string out;
+    out.reserve(text.size() + 2u);
+    out.push_back('"');
+    for (const char character : text) {
+        const unsigned char value = static_cast<unsigned char>(character);
+        switch (character) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (value < 0x20u) {
+                    out += "\\u00";
+                    out.push_back(kHexDigits[value >> 4u]);
+                    out.push_back(kHexDigits[value & 0x0Fu]);
+                } else {
+                    out.push_back(character);
+                }
+                break;
+        }
+    }
+    out.push_back('"');
+    return out;
+}
+
+std::string pretty_object(const std::vector<Field>& fields) {
+    if (fields.empty()) {
+        return "{}";
+    }
+    std::string out = "{";
+    for (std::size_t index = 0u; index < fields.size(); ++index) {
+        out += index == 0u ? "\n  " : ",\n  ";
+        out += quote(fields[index].key);
+        out += ": ";
+        out += fields[index].value;
+    }
+    out += "\n}";
+    return out;
+}
 
 bool parse_object(const std::string& text, std::vector<Member>* out, std::string* error) {
     out->clear();

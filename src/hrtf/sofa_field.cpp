@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "foundation/fft.h"
+#include "foundation/mini_json.h"
 #include "foundation/sha256.h"
 #include "hrtf/public_filterbank.h"
 #include "io/npy_writer.h"
@@ -651,32 +652,10 @@ Status convert_coordinates(const std::vector<double>& values, std::size_t rows,
 
 // ------------------------------------------------------------- JSON ---------
 
-std::string json_escape(const std::string& text) {
-    std::string out = "\"";
-    for (const char character : text) {
-        const unsigned char value = static_cast<unsigned char>(character);
-        switch (character) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            case '\b': out += "\\b"; break;
-            case '\f': out += "\\f"; break;
-            default:
-                if (value < 0x20u) {
-                    char buffer[8];
-                    std::snprintf(buffer, sizeof(buffer), "\\u%04x", value);
-                    out += buffer;
-                } else {
-                    out.push_back(character);
-                }
-                break;
-        }
-    }
-    out += "\"";
-    return out;
-}
+// The cache metadata is the compact form the reference writes
+// (json.dumps(sort_keys=True, separators=(",", ":"))), so only the escaping is
+// shared with the indented report and metadata documents.
+std::string json_escape(const std::string& text) { return json::quote(text); }
 
 std::string json_number(double value) { return io::python_float_repr(value); }
 

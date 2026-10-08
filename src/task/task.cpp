@@ -30,6 +30,7 @@
 #include "binaural/binaural_runtime.h"
 #include "eac3_transport/eac3_reader.h"
 #include "emdf/emdf_parser.h"
+#include "foundation/mini_json.h"
 #include "foundation/sha256.h"
 #include "hrtf/jochrtf.h"
 #include "hrtf/rosella_model.h"
@@ -440,27 +441,6 @@ Status decide_output_format(const Settings& cfg, telemetry::EventBus* bus, doubl
     return Status::fail(JOC_ERR_INVALID_CONFIG, stage::kOutput, "unknown clip action");
 }
 
-std::string json_escape(const std::string& text) {
-    std::string out;
-    out.reserve(text.size() + 8u);
-    for (const char character : text) {
-        switch (character) {
-            case '"': out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n"; break;
-            case '\r': out += "\\r"; break;
-            case '\t': out += "\\t"; break;
-            default:
-                if (static_cast<unsigned char>(character) < 0x20u) {
-                    out += fmt("\\u%04x", static_cast<unsigned>(character));
-                } else {
-                    out.push_back(character);
-                }
-        }
-    }
-    return out;
-}
-
 // Parses the bitstream without decoding or rendering: --metadata-only and the
 // diagnostic metadata reports.
 Status report_metadata(const Settings& cfg, telemetry::EventBus* bus, const std::string& eac3_path,
@@ -570,19 +550,22 @@ Status report_metadata(const Settings& cfg, telemetry::EventBus* bus, const std:
                     static_cast<unsigned long long>(oamd_payloads));
     }
     if (!cfg.metadata_json_path.empty()) {
-        std::string json = fmt(
-            "{\n  \"input\": \"%s\",\n  \"frames\": %llu,\n  \"objects_min\": %u,\n"
-            "  \"objects_mean\": %.6f,\n  \"objects_max\": %u,\n  \"clipgain_min\": %.9g,\n"
-            "  \"clipgain_max\": %.9g,\n  \"oamd_payloads\": %llu\n}\n",
-            json_escape(cfg.input_path).c_str(), static_cast<unsigned long long>(frames),
-            objects_min == 0xFFFFFFFFu ? 0u : objects_min, mean_objects, objects_max,
-            clipgain_min, clipgain_max, static_cast<unsigned long long>(oamd_payloads));
+        const std::string document = json::pretty_object({
+            {"input", json::quote(cfg.input_path)},
+            {"frames", std::to_string(frames)},
+            {"objects_min", std::to_string(objects_min == 0xFFFFFFFFu ? 0u : objects_min)},
+            {"objects_mean", fmt("%.6f", mean_objects)},
+            {"objects_max", std::to_string(objects_max)},
+            {"clipgain_min", fmt("%.9g", clipgain_min)},
+            {"clipgain_max", fmt("%.9g", clipgain_max)},
+            {"oamd_payloads", std::to_string(oamd_payloads)},
+        });
         std::ofstream output = fs_utf8::open_output(cfg.metadata_json_path);
         if (!output) {
             return Status::fail(JOC_ERR_OUTPUT_OPEN, stage::kOutput,
                                 "cannot write " + cfg.metadata_json_path);
         }
-        output << json;
+        output << document << "\n";
     }
     bus->emit(JOC_EV_METADATA_INDEXED, JOC_STAGE_METADATA, JOC_LOG_INFO,
               fmt("metadata: %llu frames, oamd payloads %llu",
@@ -1919,23 +1902,30 @@ Status result_to_json(const joc_task_result& result, std::string* out) {
     if (out == nullptr) {
         return Status::fail(JOC_ERR_INVALID_ARGUMENT, stage::kOutput, "null output");
     }
-    *out = fmt(
-        "{\"status\":%u,\"error_code\":%u,\"error_stage\":\"%s\",\"error_message\":\"%s\","
-        "\"input_frames\":%llu,\"output_samples\":%llu,\"duration_sec\":%.6f,"
-        "\"output_format_actual\":%u,\"output_peak\":%.9g,\"output_over_unity_values\":%llu,"
-        "\"output_file_bytes\":%llu,\"output_sha256\":\"%s\",\"oamd_payloads\":%llu,"
-        "\"oamd_transitions\":%llu,\"t_decode_bed\":%.6f,\"t_render\":%.6f,\"t_write\":%.6f,"
-        "\"t_render_dsp\":%.6f,\"t_write_file\":%.6f,\"t_total\":%.6f}",
-        result.status, result.error_code, result.error_stage, result.error_message,
-        static_cast<unsigned long long>(result.input_frames),
-        static_cast<unsigned long long>(result.output_samples), result.duration_sec,
-        result.output_format_actual, result.output_peak,
-        static_cast<unsigned long long>(result.output_over_unity_values),
-        static_cast<unsigned long long>(result.output_file_bytes), result.output_sha256,
-        static_cast<unsigned long long>(result.oamd_payloads),
-        static_cast<unsigned long long>(result.oamd_transitions), result.t_decode_bed,
-        result.t_render, result.t_write, result.t_render_dsp, result.t_write_file,
-        result.t_total);
+    // The string fields are escaped, so a Windows path or a quote in an error
+    // message still leaves the document valid JSON.
+    *out = json::pretty_object({
+        {"status", std::to_string(result.status)},
+        {"error_code", std::to_string(result.error_code)},
+        {"error_stage", json::quote(result.error_stage)},
+        {"error_message", json::quote(result.error_message)},
+        {"input_frames", std::to_string(result.input_frames)},
+        {"output_samples", std::to_string(result.output_samples)},
+        {"duration_sec", fmt("%.6f", result.duration_sec)},
+        {"output_format_actual", std::to_string(result.output_format_actual)},
+        {"output_peak", fmt("%.9g", result.output_peak)},
+        {"output_over_unity_values", std::to_string(result.output_over_unity_values)},
+        {"output_file_bytes", std::to_string(result.output_file_bytes)},
+        {"output_sha256", json::quote(result.output_sha256)},
+        {"oamd_payloads", std::to_string(result.oamd_payloads)},
+        {"oamd_transitions", std::to_string(result.oamd_transitions)},
+        {"t_decode_bed", fmt("%.6f", result.t_decode_bed)},
+        {"t_render", fmt("%.6f", result.t_render)},
+        {"t_write", fmt("%.6f", result.t_write)},
+        {"t_render_dsp", fmt("%.6f", result.t_render_dsp)},
+        {"t_write_file", fmt("%.6f", result.t_write_file)},
+        {"t_total", fmt("%.6f", result.t_total)},
+    });
     return Status::success();
 }
 
