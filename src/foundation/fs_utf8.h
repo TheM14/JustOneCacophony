@@ -33,6 +33,14 @@ std::string temp_directory();
 // report it.  Defaults are anchored here so they never depend on the CWD.
 std::string executable_path();
 
+// Resolves an executable reference to a concrete path.  A reference that carries a
+// directory separator is a location the caller chose, so it is kept verbatim when
+// it names a runnable file and rejected otherwise; a bare name is looked up on PATH
+// (through PATHEXT on Windows).  Empty means "could not be resolved", which lets a
+// caller report the name it was given instead of starting a child process that the
+// shell would have to find.
+std::string find_executable(const std::string& reference);
+
 // Streams: std::ifstream/ofstream accept a std::filesystem::path, which is the
 // portable way to open a UTF-8 path.
 std::ifstream open_input(const std::string& utf8_path);

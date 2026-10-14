@@ -346,6 +346,42 @@ void test_process_runner() {
     CHECK(result.output.find("boom") != std::string::npos);
 }
 
+void test_find_executable() {
+    // An executable reference has to become a concrete path: that is what turns the
+    // default "ffmpeg" into something a child process starts without a PATH search of
+    // its own, on both platforms.
+    const std::string bare =
+#if defined(_WIN32)
+        "cmd";
+#else
+        "sh";
+#endif
+    const std::string resolved = joc::fs_utf8::find_executable(bare);
+    CHECK(!resolved.empty());
+    CHECK(resolved.find_first_of("/\\") != std::string::npos);
+    CHECK(joc::fs_utf8::exists(resolved));
+    // An already concrete path is kept verbatim instead of being searched for again.
+    CHECK(joc::fs_utf8::find_executable(resolved) == resolved);
+    CHECK(joc::fs_utf8::find_executable("").empty());
+    CHECK(joc::fs_utf8::find_executable("joc_no_such_program_9f2c").empty());
+    // A reference with a directory separator names a location, so it is never answered
+    // by a same-named program found somewhere else.
+    CHECK(joc::fs_utf8::find_executable("joc_no_such_dir/joc_no_such_program_9f2c").empty());
+#if !defined(_WIN32)
+    // Without the execute bit the kernel refuses the file, so it is not a match.
+    const std::string plain = joc::fs_utf8::from_path(
+        joc::fs_utf8::to_path(joc::fs_utf8::temp_directory()) /
+        joc::fs_utf8::to_path("joc_not_executable_9f2c"));
+    std::FILE* file = joc::fs_utf8::fopen(plain, "wb");
+    CHECK(file != nullptr);
+    if (file != nullptr) {
+        std::fclose(file);
+    }
+    CHECK(joc::fs_utf8::find_executable(plain).empty());
+    CHECK(joc::fs_utf8::remove(plain) == 0);
+#endif
+}
+
 void test_npy_and_zip_writers() {
     using joc::io::NpyMember;
     // Python's repr, which is what json.dumps writes into the cache metadata.
@@ -855,6 +891,7 @@ int main() {
     test_int24_packing();
     test_utf8_paths();
     test_process_runner();
+    test_find_executable();
     test_builtin_kernel_tables();
     test_npy_and_zip_writers();
     test_sofa_canonicalize();

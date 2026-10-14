@@ -373,7 +373,7 @@ typedef struct joc_task_config {
 
     /* input */
     const char* input_path;        /* .eac3/.ec3/.m4a/... */
-    const char* ffmpeg_path;       /* NULL = "ffmpeg" from PATH */
+    const char* ffmpeg_path;       /* NULL = FFMPEG, then "ffmpeg" on PATH */
     const char* bed_path;          /* NULL = decode the core PCM with ffmpeg */
     const char* work_dir;          /* NULL = a temporary directory */
     double eac3_drc_scale;         /* 0 = DRC off (reference default) */

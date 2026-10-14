@@ -1,5 +1,6 @@
 #include "foundation/fs_utf8.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <vector>
@@ -12,13 +13,76 @@
 #include <fcntl.h>
 #include <io.h>
 #else
-#include <cstdlib>
 #include <unistd.h>
 #endif
 
 namespace joc::fs_utf8 {
 
 namespace fs = std::filesystem;
+
+namespace {
+
+#if defined(_WIN32)
+constexpr char kPathListSeparator = ';';
+#else
+constexpr char kPathListSeparator = ':';
+#endif
+
+// PATH (and PATHEXT) are separator-delimited lists.  An empty entry is kept: on both
+// platforms it means the current directory.
+std::vector<std::string> split_list(const char* value, char separator) {
+    std::vector<std::string> parts;
+    if (value == nullptr) {
+        return parts;
+    }
+    std::string current;
+    for (const char c : std::string(value)) {
+        if (c == separator) {
+            parts.push_back(current);
+            current.clear();
+            continue;
+        }
+        current.push_back(c);
+    }
+    parts.push_back(current);
+    return parts;
+}
+
+bool is_runnable_file(const std::string& utf8_path) {
+    std::error_code error;
+    if (!fs::is_regular_file(to_path(utf8_path), error) || error) {
+        return false;
+    }
+#if defined(_WIN32)
+    return true;
+#else
+    // Existence is not enough: a file without the execute bit cannot be started, so
+    // deciding here names the real problem instead of a later "exit code 126".
+    return ::access(utf8_path.c_str(), X_OK) == 0;
+#endif
+}
+
+bool carries_directory(const std::string& utf8_path) {
+#if defined(_WIN32)
+    return utf8_path.find_first_of("/\\") != std::string::npos;
+#else
+    return utf8_path.find('/') != std::string::npos;
+#endif
+}
+
+#if defined(_WIN32)
+// A bare name only resolves through PATHEXT on Windows.  The environment is the
+// authority; the classic four are the fallback when it is unset.
+std::vector<std::string> executable_extensions() {
+    std::vector<std::string> extensions = split_list(std::getenv("PATHEXT"), ';');
+    if (extensions.empty()) {
+        extensions = {".COM", ".EXE", ".BAT", ".CMD"};
+    }
+    return extensions;
+}
+#endif
+
+}  // namespace
 
 fs::path to_path(const std::string& utf8) {
     return fs::path(std::u8string(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size()));
@@ -110,6 +174,37 @@ std::string executable_path() {
 #else
     return std::string();
 #endif
+}
+
+std::string find_executable(const std::string& reference) {
+    if (reference.empty()) {
+        return std::string();
+    }
+    if (carries_directory(reference)) {
+        // A reference that already names a location is the caller's own decision:
+        // keep it verbatim rather than searching for a same-named program elsewhere.
+        return is_runnable_file(reference) ? reference : std::string();
+    }
+#if defined(_WIN32)
+    const bool named_with_extension = to_path(reference).has_extension();
+#endif
+    for (const std::string& entry : split_list(std::getenv("PATH"), kPathListSeparator)) {
+        const fs::path directory = to_path(entry.empty() ? std::string(".") : entry);
+        const std::string candidate = from_path(directory / to_path(reference));
+        if (is_runnable_file(candidate)) {
+            return candidate;
+        }
+#if defined(_WIN32)
+        if (!named_with_extension) {
+            for (const std::string& extension : executable_extensions()) {
+                if (is_runnable_file(candidate + extension)) {
+                    return candidate + extension;
+                }
+            }
+        }
+#endif
+    }
+    return std::string();
 }
 
 std::ifstream open_input(const std::string& utf8_path) {

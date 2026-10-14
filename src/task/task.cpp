@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -82,7 +83,12 @@ std::string fmt(const char* format, ...) {
 }
 
 struct Settings {
-    std::string input_path;    std::string ffmpeg_path = "ffmpeg";
+    std::string input_path;
+    // ffmpeg is a command rather than a path: the reference is what the caller asked
+    // for (and what a message names), the path is the executable it resolved to.
+    std::string ffmpeg_reference = "ffmpeg";
+    std::string ffmpeg_path;
+    bool ffmpeg_explicit = false;
     std::string bed_path;
     std::string work_dir;
     std::string output_path;
@@ -120,7 +126,19 @@ struct Settings {
 Settings normalise(const joc_task_config& raw) {
     Settings cfg;
     if (raw.input_path != nullptr) { cfg.input_path = raw.input_path; }
-    if (raw.ffmpeg_path != nullptr && raw.ffmpeg_path[0] != '\0') { cfg.ffmpeg_path = raw.ffmpeg_path; }
+    // Resolving ffmpeg here gives every caller the same lookup and gives the run a
+    // concrete executable instead of a name the child process has to find itself: an
+    // explicit configuration wins, then FFMPEG, then the plain name on PATH.
+    if (raw.ffmpeg_path != nullptr && raw.ffmpeg_path[0] != '\0') {
+        cfg.ffmpeg_reference = raw.ffmpeg_path;
+        cfg.ffmpeg_explicit = true;
+    } else {
+        const char* from_environment = std::getenv("FFMPEG");
+        if (from_environment != nullptr && from_environment[0] != '\0') {
+            cfg.ffmpeg_reference = from_environment;
+        }
+    }
+    cfg.ffmpeg_path = fs_utf8::find_executable(cfg.ffmpeg_reference);
     if (raw.bed_path != nullptr) { cfg.bed_path = raw.bed_path; }
     if (raw.work_dir != nullptr) { cfg.work_dir = raw.work_dir; }
     if (raw.output_path != nullptr) { cfg.output_path = raw.output_path; }
@@ -1001,9 +1019,26 @@ Status validate(const joc_task_config& raw, std::vector<joc_validation_issue>* i
         warn(JOC_ERR_INVALID_CONFIG, "native_threads",
              "native_threads is clamped to the 15 JOC objects");
     }
-    if (cfg.bed_path.empty() && !fs_utf8::exists(cfg.ffmpeg_path)) {
-        warn(JOC_ERR_LIBRARY_MISSING, "ffmpeg_path",
-             "bed PCM is not supplied, so ffmpeg must be reachable: " + cfg.ffmpeg_path);
+    // ffmpeg is needed exactly where the task shells out to it: unpacking a container,
+    // and decoding the core PCM when no bed is supplied.  An unresolvable executable is
+    // a hard error there, because the alternative is a run that fails inside the child
+    // process; an explicitly requested one that goes unused is only worth a note.
+    const bool elementary_stream_input =
+        ends_with(lower(cfg.input_path), ".eac3") || ends_with(lower(cfg.input_path), ".ec3");
+    const bool needs_ffmpeg =
+        !elementary_stream_input || (cfg.bed_path.empty() && !cfg.metadata_only);
+    if (cfg.ffmpeg_path.empty()) {
+        const std::string origin = cfg.ffmpeg_explicit ? " (--ffmpeg)" : "";
+        if (needs_ffmpeg) {
+            fail(JOC_ERR_LIBRARY_MISSING, "ffmpeg_path",
+                 "ffmpeg not found: '" + cfg.ffmpeg_reference + "'" + origin +
+                     " is not an executable file and is not on PATH; pass --ffmpeg PATH, set the "
+                     "FFMPEG environment variable, or supply an already decoded --bed PCM");
+        } else if (cfg.ffmpeg_explicit) {
+            warn(JOC_ERR_LIBRARY_MISSING, "ffmpeg_path",
+                 "ffmpeg not found: '" + cfg.ffmpeg_reference +
+                     "' (--ffmpeg); this task does not need ffmpeg, so the option is unused");
+        }
     }
     if (error_count != nullptr) {
         *error_count = errors;
