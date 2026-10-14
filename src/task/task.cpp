@@ -1094,7 +1094,10 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
     const std::string lowered = lower(cfg.input_path);
     if (!ends_with(lowered, ".eac3") && !ends_with(lowered, ".ec3")) {
         temp_dir = create_temp_dir(cfg);
-        eac3_path = temp_dir + "\\input.eac3";
+        // Joined as a path rather than with a separator character: a hard-coded
+        // backslash names a file that can only ever exist on Windows, so on POSIX the
+        // child process wrote somewhere else while the checks below looked in vain.
+        eac3_path = fs_utf8::from_path(fs_utf8::to_path(temp_dir) / "input.eac3");
         bus.stage(JOC_STAGE_INPUT, "extracting the E-AC-3 elementary stream");
         const io::ProcessResult extracted = [&] {
             io::ProcessResult result;
@@ -1117,7 +1120,7 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
         if (temp_dir.empty()) {
             temp_dir = create_temp_dir(cfg);
         }
-        bed_path = temp_dir + "\\core51_f32le.raw";
+        bed_path = fs_utf8::from_path(fs_utf8::to_path(temp_dir) / "core51_f32le.raw");
         bus.stage(JOC_STAGE_DECODE, "decoding the 5.1 core PCM with ffmpeg");
         std::vector<std::string> argv = {cfg.ffmpeg_path, "-hide_banner", "-loglevel", "error", "-y",
                                          "-i", eac3_path};
