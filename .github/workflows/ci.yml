@@ -1,9 +1,9 @@
+
 name: ci
 
-# Builds and tests every push and pull request, packages the CLI as a workflow
-# artifact, and -- when a tag is pushed -- turns those packages into a GitHub
-# release.  One file keeps the release job inside the same run as the build, so it
-# collects that run's artifacts instead of rebuilding them.
+# Build and test on every push and pull request.
+# Upload unpacked files as Actions artifacts.
+# Create ZIP archives only when publishing a release.
 
 on:
   push:
@@ -25,6 +25,7 @@ jobs:
             label: macos
           - os: windows-latest
             label: windows
+
     steps:
       - uses: actions/checkout@v4
 
@@ -47,49 +48,70 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure -C Release
 
-      # The CLI and its runtime assets sit at the archive root with the libraries
-      # in lib/ below, so the download can be unpacked and run as it is.
       - name: Stage
         run: cmake --install build --config Release --prefix stage
 
+      # Place executables at the package root and libraries in lib/.
       - name: Package
         shell: bash
         run: |
-          folder="joc_cli_${{ matrix.label }}"
-          mkdir -p "package/$folder/lib"
-          cp -r stage/bin/. "package/$folder/"
-          cp -r stage/lib/. "package/$folder/lib/"
+          mkdir -p package/lib
+          cp -r stage/bin/. package/
+          cp -r stage/lib/. package/lib/
 
-      - name: Archive
-        run: cmake -E tar cf "joc_cli_${{ matrix.label }}.zip" --format=zip "package/joc_cli_${{ matrix.label }}"
-
+      # GitHub automatically creates the artifact ZIP.
+      # Upload files directly to avoid nested ZIP archives.
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: joc_cli_${{ matrix.label }}
-          path: joc_cli_${{ matrix.label }}.zip
+          path: package/
           if-no-files-found: error
 
   release:
-    # A pushed tag is what makes a release; branch and PR builds only leave
-    # artifacts.  The archives come from the build job of this same run.
+    # Only tagged builds create releases.
     if: startsWith(github.ref, 'refs/tags/')
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
+
     steps:
-      - name: Collect the packaged archives
+      # Keep each platform's files in a separate directory.
+      - name: Collect build artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: joc_cli_*
           path: dist
-          merge-multiple: true
+          merge-multiple: false
 
-      - name: List what will be published
-        run: ls -l dist
+      # Create flat ZIP archives from the artifact contents.
+      # Restore executable permissions on Unix platforms.
+      - name: Create release archives
+        shell: bash
+        run: |
+          for platform in linux macos windows; do
+            dir="dist/joc_cli_${platform}"
 
-      # The archives are attached to the tag's release, whether it already exists
-      # (created in the web interface) or has to be created here.
+            if [ ! -d "$dir" ]; then
+              echo "Missing artifact: joc_cli_${platform}" >&2
+              exit 1
+            fi
+
+            if [ "$platform" != "windows" ]; then
+              chmod +x "$dir/joc_cli"
+            fi
+
+            (
+              cd "$dir"
+              cmake -E tar cf "../joc_cli_${platform}.zip" --format=zip -- *
+            )
+          done
+
+      - name: List release archives
+        run: ls -lh dist/*.zip
+
+      # Publish the archives directly to GitHub Releases.
       - name: Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
