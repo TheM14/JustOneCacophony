@@ -101,6 +101,7 @@ set(JOC_INTERNAL_SOURCES
     src/foundation/fs_utf8.cpp
     src/foundation/mini_json.cpp
     src/foundation/sha256.cpp
+    src/foundation/status.cpp
     src/hrtf/jochrtf.cpp
     src/hrtf/public_filterbank.cpp
     src/hrtf/rosella_model.cpp

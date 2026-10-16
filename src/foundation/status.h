@@ -36,8 +36,10 @@ private:
 // Structured detail of the most recent failing call, as returned by
 // joc_last_error_detail().  It is one instance per thread across the whole
 // library, so every C entry point -- the task API and the streaming API alike --
-// reports through the same string.
-inline thread_local std::string last_error_detail;
+// reports through the same string.  Defined in status.cpp: a thread_local with
+// dynamic initialisation defined in a header emits a TLS initialisation routine
+// in every including unit, and ld64 rejects those duplicates.
+extern thread_local std::string last_error_detail;
 
 inline void record_error_detail(const Status& status) {
     if (status.ok()) {

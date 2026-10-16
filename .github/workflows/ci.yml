@@ -1,8 +1,14 @@
 name: ci
 
+# Builds and tests every push and pull request, packages the CLI as a workflow
+# artifact, and -- when a tag is pushed -- turns those packages into a GitHub
+# release.  One file keeps the release job inside the same run as the build, so it
+# collects that run's artifacts instead of rebuilding them.
+
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   build:
@@ -22,6 +28,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check the tag against the declared version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          declared=$(sed -n 's/.*JOC_VERSION_STRING *"\([^"]*\)".*/\1/p' include/joc_version.h)
+          if [ -z "$declared" ] || [ "$GITHUB_REF_NAME" != "v$declared" ]; then
+            echo "the tag $GITHUB_REF_NAME does not match JOC_VERSION_STRING (${declared:-unset})" >&2
+            exit 1
+          fi
+
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 
@@ -31,10 +47,8 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure -C Release
 
-      # Package the CLI with its runtime assets at the archive root and the
-      # libraries in lib/ below it, so the download can be unpacked and run as it
-      # is: the CLI is beside the shared library and finds it through the rpath
-      # recorded in CMakeLists.txt.
+      # The CLI and its runtime assets sit at the archive root with the libraries
+      # in lib/ below, so the download can be unpacked and run as it is.
       - name: Stage
         run: cmake --install build --config Release --prefix stage
 
@@ -46,9 +60,42 @@ jobs:
           cp -r stage/bin/. "package/$folder/"
           cp -r stage/lib/. "package/$folder/lib/"
 
+      - name: Archive
+        run: cmake -E tar cf "joc_cli_${{ matrix.label }}.zip" --format=zip "package/joc_cli_${{ matrix.label }}"
+
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
           name: joc_cli_${{ matrix.label }}
-          path: package/**
+          path: joc_cli_${{ matrix.label }}.zip
           if-no-files-found: error
+
+  release:
+    # A pushed tag is what makes a release; branch and PR builds only leave
+    # artifacts.  The archives come from the build job of this same run.
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Collect the packaged archives
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List what will be published
+        run: ls -l dist
+
+      # The archives are attached to the tag's release, whether it already exists
+      # (created in the web interface) or has to be created here.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+                 --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --clobber dist/*.zip
