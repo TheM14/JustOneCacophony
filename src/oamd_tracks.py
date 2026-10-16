@@ -212,7 +212,7 @@ def build_adm_tracks(index, frames=None, rate=48000, frame_samples=1536,
     for seq, row in enumerate(frames):
         subs = index.subpayloads(row)
         timing = None
-        if 11 in subs:
+        if subs is not None and 11 in subs:
             timing = frame_update(subs[11])
             state.apply(timing["values"])
 

@@ -1,7 +1,7 @@
 """把 E-AC-3 核心 PCM 和 JOC 元数据重建为 LFE 加 15 路对象 PCM。
 
 管线（每帧）：
-  核心 5.1 PCM → QMF 分析 x → 填充器 z = Σ m·x（每对象）
+  核心 PCM（N=5 或 7 路全频段通道，按 k 查表）→ QMF 分析 x → 填充器 z = Σ m·x（每对象）
   → 对象时域组装（前步、64 点 FFT、旋转、合成窗）→ ×16 + clamp
   → 对象波形 × joc_clipgain
   + LFE 专用 1217-sample 环形延迟
@@ -13,7 +13,7 @@ output_scale:
 """
 import numpy as np
 
-from joc_decode import DC_FILTER_DMX_CONFIGS, parse_joc, diff_decode, dequantize
+from joc_decode import SIGMA_DMX_CONFIGS, parse_joc, diff_decode, dequantize
 from joc_qmf import (N, QMF5_WINDOW, qmf_analysis_frame,
                      surround_post_frame, interp_matrix)
 from evo_unpack import unpack_evolution
@@ -29,10 +29,12 @@ class JocRenderer:
         self.output_scale = np.float32(output_scale)
         self._prev = {}           # 每对象插值 prev（m 的帧末 sb 值）
         self._synthesis_state = np.zeros((15, 640), dtype=np.float64)
-        # 分析 QMF：五路各自保留 9×64 FIFO；L/R/C 另有 10-timeslot 延迟。
-        self._analysis_fifo = np.zeros((5, 9, 64), dtype=np.float64)
-        self._analysis_delay = np.zeros((3, 10, 64), dtype=np.float32)
-        self._analysis_phase = np.float32(0.0625)
+        # 分析 QMF：最多七路，各保留 9×64 FIFO。L/R/C 与 N=7 时的第 6、7 路
+        # （额外那一对）在这里做 10 时隙延迟；Ls/Rs 的同一延迟在环绕通路内完成。
+        self._analysis_fifo = np.zeros((7, 9, 64), dtype=np.float64)
+        self._analysis_delay = np.zeros((5, 10, 64), dtype=np.float32)
+        # 哨兵：复位后（或整条流的第一帧）直接用新标量，不做帧内过渡。
+        self._analysis_phase = np.float32(-0.5)
         self._surround_qmf_delay = np.zeros((2, 10, 64), dtype=np.complex128)
         self._surround_dc_hist = np.zeros((2, 20), dtype=np.complex128)
         # ch0/LFE 使用循环历史，读指针恒落后写指针 1217 个采样。
@@ -40,6 +42,13 @@ class JocRenderer:
         self._lfe_delay = np.zeros(1217, dtype=np.float64)
         self._last_x = None       # 仅供逐槽诊断读取，不参与状态推进
         self._rot = None          # 每带旋转表
+
+    def held_analysis_scalar(self):
+        """当前分析端标量；还没有过 JOC 帧时用结构常数 1/16。"""
+        value = self._analysis_phase
+        if value <= 0.0 and value != 0.0:      # 哨兵
+            return np.float32(0.0625)
+        return value
 
     @staticmethod
     def decode_payload(payload_bytes):
@@ -60,36 +69,45 @@ class JocRenderer:
         mix_dq = dequantize(out, mix_q)
         return out, mix_q, mix_dq
 
-    def qmf_x(self, bed5, phase_new=0.0625, apply_dc_filter=True):
-        """核心 5ch PCM → 对象矩阵使用的复数 QMF ``x``。
+    def qmf_x(self, bed_pcm, phase_new=0.0625, apply_dc_filter=True, rotate=True):
+        """核心 N ch PCM → 对象矩阵使用的复数 QMF ``x``。
 
-        先以 float32 对当前帧应用 phase；phase 变化时仅前 256 个样本从旧值
-        线性过渡。缩放后的 L/R/C 延迟 10 槽，Ls/Rs 不延迟，再进入分析 QMF。
-        ``apply_dc_filter`` 控制 Ls/Rs band-0 的 21-tap DC 补偿。
+        phase_new 是分析端标量：结构常数 1/16 × 本帧 joc_clipgain。先以 float32
+        对当前帧应用它；相比上一帧变化时仅前 256 个样本从旧值线性过渡。缩放后的
+        L/R/C 与 N=7 时的第 6、7 路延迟 10 槽，Ls/Rs 不延迟，再进入分析 QMF；
+        出口的 ×16 抵消 1/16，净效果是 ×joc_clipgain。``apply_dc_filter`` 与 ``rotate`` 是规格 §4 的同一个
+        σ(k) 开关，控制 Ls/Rs 的 band-0 21-tap DC 补偿与 -j 旋转。
         """
-        pcm = np.asarray(bed5, dtype=np.float32)
-        if pcm.shape != (5, 1536):
-            raise ValueError(f"核心 5ch 帧应为 (5,1536)，实际 {pcm.shape}")
+        pcm = np.asarray(bed_pcm, dtype=np.float32)
+        n_channels = pcm.shape[0] if pcm.ndim == 2 else 0
+        if n_channels not in (5, 7) or pcm.shape != (n_channels, 1536):
+            raise ValueError(f"核心帧应为 (5,1536) 或 (7,1536)，实际 {pcm.shape}")
         new_phase = np.float32(phase_new)
         old_phase = self._analysis_phase
+        if old_phase <= 0.0 and old_phase != 0.0:      # 哨兵：首帧/复位后不做过过渡
+            old_phase = new_phase
         gains = np.full(1536, new_phase, dtype=np.float32)
         if old_phase != new_phase:
             step = np.float32((new_phase - old_phase) / np.float32(256.0))
             gains[:256] = old_phase + np.arange(256, dtype=np.float32) * step
-        scaled = np.multiply(pcm, gains[None, :], dtype=np.float32).reshape(5, 24, 64)
+        scaled = np.multiply(pcm, gains[None, :], dtype=np.float32).reshape(
+            n_channels, 24, 64)
 
+        # 走外部延迟线的通道：前级 L/R/C，以及 N=7 时额外那一对（索引 5、6）。
+        plain = [0, 1, 2] + ([5, 6] if n_channels == 7 else [])
         blocks = np.empty_like(scaled)
-        for ch in range(3):
-            delayed = np.concatenate((self._analysis_delay[ch], scaled[ch]), axis=0)
+        for lane, ch in enumerate(plain):
+            delayed = np.concatenate((self._analysis_delay[lane], scaled[ch]), axis=0)
             blocks[ch] = delayed[:24]
-            self._analysis_delay[ch] = delayed[24:]
-        blocks[3:] = scaled[3:]
+            self._analysis_delay[lane] = delayed[24:]
+        blocks[3:5] = scaled[3:5]
 
-        x, self._analysis_fifo = qmf_analysis_frame(self._analysis_fifo, blocks)
+        fifo = self._analysis_fifo[:n_channels]
+        x, self._analysis_fifo[:n_channels] = qmf_analysis_frame(fifo, blocks)
         self._analysis_phase = new_phase
-        x[3:], self._surround_qmf_delay, self._surround_dc_hist = surround_post_frame(
-            x[3:], self._surround_qmf_delay, self._surround_dc_hist,
-            apply_dc_filter=apply_dc_filter)
+        x[3:5], self._surround_qmf_delay, self._surround_dc_hist = surround_post_frame(
+            x[3:5], self._surround_qmf_delay, self._surround_dc_hist,
+            apply_dc_filter=apply_dc_filter, rotate=rotate)
         return x
 
     def object_z(self, out, mix_dq, x):
@@ -234,29 +252,49 @@ class JocRenderer:
         self._lfe_delay = delayed[-1217:].copy()
         return out
 
-    def render_frame(self, payload_bytes, bed5_pcm, lfe_pcm=None):
-        """payload_bytes = evolution 载荷（含 id14 JOC）；bed5_pcm = 5×1536 核心 PCM。
+    def render_missing_frame(self, bed_pcm, lfe_pcm=None, config_idx=3):
+        """没有 JOC 元数据的音频帧：对象通道静音，只保留 LFE 旁通。
+
+        QMF 分析与对象合成状态照常推进，否则后续帧的时间轴会整体少一格。
+        """
+        sigma = config_idx in SIGMA_DMX_CONFIGS
+        # 本帧没有 JOC 元数据，分析端标量保持上一帧的值（槽位不被改写）。
+        x = self.qmf_x(bed_pcm, phase_new=self.held_analysis_scalar(),
+                       apply_dc_filter=sigma, rotate=sigma)
+        self._last_x = x.copy()
+        z_all = {obj: np.zeros((x.shape[1], x.shape[2]), dtype=np.complex128)
+                 for obj in range(15)}
+        self.dll_synth_objects(z_all)
+        pcm16 = np.zeros((16, 1536), dtype=np.float64)
+        if lfe_pcm is not None:
+            pcm16[0] = self.decode_lfe(lfe_pcm)
+        pcm16_f32 = np.asarray(pcm16, dtype=np.float32)
+        return np.multiply(pcm16_f32, self.output_scale, dtype=np.float32), z_all
+
+    def render_frame(self, payload_bytes, bed_pcm, lfe_pcm=None):
+        """payload_bytes = evolution 载荷（含 id14 JOC）；bed_pcm = N×1536 核心 PCM。
         lfe_pcm = 1536 核心 LFE；提供时生成 ch0，省略时 ch0 静音
         （保留给只验证对象/z 链的诊断脚本）。
         返回 (pcm16, z_all)：pcm16 = 16×1536（ch0 LFE + 15 对象）f32，
         已用 FP32 系数乘 output_scale。"""
         subs, _ = unpack_evolution(payload_bytes, loose=True)
-        return self.render_subpayloads(subs, bed5_pcm, lfe_pcm)
+        return self.render_subpayloads(subs, bed_pcm, lfe_pcm)
 
-    def render_subpayloads(self, subs, bed5_pcm, lfe_pcm=None):
+    def render_subpayloads(self, subs, bed_pcm, lfe_pcm=None):
         """以已拆出的 EMDF payload 字典渲染一帧，避免绑定 transport 容器。"""
         out, mix_q, mix_dq = self.decode_subpayloads(subs)
-        x = self.qmf_x(
-            bed5_pcm,
-            apply_dc_filter=out["dmx_config_idx"] in DC_FILTER_DMX_CONFIGS)
+        # σ(k) 同时门控 -j 旋转与 band-0 FIR（规格 §4）。
+        sigma = out["dmx_config_idx"] in SIGMA_DMX_CONFIGS
+        x = self.qmf_x(bed_pcm, phase_new=0.0625 * out["clipgain"],
+                       apply_dc_filter=sigma, rotate=sigma)
         self._last_x = x.copy()
         z_all = self.object_z(out, mix_dq, x)
-        # joc_clipgain 在对象逆 QMF 后应用，并与用户 output_scale 分离。
+        # joc_clipgain 已在分析端进入 qmf_x，与用户 output_scale 分离。
         objs_pcm = self.dll_synth_objects(z_all)
         pcm16 = np.zeros((16, 1536), dtype=np.float64)
         pcm16[0] = self.decode_lfe(lfe_pcm) if lfe_pcm is not None else 0.0
         for obj, p in objs_pcm.items():
-            pcm16[obj + 1] = p * out["clipgain"]
+            pcm16[obj + 1] = p
         pcm16_f32 = np.asarray(pcm16, dtype=np.float32)
         return np.multiply(pcm16_f32, self.output_scale, dtype=np.float32), z_all
 

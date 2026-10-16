@@ -1,4 +1,4 @@
-"""Unified auto/native/python entry point for float64 speaker rendering."""
+"""Float64 speaker rendering entry point."""
 from __future__ import annotations
 
 import time
@@ -6,39 +6,21 @@ import time
 import numpy as np
 
 from speaker_layouts import SpeakerLayout, get_speaker_layout
-from speaker_native_renderer import NativeSpeakerRenderer
 from speaker_renderer import PythonSpeakerRenderer, payload_events_from_index, render_objects16
 
 FRAME_SAMPLES = 1536
 
 
-def create_speaker_renderer(layout: str | SpeakerLayout, *, backend="auto", native_library=None):
+def create_speaker_renderer(layout: str | SpeakerLayout):
     """Create a stateful speaker renderer and return ``(renderer, info)``."""
-    if backend not in ("auto", "native", "python"):
-        raise ValueError(f"unknown speaker backend: {backend}")
     target = get_speaker_layout(layout) if isinstance(layout, str) else layout
-    fallback_reason = None
-    if backend in ("auto", "native"):
-        try:
-            renderer = NativeSpeakerRenderer(target, native_library)
-            return renderer, {
-                "name": "native",
-                "layout": target.name,
-                "library": str(renderer.library_path),
-                "fallback_reason": None,
-            }
-        except (OSError, RuntimeError) as exc:
-            fallback_reason = str(exc)
     return PythonSpeakerRenderer(target), {
         "name": "python",
         "layout": target.name,
-        "library": None,
-        "fallback_reason": fallback_reason,
     }
 
 
 def render_speaker_layout(objects16, index, layout: str | SpeakerLayout, *,
-                          backend="auto", native_library=None,
                           metadata_offset=1473):
     """Render a complete indexed object stream and return ``(pcm64, info)``."""
     target = get_speaker_layout(layout) if isinstance(layout, str) else layout
@@ -51,8 +33,7 @@ def render_speaker_layout(objects16, index, layout: str | SpeakerLayout, *,
     if frames > len(index.rows):
         raise ValueError(f"metadata has {len(index.rows)} frames, PCM needs {frames}")
 
-    renderer, info = create_speaker_renderer(
-        target, backend=backend, native_library=native_library)
+    renderer, info = create_speaker_renderer(target)
     output = np.empty((len(source), target.channel_count), dtype=np.float64)
     started = time.perf_counter()
     try:

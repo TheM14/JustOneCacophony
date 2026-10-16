@@ -35,8 +35,10 @@ def _load_huff_tables():
 H = _load_huff_tables()
 
 JOC_NUM_CHANNELS = {0: 5, 1: 7, 2: 7, 3: 5, 4: 7}          # Table 33
-# band-0 的 21-tap DC 补偿只在 downmix 配置 3/4 下启用。
-DC_FILTER_DMX_CONFIGS = (3, 4)
+# σ(k) = 1 当且仅当 k∈{3,4}：同一个开关同时门控 Ls/Rs 的 -j 旋转与 band-0 FIR。
+SIGMA_DMX_CONFIGS = (3, 4)
+# band-0 的 21-tap DC 补偿只在 σ(k)=1 的 downmix 配置下启用。
+DC_FILTER_DMX_CONFIGS = SIGMA_DMX_CONFIGS
 JOC_NUM_BANDS = {0: 1, 1: 3, 2: 5, 3: 7, 4: 9, 5: 12, 6: 15, 7: 23}  # Table 35
 JOC_NUM_QUANT = {0: 96, 1: 192}                            # Table 51
 # dense 的量化零点就是 nquant/2；sparse 的递推起点比它高 2 个量化步。
@@ -77,18 +79,33 @@ def get_huff_code(mode, typ, nch):
              else "joc_huff_code_fine_generic"]           # MTX
 
 
+def parse_joc_header(payload):
+    """只读 joc_header 的 3+6+3 bit，不做 Huffman 解码。
+
+    跨层一致性校验（规格 §11.2）只需要这些字段，因此不必为校验再走一遍完整解析。
+    """
+    br = BR(payload)
+    out = {
+        "dmx_config_idx": br.bits(3),
+        "num_objects_bits": br.bits(6),
+        "ext_config_idx": br.bits(3),
+    }
+    out["n_channels"] = JOC_NUM_CHANNELS.get(out["dmx_config_idx"])
+    if out["n_channels"] is None:
+        raise ValueError(f"未知的 JOC downmix 配置 {out['dmx_config_idx']}")
+    # 声明对象数超过 15 时截断到 15；截断本身另行记入 diagnostics。
+    declared = out["num_objects_bits"] + 1
+    out["objects_clamped"] = declared > 15
+    out["n_objects"] = min(declared, 15)
+    return out
+
+
 def parse_joc(payload):
     """解析 id14 载荷（joc() 位流）。返回字段 dict + 解析后剩余位数。"""
     br = BR(payload)
-    out = {}
-    out["dmx_config_idx"] = br.bits(3)
-    out["num_objects_bits"] = br.bits(6)
-    out["ext_config_idx"] = br.bits(3)
-    n_objects = out["num_objects_bits"] + 1
-    n_channels = JOC_NUM_CHANNELS.get(out["dmx_config_idx"])
-    if n_channels is None:
-        raise ValueError(f"未知的 JOC downmix 配置 {out['dmx_config_idx']}")
-    out["n_objects"], out["n_channels"] = n_objects, n_channels
+    out = parse_joc_header(payload)
+    n_objects, n_channels = out["n_objects"], out["n_channels"]
+    br.p = 12
     out["clipgain_x_bits"] = br.bits(3)
     out["clipgain_y_bits"] = br.bits(5)
     out["seq_count_bits"] = br.bits(10)

@@ -150,7 +150,12 @@ G_{\mathrm{clip}}=
 1+\frac{y}{32}2^{x-4}.
 $$
 
-It is applied to object PCM after inverse QMF and does not apply to LFE.
+It is folded into the analysis-side scalar $S=\frac{1}{16}G_{\mathrm{clip}}$, which multiplies
+every core-bed sample before the QMF analysis; the $\times16$ after the object inverse QMF cancels the
+$1/16$, so the net effect is a multiply by $G_{\mathrm{clip}}$ and the $[-1,1]$ clamp sits **after** the
+gain. The scalar keeps two per-frame slots: the first 256 samples of a frame ramp linearly from the
+previous frame's value to this frame's value and the rest stays constant, and the first frame after a
+reset takes the new value directly. LFE bypasses this scalar.
 
 ## 3. Parameter-band expansion and time interpolation
 
@@ -231,36 +236,31 @@ This consists of the analysis window/polyphase stage, modulation, a 64-point FFT
 
 ## 5. QMF-domain processing of core channels
 
-L, R, and C are delayed by ten QMF slots before entering the object matrix:
+$k$ selects the core channel count $N\in\{5,7\}$ ($k=0\ldots4$ maps to $N=5,7,7,5,7$) and the
+phase switch $\sigma(k)=1\iff k\in\{3,4\}$. Every core channel is delayed by ten QMF slots
+before entering the object matrix; the $-j$ rotation ($b>0$) and the band-0 21-tap complex FIR
+are both gated by that same switch and applied to Ls and Rs only:
 
 $$
-\widehat X_{c,b,t}=X_{c,b,t-10},
-\qquad c\in\{L,R,C\}.
+\widehat X_{c,b,t}=
+\begin{cases}
+-j\,X_{c,b,t-10}, & \sigma(k)=1,\ c\in\{Ls,Rs\},\ b>0,\\[1mm]
+\sum_{m=0}^{20}h_mX_{c,0,t-m}, & \sigma(k)=1,\ c\in\{Ls,Rs\},\ b=0,\\[1mm]
+X_{c,b,t-10}, & \text{otherwise}.
+\end{cases}
 $$
 
-Ls and Rs use the same ten-slot delay and a $-j$ rotation for $b>0$:
-
-$$
-\widehat X_{c,b,t}=-jX_{c,b,t-10},
-\qquad c\in\{Ls,Rs\},\ b>0.
-$$
-
-Band 0 of each surround channel additionally passes through a 21-tap complex FIR:
-
-$$
-\widehat X_{c,0,t}=
-\sum_{k=0}^{20}h_kX_{c,0,t-k}.
-$$
-
+For $N=7$ the sixth and seventh core channels (Lb/Rb or Tfl/Tfr) behave like the front channels
+and only take the ten-slot delay: channel identity affects metadata and rendering, not the DSP.
 These delays and filter histories are decoder state and cannot be reset independently for every frame.
 
 ## 6. Object matrix
 
-For each object $o$, subband $b$, and slot $t$, the object's frequency-domain value is a linear combination of the five core channels:
+For each object $o$, subband $b$, and slot $t$, the object's frequency-domain value is a linear combination of the $N$ core channels:
 
 $$
 Z_{o,b,t}=
-\sum_{c=0}^{4}
+\sum_{c=0}^{N-1}
 M_{o,c,b,t}\widehat X_{c,b,t}.
 $$
 

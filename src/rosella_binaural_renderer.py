@@ -15,7 +15,6 @@ from pathlib import Path
 import numpy as np
 
 from binaural_metadata import OamdPositionTimeline
-from binaural_native_renderer import NativeBinauralDsp
 from rosella_core import RosellaRenderer
 from rosella_direct import BINAURAL_PROFILE_NAMES
 from rosella_filterbank import (
@@ -72,9 +71,7 @@ class RosellaBinauralRenderer:
             tail_seconds: float = 5.0,
             output_gain: float = 1.0,
             chunk_frames: int = 64,
-            room_impulse_slots: int = 4096,
-            backend: str = "python",
-            native_library=None):
+            room_impulse_slots: int = 4096):
         if mode not in BINAURAL_PROFILE_NAMES:
             raise ValueError("binaural mode must be near, mid, or far")
         if int(object_delay_samples) < 0:
@@ -85,8 +82,6 @@ class RosellaBinauralRenderer:
             raise ValueError("chunk_frames must be positive")
         if not math.isfinite(float(output_gain)):
             raise ValueError("output_gain must be finite")
-        if backend not in ("auto", "native", "python"):
-            raise ValueError("backend must be auto, native, or python")
 
         if isinstance(personalized_headphone, RosellaModel):
             self.model = personalized_headphone
@@ -108,34 +103,14 @@ class RosellaBinauralRenderer:
         self.chunk_frames = int(chunk_frames)
         self.chunk_samples = self.chunk_frames * FRAME_SAMPLES
 
-        self.native_dsp = None
-        self.backend_fallback = None
-        if backend in ("auto", "native"):
-            try:
-                self.native_dsp = NativeBinauralDsp(
-                    self.model, library_path=native_library,
-                    kernel_data=self.kernel_data)
-            except (AttributeError, OSError, RuntimeError) as exc:
-                if backend == "native":
-                    raise RuntimeError(f"native binaural backend unavailable: {exc}") from exc
-                self.backend_fallback = str(exc)
-        if self.native_dsp is not None:
-            self.dsp_backend = "native"
-            self.qmf_analysis = None
-            self.hybrid_analysis = None
-            self.hybrid_synthesis = None
-            self.qmf_synthesis = None
-            self.core = RosellaRenderer(
-                self.model, SOURCE_CHANNELS, create_room=False)
-        else:
-            self.dsp_backend = "python"
-            self.qmf_analysis = QmfAnalysis(SOURCE_CHANNELS, self.kernel_data)
-            self.hybrid_analysis = HybridAnalysis(SOURCE_CHANNELS, self.kernel_data)
-            self.core = RosellaRenderer(
-                self.model, SOURCE_CHANNELS,
-                room_impulse_slots=room_impulse_slots)
-            self.hybrid_synthesis = HybridSynthesis(OUTPUT_CHANNELS, self.kernel_data)
-            self.qmf_synthesis = QmfSynthesis(OUTPUT_CHANNELS, self.kernel_data)
+        self.dsp_backend = "python"
+        self.qmf_analysis = QmfAnalysis(SOURCE_CHANNELS, self.kernel_data)
+        self.hybrid_analysis = HybridAnalysis(SOURCE_CHANNELS, self.kernel_data)
+        self.core = RosellaRenderer(
+            self.model, SOURCE_CHANNELS,
+            room_impulse_slots=room_impulse_slots)
+        self.hybrid_synthesis = HybridSynthesis(OUTPUT_CHANNELS, self.kernel_data)
+        self.qmf_synthesis = QmfSynthesis(OUTPUT_CHANNELS, self.kernel_data)
         self.timeline = OamdPositionTimeline(15)
 
         self._input_buffer = np.empty(
@@ -210,40 +185,29 @@ class RosellaBinauralRenderer:
         blocks = len(values) // ROSSELLA_BLOCK_SAMPLES
         block_base = self.processed_input_samples
 
-        if self.native_dsp is not None:
-            stereo = np.empty((len(values), OUTPUT_CHANNELS), dtype=np.float64)
-            for block in range(blocks):
-                sample = block_base + block * ROSSELLA_BLOCK_SAMPLES
-                self._set_block_parameters(sample)
-                start = block * ROSSELLA_BLOCK_SAMPLES
-                stop = start + ROSSELLA_BLOCK_SAMPLES
-                stereo[start:stop] = self.native_dsp.process_block(
-                    values[start:stop], self.core.gains, self.core.room_sends,
-                    self.output_gain)
-        else:
-            hops = values.reshape(
-                blocks, ROSSELLA_BLOCK_SAMPLES // QMF_HOP_SAMPLES,
-                QMF_HOP_SAMPLES, SOURCE_CHANNELS,
-            ).transpose(0, 1, 3, 2).reshape(
-                blocks * (ROSSELLA_BLOCK_SAMPLES // QMF_HOP_SAMPLES),
-                SOURCE_CHANNELS, QMF_HOP_SAMPLES)
-            hybrid = self.hybrid_analysis.process_chunk(
-                self.qmf_analysis.process_chunk(hops))
-            direct = np.empty((blocks * 8, OUTPUT_CHANNELS, 77), dtype=np.complex128)
-            room_send = np.empty((blocks * 8, 77), dtype=np.complex128)
-            for block in range(blocks):
-                sample = block_base + block * ROSSELLA_BLOCK_SAMPLES
-                self._set_block_parameters(sample)
-                start = block * 8
-                stop = start + 8
-                direct[start:stop], room_send[start:stop] = (
-                    self.core.direct_and_send_static(hybrid[start:stop]))
-            rendered = direct + self.core.room.process_chunk(room_send)
-            time_bands = self.qmf_synthesis.process_chunk(
-                self.hybrid_synthesis.process_chunk(rendered))
-            stereo = time_bands.transpose(0, 2, 1).reshape(
-                blocks * ROSSELLA_BLOCK_SAMPLES, OUTPUT_CHANNELS)
-            stereo *= self.output_gain
+        hops = values.reshape(
+            blocks, ROSSELLA_BLOCK_SAMPLES // QMF_HOP_SAMPLES,
+            QMF_HOP_SAMPLES, SOURCE_CHANNELS,
+        ).transpose(0, 1, 3, 2).reshape(
+            blocks * (ROSSELLA_BLOCK_SAMPLES // QMF_HOP_SAMPLES),
+            SOURCE_CHANNELS, QMF_HOP_SAMPLES)
+        hybrid = self.hybrid_analysis.process_chunk(
+            self.qmf_analysis.process_chunk(hops))
+        direct = np.empty((blocks * 8, OUTPUT_CHANNELS, 77), dtype=np.complex128)
+        room_send = np.empty((blocks * 8, 77), dtype=np.complex128)
+        for block in range(blocks):
+            sample = block_base + block * ROSSELLA_BLOCK_SAMPLES
+            self._set_block_parameters(sample)
+            start = block * 8
+            stop = start + 8
+            direct[start:stop], room_send[start:stop] = (
+                self.core.direct_and_send_static(hybrid[start:stop]))
+        rendered = direct + self.core.room.process_chunk(room_send)
+        time_bands = self.qmf_synthesis.process_chunk(
+            self.hybrid_synthesis.process_chunk(rendered))
+        stereo = time_bands.transpose(0, 2, 1).reshape(
+            blocks * ROSSELLA_BLOCK_SAMPLES, OUTPUT_CHANNELS)
+        stereo *= self.output_gain
 
         skip = max(0, min(
             len(stereo), ROSSELLA_LATENCY_SAMPLES - self.raw_output_samples))
@@ -278,8 +242,6 @@ class RosellaBinauralRenderer:
         return np.concatenate(nonempty, axis=0)
 
     def close(self):
-        if self.native_dsp is not None:
-            self.native_dsp.close()
         self.finished = True
 
     @property
@@ -287,9 +249,6 @@ class RosellaBinauralRenderer:
         return {
             "name": self.dsp_backend,
             "precision": "float64/complex128",
-            "fallback_reason": self.backend_fallback,
-            "library": (str(self.native_dsp.library_path)
-                        if self.native_dsp is not None else None),
             "model": str(self.model_path.resolve()),
             "model_coefficients": int(len(self.model.coefficients)),
             "model_coefficient_sha256": self.model.coefficient_sha256,

@@ -4,7 +4,7 @@
 
 > JustOneCacophony 是一个 E-AC-3 JOC 的实验性 / 测试实现，用于研究 JOC 的解析、重建、渲染以及相关数学过程。
 
-项目可以从常见 E-AC-3 JOC 码流中提取并解析 EMDF、ID14 JOC 参数和 ID11 OAMD 元数据，结合 FFmpeg 解码出的核心 5.1 PCM 重建 LFE 与 15 路对象 PCM，并输出 ADM BWF、指定扬声器布局的 WAV，或使用标准 SOFA HRTF 直接输出双耳 WAV。
+项目可以从常见 E-AC-3 JOC 码流中提取并解析 EMDF、ID14 JOC 参数和 ID11 OAMD 元数据，结合 FFmpeg 解码出的核心 PCM（N=5 或 7 个全频段通道）重建 LFE 与 15 路对象 PCM，并输出 ADM BWF、指定扬声器布局的 WAV，或使用标准 SOFA HRTF 直接输出双耳 WAV。
 
 这是研究代码，不是完整、标准兼容或生产级的 JOC 解码器。它只覆盖当前已实现的码流形态；遇到未知变体时会明确报错，而不是假装一切都很和谐——如果哪里算错了，它可能就真的只剩 cacophony 了。
 
@@ -19,14 +19,14 @@
 - 从 `pcm16 + ID11/OAMD` 直接运行公开 SOFA 双耳渲染，不生成临时 ADM BWF；
 - 双耳 DSP 全程使用 float64/complex128，并保留 961-sample latency compensation、跨帧状态和 room 尾声；
 - 直接输出统一支持 float32 或 PCM24 WAV，并在 PCM24 削波前提供明确处理策略；
-- 使用 NumPy 后端，或通过 `ctypes` 调用可选的 C++20 原生核；`auto` 模式在原生库不可用时回退到 Python；
+- 全程使用 NumPy 的纯 Python 实现；
 - 读取或写入 metadata sidecar，并生成元数据、运行时间和输出摘要。
 
 ## 处理流程
 
 ```text
 M4A / E-AC-3
-  ├─ FFmpeg 提取 E-AC-3 并解码核心 5.1 PCM
+  ├─ FFmpeg 提取 E-AC-3 并解码核心 PCM（N=5 或 7）
   ├─ EMDF → ID14 JOC 参数 → 对象矩阵
   ├─ 核心 PCM → analysis QMF → 参数插值 → inverse QMF
   ├─ ID11 OAMD → 对象位置与时间轨迹
@@ -36,9 +36,8 @@ M4A / E-AC-3
        └─ ID11 直接时间轴 + SOFA HRTF → 双耳 WAV
 ```
 
-Python 与 C++ 后端在 JOC 对象重建、扬声器渲染和公开 SOFA 双耳渲染中使用同一组
-数学过程；native 双耳后端与 Python 参考实现逐值一致（差异 < 1e-9）。位流解析、
-OAMD 时间轴和命令行逻辑在 Python 中。
+JOC 对象重建、扬声器渲染与公开 SOFA 双耳渲染使用同一组数学过程：analysis QMF、
+参数插值、对象矩阵、inverse QMF。位流解析、OAMD 时间轴和命令行逻辑同样在 Python 中。
 
 ## 环境
 
@@ -47,7 +46,6 @@ OAMD 时间轴和命令行逻辑在 Python 中。
 - h5py 3.8+
 - SciPy 1.10+
 - 独立的 FFmpeg 可执行程序；不需要 `ffmpeg-python`。默认从 `PATH` 查找，也可通过 `--ffmpeg` 指定可执行文件路径。启动时会探测 `ffmpeg -h decoder=eac3`：缺 E-AC-3 解码器或 `-drc_scale` 直接报错，缺 `-target_level` 只在使用 `--eac3-target-level` 时报错
-- 可选：支持 C++20 的 CMake 工具链，用于自行构建原生核
 
 建议在项目专用虚拟环境中安装依赖：
 
@@ -69,12 +67,10 @@ python main.py input.m4a --ffmpeg C:\path\to\ffmpeg.exe
 python main.py input.m4a
 ```
 
-选择后端或输出路径：
+指定输出路径：
 
 ```powershell
-python main.py input.eac3 -o output.adm.wav --backend python
-python main.py input.m4a --backend native --native-threads 2
-python main.py input.m4a --native-library lib/eac3joc_core.dll
+python main.py input.eac3 -o output.adm.wav
 ```
 
 直接输出扬声器 WAV：
@@ -152,8 +148,8 @@ python main.py input.m4a --eac3-target-level -27    # 按码流 dialnorm 归一�
 ```
 
 - `--eac3-drc-scale`（`0`～`6`，默认 `0`）对应 FFmpeg 的 `-drc_scale`：每个 E-AC-3 block 的增益为 `dynrng 因子 ^ 该值`。`0` 关闭 DRC；`1` 为码流作者意图；`>1` 非对称（响处全压、轻处增强）。
-- `--eac3-target-level`（`-31`～`0`，默认 `0` 不施加）对应 FFmpeg 的 `-target_level`：按每帧 dialnorm 施加静态增益，约 `target_level - dialnorm` dB，与 `--eac3-drc-scale` 相互独立、可叠加。dialnorm 是逐码流属性（实测 Apple Music Atmos 流约 `-18`～`-19` dB，故 `-27` 约等于衰减 `8`～`9` dB）。
-- 电平变化是预期的：与 FFmpeg 默认值相比，实测曲目峰值变化 `0`～`-2.15` dB、RMS `0`～`-1.69` dB（方向取决于码流 `dynrng`），`.report.json` 的 `output_clip.peak` 与 int24 削波判定会随之变化。
+- `--eac3-target-level`（`-31`～`0`，默认 `0` 不施加）对应 FFmpeg 的 `-target_level`：按每帧 dialnorm 施加静态增益，约 `target_level - dialnorm` dB，与 `--eac3-drc-scale` 相互独立、可叠加。dialnorm 是逐码流属性，取值随码流而异，因此 `-27` 对应的实际衰减也随码流变化。
+- 电平变化是预期的：是否施加增益取决于码流 `dynrng`，方向与幅度逐码流而异，`.report.json` 的 `output_clip.peak` 与 int24 削波判定会随之变化。
 - `--gain-db` 是**重建之后**的静态增益（双耳路径 float64），与解码级 DRC 不是一回事；解码级 DRC 是按 block 时变的，不要用 `--gain-db` 去抵消它。
 - `.report.json` 的 `ffmpeg` 字段记录 FFmpeg 版本与实际下发的解码选项（`version`、`eac3_decode_options`）。
 
@@ -203,36 +199,16 @@ python main.py --help
 
 未指定 `-o` 时，输出仍写入仓库根目录的 `output/`。这是文件移动后特意保持的原有行为。
 
-## 原生核
-
-仓库默认不附带原生二进制。可以从项目 Release 下载适合当前平台的预构建运行库，或自行构建，然后把运行库直接放入仓库根目录的 `lib/`；若该目录不存在，创建即可。自行构建时可从仓库根目录使用 CMake：
-
-```powershell
-cmake -S native -B build/cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PWD/lib"
-cmake --build build/cmake --config Release
-cmake --install build/cmake --config Release
-```
-
-运行时查找顺序为：
-
-1. `--native-library`；
-2. `EAC3JOC_NATIVE_LIBRARY`；
-3. `lib/` 下当前平台的标准库文件名。
-
-详细 ABI、状态与精度说明见[原生核说明](docs/native.md)。
-
 ## 目录结构
 
 ```text
 JustOneCacophony/
 ├─ main.py               命令行启动入口
 ├─ src/                  Python 实现模块
-├─ native/               C/C++ 加速核、C ABI 与必要表数据
 ├─ data/                 Python 运行时表数据
-├─ lib/                  原生运行库投放目录（按需创建）
 ├─ HRTF/                 用户 HRTF 数据目录（按需创建，git 忽略）
 ├─ output/               输出目录（按需创建；.jochrtf 缓存默认在其 hrtf-cache 子目录）
-├─ docs/                 数学与原生核文档（中英文）
+├─ docs/                 数学与双耳文档（中英文）
 ├─ requirements.txt      Python 依赖
 ├─ README.md             中文说明
 └─ README.en.md          English documentation
@@ -258,16 +234,22 @@ JustOneCacophony/
 ## 已知限制
 
 - 当前只覆盖常见 continuous EMDF transport；跨多个 audio-block skip field 的碎片化 transport 尚未覆盖。
+- 覆盖 `joc_dmx_config_idx` 0..4 的全部档位（$N=5,7,7,5,7$，相位开关 $\sigma(k)$ 同时门控 Ls/Rs 的 $-j$ 旋转与 band-0 FIR）。7 通道档位必须解出 8 通道床，且需要依赖子流的 `chanmap` 才能确定额外那一对：缺少核心子流或缺少 `chanmap` 仍按变体报错；`chanmap` 声明的额外对与 $k$ 不一致、或 OAMD bed 掩码与 $k$ 不一致时，只记入 `diagnostics` 并继续解码——额外那对的**身份**只进元数据、不进 DSP（§10.1），床映射按 `chanmap` 的通道码做。
+- 同一音频帧里出现多个含 ID11/ID14 的 EMDF 容器时（其中一个容器可能不是本帧的 JOC 参数：ID14 声明的对象数超出其字节所能容纳的范围，ID11 也可能没有 groupid），按 ETSI TS 103 420 §8.2 + Table 56 的关联规则打分选取：**OAMD 与 JOC 载荷 groupid 相同且 ID14 能完整解析**的容器优先，其次只看 ID14 能否完整解析；只有唯一最高分才采用，其余记入 `diagnostics`（`emdf/extra_container_ignored`），并列或全部为 0 仍报变体。
+- 额外那一对的身份以 TS 103 420 Table 47/Table 48 为准（$k=1\to$Lb/Rb，$k\in\{2,4\}\to$Tfl/Tfr，$N=5,7,7,5,7$）；Annex E.3 规定依赖子流的 `chanmap`（若存在）**应**指明 Table 47 的某种配置，因此 `*_5_1_2top_*`（chanmap 写 Lts/Rts）属于不满足 "shall" 的素材，我们按"记诊断 + 继续解码"容错处理。
+- 音频帧内没有任何 JOC EMDF 时（例如编码器未写首帧元数据），该帧的对象通道静音，并在 stderr 的 `[diagnostics]` 与 JSON 报告的 `diagnostics` 里记一笔。
 - 扬声器与 SOFA 双耳路径当前只覆盖普通点对象；extent、spread、diffuse、divergence、channel lock 等对象控制不在支持范围内。
 - OAMD trim element 会按声明边界校验并跳过；warp、balance 和 trim 参数不应用于当前原始对象轨迹或扬声器渲染。
 - 多数据点、少见参数带配置和特殊 OAMD 调度的覆盖度低于常见 12-band、单数据点素材。
+- `joc_clipgain` 在**分析端**并入分析标量：`标量 = 1/16 × g`（`g = 1 + (y/32)·2^(x−4)`），出口的
+  ×16 抵消 1/16，净效果是 `×g`，clamp 因此处在增益**之后**。标量按帧保存两个槽（上一帧值 → 本帧值），
+  本帧前 256 个采样线性过渡、之后为常数，复位后的第一帧直接取新值；`g = 1` 时插值恒等，且 `clamp(x)·1 == clamp(x·1)`。
 - 扬声器 limiter 不属于当前实现的主公式。
 - SOFA importer 当前严格支持 `SimpleFreeFieldHRIR` FIR；其它 SOFA convention 需要显式 adapter。
-- 双耳 runtime 固定 48 kHz、五阶和一次选择一个 measurement-radius shell；公开双耳默认走 native 加速，原生库不可用时自动回退 Python。
-- ADM 输出、原生库、扬声器布局和双耳模型仍需在更多平台、播放器与真实素材上确认互操作性。
+- 双耳 runtime 固定 48 kHz、五阶和一次选择一个 measurement-radius shell。
+- ADM 输出、扬声器布局和双耳模型仍需在更多平台与播放器上确认互操作性。
 
 ## 文档
 
 - [数学说明](docs/math.md) · [English](docs/math.en.md)
-- [原生核说明](docs/native.md) · [English](docs/native.en.md)
 - [双耳渲染](docs/binaural.md) · [English](docs/binaural.en.md)

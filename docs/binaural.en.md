@@ -254,16 +254,9 @@ late sends, the unitary FDN, the 120–180 Hz cosine-squared LFE low-pass, and r
 calibration are JOC project-defined behavior, not constants published by SOFA or
 Dolby.
 
-The public SOFA binaural renderer defaults to the C++20 native core under
-`--backend auto/native` (`ejoc_sofa_binaural_*` in `lib/eac3joc_core.dll`): the
-filterbank, the SH direction-field evaluation, the per-object direct/early
-histories and the shared FDN all run natively, while Python only compiles the
-SOFA source and issues the per-512-sample metadata updates. When the native
-library is unavailable the renderer falls back to the Python/NumPy reference
-implementation; the two agree to better than 1e-9. `--backend python` forces
-the Python backend.
-`--backend` still selects native/Python JOC reconstruction and speaker rendering;
-native acceleration for the public binaural DSP is outside the current API.
+The filterbank, the SH direction-field evaluation, the per-object direct/early
+histories and the shared FDN all run in Python/NumPy, with the binaural DSP kept
+in float64/complex128 throughout.
 
 ## Technical references and rights boundary
 

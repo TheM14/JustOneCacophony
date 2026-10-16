@@ -458,6 +458,39 @@ def _parse_elements(reader, alternate_present, object_count, program, raw_payloa
     return object_element, elements
 
 
+def program_bed_channels(bits_one):
+    """只走 OAMD 头与 program_assignment()，返回声明为 bed 的声道标签列表。
+
+    跨层一致性校验（规格 §11.2 校验 2）只需要这一段；完整帧解析见
+    :func:`frame_update`，它还要继续解析全部对象 element。
+    """
+    bits, raw_payload = _payload_bits(bits_one)
+    try:
+        version = bits[0] << 1 | bits[1]
+    except IndexError:
+        raise UnsupportedVariantError(
+            "oamd", "header_truncated",
+            "OAMD payload 不足以容纳 header",
+            details={"payload_bits": len(bits),
+                     "payload": bytes_descriptor(raw_payload)}) from None
+    reader = _BitReader(bits, 2)
+    try:
+        if version == 3:
+            version += reader.read(3)
+        object_count_bits = reader.read(5)
+        if object_count_bits == 0x1F:
+            object_count_bits += reader.read(7)
+        program = _parse_program_assignment(reader, raw_payload)
+    except UnsupportedVariantError:
+        raise
+    except ValueError as exc:
+        raise _syntax_error(
+            "header_truncated", "OAMD header 字段越界或不完整",
+            raw_payload, exc, payload_bits=len(bits)) from exc
+    return [list(assignment["channels"])
+            for assignment in program["bed_assignments"]]
+
+
 def frame_update(bits_one):
     """单帧 OAMD → 位置字段增量及其 sample offset/ramp duration。"""
     bits, raw_payload = _payload_bits(bits_one)

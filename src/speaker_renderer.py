@@ -190,7 +190,7 @@ def _all_object_targets(layout: SpeakerLayout, state: JocFieldState) -> np.ndarr
 
 
 class PythonSpeakerRenderer:
-    """Stateful float64 speaker renderer with the same frame API as native."""
+    """Stateful float64 speaker renderer."""
 
     def __init__(self, layout: str | SpeakerLayout, block_size: int = 32):
         self.layout = get_speaker_layout(layout) if isinstance(layout, str) else layout

@@ -73,6 +73,9 @@ class EmdfContainer:
     raw: bytes
     payloads: dict
     sample_offsets: dict
+    # payload_id -> group_id（未声明 groupid 的载荷为 None）。规格 §8.2/Table 56：
+    # 同一帧的 OAMD 与 JOC 载荷属于同一 group，凭此把一对载荷关联起来。
+    group_ids: dict = None
 
 
 def _parse_at(data, start_bit):
@@ -99,6 +102,7 @@ def _parse_at(data, start_bit):
 
     payloads = {}
     sample_offsets = {}
+    group_ids = {}
     terminated = False
     while reader.position + 5 <= body_end:
         payload_id = reader.read(5)
@@ -115,7 +119,9 @@ def _parse_at(data, start_bit):
         if reader.read(1):
             variable_bits(reader, 11)       # duration
         if reader.read(1):
-            variable_bits(reader, 2)        # group id
+            group_ids[payload_id] = variable_bits(reader, 2)   # group id
+        else:
+            group_ids[payload_id] = None
         if reader.read(1):
             reader.skip(8)                  # codec data
 
@@ -140,7 +146,7 @@ def _parse_at(data, start_bit):
     total_bytes = 4 + length
     raw_reader = BitReader(data, start_bit, start_bit + total_bytes * 8)
     raw = raw_reader.read_bytes(total_bytes)
-    return EmdfContainer(start_bit, raw, payloads, sample_offsets)
+    return EmdfContainer(start_bit, raw, payloads, sample_offsets, group_ids)
 
 
 def _marker_offsets(data):
@@ -162,13 +168,18 @@ def _marker_offsets(data):
     return sorted(offsets)
 
 
-def find_joc_emdf(frame):
+def find_joc_emdf(frame, usable=None, diagnostics=None, frame_number=None):
     """返回同步帧中唯一、顶层连续且包含 ID11/ID14 的 JOC EMDF 容器。
 
     EMDF payload 是不透明字节串，其中可能自然出现另一个 ``0x5838``。若从这个
     内嵌 marker 开始的后续随机位恰好也能通过容器语法探测，它仍不是一个独立的
     transport 容器。因此，候选的起点一旦落在较早 JOC 容器的声明范围内，就只把
     它记作内嵌伪候选，不参与“多个容器”的判定。
+
+    一个同步帧里可能出现多个顶层容器（同一帧可能同时带两套 ID11/ID14）。
+    ``usable`` 给出“这个容器能否作为本帧元数据”的分值（0 = 不是，越大越可信）：
+    只有唯一最高分时用它，其余记入 ``diagnostics``；没有候选或最高分并列仍按变体
+    报错，不猜。
     """
     matches = []
     offsets = _marker_offsets(frame)
@@ -216,6 +227,22 @@ def find_joc_emdf(frame):
             })
     if len(top_level_matches) != 1:
         starts = [item.start_bit for item in top_level_matches]
+        if usable is not None:
+            scored = [(usable(item), item) for item in top_level_matches]
+            best = max(score for score, _item in scored)
+            winners = [item for score, item in scored if score == best]
+            if best > 0 and len(winners) == 1:
+                if diagnostics is not None:
+                    diagnostics.append({
+                        "stage": "emdf",
+                        "variant": "extra_container_ignored",
+                        "frame": frame_number,
+                        "message": "同步帧内有多个含 ID11/ID14 的 EMDF 容器，只有一个能作为本帧元数据",
+                        "details": {"joc_container_start_bits": starts,
+                                    "used_start_bit": winners[0].start_bit,
+                                    "pair_score": best},
+                    })
+                return winners[0]
         raise UnsupportedVariantError(
             "emdf_transport", "multiple_joc_containers",
             "同步帧中存在多个可用 JOC EMDF，当前无法自动选择",
@@ -235,31 +262,184 @@ def parse_container(data):
     return container
 
 
-def iter_eac3_frames(data):
-    """按 E-AC-3 ``frmsiz`` 遍历同步帧，拒绝静默重同步。"""
+# AC-3 同步帧长度表（16-bit word），索引为 fscod（0=48 kHz、1=44.1 kHz、2=32 kHz）
+# 再取 frmsizecod；与 A/52 的比特率表等价。
+_AC3_FRAME_WORDS = (
+    (64, 64, 80, 80, 96, 96, 112, 112, 128, 128, 160, 160, 192, 192, 224, 224,
+     256, 256, 320, 320, 384, 384, 448, 448, 512, 512, 640, 640, 768, 768,
+     896, 896, 1024, 1024, 1152, 1152, 1280, 1280),
+    (69, 70, 87, 88, 104, 105, 121, 122, 139, 140, 174, 175, 208, 209, 243, 244,
+     278, 278, 348, 348, 417, 418, 487, 487, 557, 557, 696, 696, 835, 835,
+     975, 975, 1114, 1114, 1253, 1253, 1393, 1393),
+    (96, 96, 120, 120, 144, 144, 168, 168, 192, 192, 240, 240, 288, 288, 336, 336,
+     384, 384, 480, 480, 576, 576, 672, 672, 768, 768, 960, 960, 1152, 1152,
+     1344, 1344, 1536, 1536, 1728, 1728, 1920, 1920),
+)
+
+
+# E-AC-3 chanmap（TS 102 366 Annex E Table E2.5）：字段的最高位对应 bit 0。
+CHANMAP_LOCATIONS = (
+    "L", "C", "R", "Ls", "Rs", "Lc/Rc", "Lrs/Rrs", "Cs", "Ts", "Lsd/Rsd",
+    "Lw/Rw", "Vhl/Vhr", "Vhc", "Lts/Rts", "LFE2", "LFE",
+)
+# 单个 bit 展开为两个相邻声道的成对位置；展开顺序为先左后右。
+CHANMAP_PAIR_BITS = frozenset((5, 6, 9, 10, 11, 13))
+# A/52 acmod 对应的全频段声道位置（不含 LFE，按解码顺序）。
+ACMOD_LOCATIONS = {
+    0: ("C",),                    # 1+1 双单声道
+    1: ("C",),
+    2: ("L", "R"),
+    3: ("L", "C", "R"),
+    4: ("L", "R", "Cs"),
+    5: ("L", "C", "R", "Cs"),
+    6: ("L", "R", "Ls", "Rs"),
+    7: ("L", "C", "R", "Ls", "Rs"),
+}
+
+
+def expand_chanmap(chanmap):
+    """按 Table E2.5 把 16 bit chanmap 展开为有序声道位置列表。"""
+    locations = []
+    for bit in range(16):
+        if not (int(chanmap) >> (15 - bit)) & 1:
+            continue
+        locations.extend(CHANMAP_LOCATIONS[bit].split("/"))
+    return locations
+
+
+@dataclass(frozen=True)
+class SyncFrame:
+    """一个同步帧及其传输层（L2）字段。"""
+
+    offset: int
+    size: int
+    codec: str          # "ac3" 或 "eac3"
+    bsid: int
+    strmtyp: int        # AC-3 没有子流类型，固定记为 0
+    substreamid: int
+    acmod: int
+    lfeon: int
+    chanmap: object     # 依赖子流的 16 bit chanmap；未声明为 None
+
+    @property
+    def key(self):
+        """同一音频帧内唯一的子流标识。"""
+        return (self.codec, self.strmtyp, self.substreamid)
+
+
+def _read_bits(data, start, count):
+    value = 0
+    for index in range(start, start + count):
+        value = (value << 1) | ((data[index >> 3] >> (7 - (index & 7))) & 1)
+    return value
+
+
+def sync_frame_at(data, offset):
+    """解析 offset 处同步帧的传输层头。
+
+    区分 AC-3 与 E-AC-3 的依据是 bsid（bit 40 起 5 bit）：bsid <= 8 为 AC-3，
+    其帧长由 fscod/frmsizecod 的比特率表给出；bsid >= 16 为 E-AC-3，帧长由
+    frmsiz 给出。依赖子流（strmtyp=1）在这里顺带解析出 chanmap。
+    """
+    if offset + 6 > len(data) or data[offset] != 0x0B or data[offset + 1] != 0x77:
+        return None
+    base = offset * 8
+    bsid = _read_bits(data, base + 40, 5)
+    if bsid <= 8:
+        fscod = _read_bits(data, base + 32, 2)
+        frmsizecod = _read_bits(data, base + 34, 6)
+        if fscod > 2 or frmsizecod >= 38:
+            return None
+        size = _AC3_FRAME_WORDS[fscod][frmsizecod] * 2
+        acmod = _read_bits(data, base + 48, 3)
+        bit = 51
+        if acmod & 0x1 and acmod != 0x1:
+            bit += 2                      # cmixlev
+        if acmod & 0x4:
+            bit += 2                      # surmixlev
+        if acmod == 0x2:
+            bit += 2                      # dsurmod
+        lfeon = _read_bits(data, base + bit, 1)
+        return SyncFrame(offset, size, "ac3", bsid, 0, 0, acmod, lfeon, None)
+
+    strmtyp = _read_bits(data, base + 16, 2)
+    substreamid = _read_bits(data, base + 18, 3)
+    frmsiz = _read_bits(data, base + 21, 11)
+    # fscod==3 时的 fscod2 同样是 2 bit，因此 acmod 恒在 bit 36。
+    acmod = _read_bits(data, base + 36, 3)
+    lfeon = _read_bits(data, base + 39, 1)
+    bit = 45                              # bsid 之后
+    bit += 5                              # dialnorm
+    compre = _read_bits(data, base + bit, 1)
+    bit += 1
+    if compre:
+        bit += 8                          # compr
+    if acmod == 0:
+        bit += 5                          # dialnorm2
+        compr2 = _read_bits(data, base + bit, 1)
+        bit += 1
+        if compr2:
+            bit += 8
+    chanmap = None
+    if strmtyp == 1:
+        if _read_bits(data, base + bit, 1):
+            chanmap = _read_bits(data, base + bit + 1, 16)
+    return SyncFrame(offset, (frmsiz + 1) * 2, "eac3", bsid, strmtyp, substreamid,
+                     acmod, lfeon, chanmap)
+
+
+def iter_syncframes(data):
+    """按同步字长度遍历输入中的 AC-3 与 E-AC-3 同步帧。"""
     pos = 0
     while pos < len(data):
-        if pos + 4 > len(data) or data[pos:pos + 2] != b"\x0b\x77":
+        frame = sync_frame_at(data, pos)
+        if frame is None:
             raise UnsupportedVariantError(
                 "eac3_transport", "syncframe_header",
-                "E-AC-3 同步帧头无效或出现了未处理的子流排列",
+                "同步帧头无效或出现了未处理的子流排列",
                 details={
                     "byte_offset": pos,
                     "remaining_bytes": len(data) - pos,
                     "next_16_bytes_hex": data[pos:pos + 16].hex(),
                 })
-        size = ((((data[pos + 2] & 7) << 8) | data[pos + 3]) + 1) * 2
-        if pos + size > len(data):
+        if pos + frame.size > len(data):
             raise UnsupportedVariantError(
                 "eac3_transport", "truncated_syncframe",
-                "E-AC-3 末帧长度超过输入剩余数据",
+                "末帧长度超过输入剩余数据",
                 details={
                     "byte_offset": pos,
-                    "declared_frame_bytes": size,
+                    "codec": frame.codec,
+                    "declared_frame_bytes": frame.size,
                     "remaining_bytes": len(data) - pos,
                 })
-        yield data[pos:pos + size]
-        pos += size
+        yield frame
+        pos += frame.size
+
+
+def audio_frame_groups(frames):
+    """把同步帧序列按音频帧分组。
+
+    一个音频帧内每个 (编码, strmtyp, substreamid) 组合只出现一次，因此再次遇到
+    已出现过的组合即表示下一个音频帧开始。独立子流缺席（只有依赖子流）或核心是
+    AC-3 时同样成立。
+    """
+    group = []
+    keys = set()
+    for frame in frames:
+        if frame.key in keys:
+            yield group
+            group = []
+            keys = set()
+        keys.add(frame.key)
+        group.append(frame)
+    if group:
+        yield group
+
+
+def iter_eac3_frames(data):
+    """兼容入口：只产出同步帧字节。"""
+    for frame in iter_syncframes(data):
+        yield data[frame.offset:frame.offset + frame.size]
 
 
 def extract_index(eac3_path, output_dir, max_frames=None):

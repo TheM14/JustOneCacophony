@@ -224,11 +224,8 @@ Near/Mid/Far、equal-power direct level、六面 shoebox 一阶 image source、l
 unitary FDN、LFE 120–180 Hz cosine-squared 低通及 room calibration 都是 JOC
 项目定义行为，不是 SOFA 或 Dolby 公布常数。
 
-公开 SOFA 双耳渲染在 `--backend auto/native` 下默认走 C++20 原生核
-（`lib/eac3joc_core.dll` 的 `ejoc_sofa_binaural_*` 接口：filterbank、SH 方向场求值、
-逐对象 early/direct 历史与共享 FDN 全部在原生侧执行，Python 只做 SOFA 编译与每
-512-sample 的元数据更新）；原生库不可用时自动回退 Python/NumPy 参考实现，两者
-逐值一致（差异 < 1e-9）。`--backend python` 强制使用 Python 后端。
+filterbank、SH 方向场求值、逐对象 early/direct 历史与共享 FDN 全部在 Python/NumPy
+一侧执行，双耳 DSP 全程 float64/complex128。
 
 ## 技术引用与权利边界
 

@@ -4,7 +4,7 @@
 
 > JustOneCacophony is an experimental/test implementation of E-AC-3 JOC for studying JOC parsing, reconstruction, rendering, and the associated mathematics.
 
-The project can extract and parse EMDF, ID14 JOC parameters, and ID11 OAMD metadata from common E-AC-3 JOC streams. It combines those data with the core 5.1 PCM decoded by FFmpeg, reconstructs LFE plus 15 object channels, and writes ADM BWF, a WAV file for a selected speaker layout, or direct binaural stereo using a standard SOFA HRTF.
+The project can extract and parse EMDF, ID14 JOC parameters, and ID11 OAMD metadata from common E-AC-3 JOC streams. It combines those data with the core PCM decoded by FFmpeg (N=5 or 7 full-band channels), reconstructs LFE plus 15 object channels, and writes ADM BWF, a WAV file for a selected speaker layout, or direct binaural stereo using a standard SOFA HRTF.
 
 This is research code, not a complete, standards-compliant, or production-grade JOC decoder. It covers only the stream forms currently implemented. Unknown variants fail explicitly—because when the math goes wrong, all that may remain is the cacophony.
 
@@ -19,14 +19,14 @@ This is research code, not a complete, standards-compliant, or production-grade 
 - Run public SOFA binaural rendering directly from `pcm16 + ID11/OAMD`, without a temporary ADM BWF.
 - Keep the binaural DSP in float64/complex128, including 961-sample latency compensation, cross-frame state, and the room tail.
 - Use a shared float32/PCM24 WAV writer and explicit PCM24 clipping policy for direct outputs.
-- Use the NumPy backend or an optional C++20 core through `ctypes`; `auto` falls back to Python when the native library is unavailable.
+- Implement everything in pure Python on NumPy;
 - Read or write metadata sidecars and produce metadata, timing, and output reports.
 
 ## Processing flow
 
 ```text
 M4A / E-AC-3
-  ├─ FFmpeg extracts E-AC-3 and decodes the core 5.1 PCM
+  ├─ FFmpeg extracts E-AC-3 and decodes the core PCM (N=5 or 7)
   ├─ EMDF → ID14 JOC parameters → object matrix
   ├─ core PCM → analysis QMF → parameter interpolation → inverse QMF
   ├─ ID11 OAMD → object positions and timing
@@ -36,7 +36,7 @@ M4A / E-AC-3
        └─ direct ID11 timeline + SOFA HRTF → binaural WAV
 ```
 
-The Python and C++ backends follow the same mathematics for JOC object reconstruction and speaker rendering. The public SOFA binaural backend currently runs in Python; bitstream parsing, the OAMD timeline, and CLI behavior also remain in Python.
+JOC object reconstruction, speaker rendering, and the public SOFA binaural rendering follow the same mathematics: analysis QMF, parameter interpolation, the object matrix, and inverse QMF. Bitstream parsing, the OAMD timeline, and CLI behavior are in Python as well.
 
 ## Requirements
 
@@ -45,7 +45,6 @@ The Python and C++ backends follow the same mathematics for JOC object reconstru
 - h5py 3.8+
 - SciPy 1.10+
 - A standalone FFmpeg executable; `ffmpeg-python` is not required. FFmpeg is discovered through `PATH` by default or selected with `--ffmpeg`. On startup the decoder options are probed with `ffmpeg -h decoder=eac3`: a missing E-AC-3 decoder or `-drc_scale` is a hard error, while a missing `-target_level` only fails when `--eac3-target-level` is used
-- Optional: CMake and a C++20 toolchain to build the native core
 
 Install the Python dependency in a project-specific environment:
 
@@ -70,9 +69,7 @@ python main.py input.m4a
 Select a backend or output path:
 
 ```powershell
-python main.py input.eac3 -o output.adm.wav --backend python
-python main.py input.m4a --backend native --native-threads 2
-python main.py input.m4a --native-library lib/eac3joc_core.dll
+python main.py input.eac3 -o output.adm.wav
 ```
 
 Write a speaker-layout WAV directly:
@@ -168,12 +165,10 @@ python main.py input.m4a --eac3-target-level -27    # dialnorm-referenced level
 - `--eac3-target-level` (`-31`–`0`, default `0` = off) maps to FFmpeg
   `-target_level`: a static per-frame gain of about `target_level - dialnorm` dB,
   independent of and stackable with `--eac3-drc-scale`. dialnorm is a per-stream
-  property (measured Apple Music Atmos streams are about `-18` to `-19` dB, so
-  `-27` is roughly `8`–`9` dB of attenuation).
-- The level change is expected: compared with the FFmpeg default, measured
-  tracks move by `0` to `-2.15` dB peak and `0` to `-1.69` dB RMS (direction
-  depends on the stream `dynrng`), so `output_clip.peak` and the PCM24 clipping
-  decision in `.report.json` change accordingly.
+  property, so the attenuation that `-27` applies varies from stream to stream.
+- The level change is expected: whether the gain is applied depends on the stream
+  `dynrng`, so `output_clip.peak` and the PCM24 clipping decision in
+  `.report.json` change accordingly.
 - `--gain-db` is a static gain applied **after** reconstruction (float64 on the
   binaural path) and is not the same thing as decode-side DRC, which is
   block-varying; do not use `--gain-db` to cancel it.
@@ -233,36 +228,16 @@ python main.py --help
 
 Without `-o`, output still goes to `output/` at the repository root. The directory move intentionally preserves this behavior.
 
-## Native core
-
-The repository does not include native binaries by default. Download a prebuilt runtime for the current platform from a project Release, or build one locally, then place the runtime library under `lib/` at the repository root; create the directory if it is absent. To build it yourself, run CMake from the repository root:
-
-```powershell
-cmake -S native -B build/cmake -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PWD/lib"
-cmake --build build/cmake --config Release
-cmake --install build/cmake --config Release
-```
-
-The runtime lookup order is:
-
-1. `--native-library`;
-2. `EAC3JOC_NATIVE_LIBRARY`;
-3. the standard platform library name under `lib/`.
-
-See the [native-core notes](docs/native.en.md) for ABI, state, and precision details.
-
 ## Repository layout
 
 ```text
 JustOneCacophony/
 ├─ main.py               command-line entry point
 ├─ src/                  Python implementation modules
-├─ native/               C/C++ acceleration core, C ABI, and required table data
 ├─ data/                 Python runtime table data
-├─ lib/                  native runtime drop-in directory (create as needed)
 ├─ HRTF/                 user HRTF data directory (create as needed, git-ignored)
 ├─ output/               output directory (create as needed; the .jochrtf cache defaults to its hrtf-cache subdirectory)
-├─ docs/                 math and native-core notes in both languages
+├─ docs/                 math and binaural notes in both languages
 ├─ requirements.txt      Python dependency
 ├─ README.md             Chinese documentation
 └─ README.en.md          English documentation
@@ -288,16 +263,24 @@ See the [mathematical notes](docs/math.en.md) for the equations used by the deco
 ## Known limitations
 
 - Only the common contiguous EMDF transport is covered. Fragmented transport across multiple audio-block skip fields is not covered.
+- All `joc_dmx_config_idx` values 0..4 are covered ($N=5,7,7,5,7$; the phase switch $\sigma(k)$ gates the Ls/Rs $-j$ rotation and the band-0 FIR together). The 7-channel configurations need an 8-channel bed and a dependent-substream `chanmap` to identify the extra pair: a missing independent substream or a missing `chanmap` is still a variant error, while a `chanmap` that disagrees with $k$ about the extra pair, or an OAMD bed mask that does, is recorded as a diagnostic and the frame still renders. The extra pair's **identity** is metadata only and never reaches the DSP (section 10.1); the bed mapping follows the channel codes the `chanmap` declares.
+- When one audio frame holds several EMDF containers carrying ID11/ID14 (one of them may be something other than the frame's JOC parameters: its ID14 may declare more objects than its bytes can hold, and its ID11 may carry no group id), the container is chosen by the association rule of ETSI TS 103 420 section 8.2 and its Table 56: **the container whose OAMD and JOC payloads share a group id and whose ID14 parses completely** wins, then one whose ID14 merely parses; only a unique best score is used, the others are recorded as a diagnostic (`emdf/extra_container_ignored`), and a tie or all-zero score stays a variant error.
+- The extra pair's identity follows TS 103 420 Table 47/Table 48 ($k=1\to$Lb/Rb, $k\in\{2,4\}\to$Tfl/Tfr, $N=5,7,7,5,7$); Annex E.3 requires a dependent-substream `chanmap`, when present, to indicate one of the Table 47 configurations, so `*_5_1_2top_*` (chanmap says Lts/Rts) does not satisfy that "shall". Such material is tolerated with a diagnostic instead of being refused.
+- An audio frame with no JOC EMDF at all (for example when the encoder wrote none for the first frame) emits silent object channels and is recorded in the `[diagnostics]` line and the JSON report's `diagnostics` field.
 - The speaker and SOFA binaural paths currently cover ordinary point objects; extent, spread, diffuse, divergence, channel lock, and similar controls are outside the supported scope.
 - OAMD trim elements are boundary-checked and skipped; warp, balance, and trim parameters are not applied to raw object trajectories or speaker rendering.
 - Multi-data-point streams, uncommon band configurations, and unusual OAMD scheduling have less coverage than common 12-band, single-data-point material.
+- `joc_clipgain` is folded into the **analysis-side scalar** (`scalar = 1/16 x g`, with `g` from the
+  `x:3 | y:5` field), so the x16 at the output cancels the 1/16 and the clamp sits **after** the gain.
+  The scalar is kept per frame: the first 256 samples ramp linearly from the previous frame's value and
+  the rest stays constant. For `g = 1` the interpolation is the identity and
+  `clamp(x)·1 == clamp(x·1)`.
 - A speaker limiter is outside the current primary formula.
 - The SOFA importer currently supports the strict `SimpleFreeFieldHRIR` FIR subset; other SOFA conventions require explicit adapters.
-- The binaural runtime is fixed at 48 kHz, fifth order, and one measurement-radius shell at a time; the public binaural backend defaults to the native accelerator and falls back to Python when the native library is unavailable.
-- ADM output, native binaries, speaker layouts, and binaural models still need broader interoperability checks across platforms, players, and real material.
+- The binaural runtime is fixed at 48 kHz, fifth order, and one measurement-radius shell at a time.
+- ADM output, speaker layouts, and binaural models still need broader interoperability checks across platforms and players.
 
 ## Documentation
 
 - [Mathematical notes](docs/math.en.md) · [中文](docs/math.md)
-- [Native-core notes](docs/native.en.md) · [中文](docs/native.md)
 - [Binaural rendering](docs/binaural.en.md) · [中文](docs/binaural.md)

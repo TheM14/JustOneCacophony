@@ -130,11 +130,12 @@ _SURROUND_DC_B = np.array([
 _SURROUND_DC_C = _SURROUND_DC_B + 1j * _SURROUND_DC_A
 
 
-def surround_post_frame(x, delay, dc_hist, apply_dc_filter=True):
+def surround_post_frame(x, delay, dc_hist, apply_dc_filter=True, rotate=True):
     """处理 Ls/Rs 的 10 槽延迟、-j 旋转和 band-0 FIR。
 
-    ``apply_dc_filter=False`` 时跳过 band-0 的 21-tap DC 补偿，只做延迟与
-    -j 旋转；延迟线与 DC 历史仍照常推进，便于逐帧切换。
+    ``rotate`` 与 ``apply_dc_filter`` 由同一个开关 σ(k) 门控（规格 §4）：
+    σ(k)=0（k∈{0,1,2}）时 c=3,4 退化为普通延迟，既不旋转也不做 FIR。
+    延迟线与 DC 历史无论开关如何都照常推进，便于逐帧切换。
     """
     src = np.asarray(x, dtype=np.complex128)
     qdelay = np.asarray(delay, dtype=np.complex128).copy()
@@ -145,7 +146,7 @@ def surround_post_frame(x, delay, dc_hist, apply_dc_filter=True):
     for group in range(0, 24, 4):
         current = src[:, :, group:group + 4].transpose(0, 2, 1)
         queued = np.concatenate((qdelay, current), axis=1)
-        block = -1j * queued[:, :4, :]
+        block = -1j * queued[:, :4, :] if rotate else queued[:, :4, :].copy()
         qdelay = queued[:, 4:, :]
         dc_buf = np.concatenate((hist, current[:, :, 0]), axis=1)
         if apply_dc_filter:

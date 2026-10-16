@@ -23,10 +23,12 @@ import numpy as np
 import adm_assemble
 import adm_atmos
 from adm_validate import validate
+from bed_layout import (BED_EXTRA_SLOTS_BY_CONFIG, bed_order, extra_pair,
+                        joc_input_indices)
+from emdf import expand_chanmap
 from metadata import DirectPayloadIndex, PayloadIndex, write_summary
 import oamd_tracks
 from renderer import JocRenderer
-from native_renderer import NativeBackendUnavailable, NativeJocRenderer
 from binaural_renderer import (
     DEFAULT_SOFA_HRTF,
     SofaBinauralRenderer,
@@ -243,15 +245,22 @@ def extract_eac3(ffmpeg, source, target):
     return target
 
 
-def decode_core(ffmpeg, eac3, target, duration_sec=None, *, options=()):
-    # 5.1(side) 的 f32le 顺序为 FL FR FC LFE SL SR；JOC 使用其中 0,1,2,4,5。
+def decode_core(ffmpeg, eac3, target, duration_sec=None, *, options=(), channels=6):
+    """解出床 PCM。
+
+    ``channels=6``（N=5 档位）沿用 -ac 6；N=7 档位必须传 ``channels=None``，
+    让解码器保持自身的声道布局——``-ac 6`` 会把 5.1.2/7.1 下混成 5.1 并丢掉
+    额外那一对，``-ac 8`` 又会把 5.1.2 重映射成 7.1，两种都会丢信息。
+    """
     command = [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", *options,
                "-i", str(eac3), "-map", "0:a:0", "-vn"]
     if duration_sec is not None:
         command.extend(["-t", f"{duration_sec:.9f}"])
-    command.extend(["-ac", "6", "-ar", str(RATE),
+    if channels is not None:
+        command.extend(["-ac", str(int(channels))])
+    command.extend(["-ar", str(RATE),
                     "-c:a", "pcm_f32le", "-f", "f32le", str(target)])
-    run(command, "FFmpeg 解码核心 5.1 PCM")
+    run(command, f"FFmpeg 解码核心 {channels or '码流默认'} 通道 PCM")
     return target
 
 
@@ -335,45 +344,82 @@ def variant_call(output, source, function, *args, **kwargs):
         raise
 
 
-def create_renderer(backend, gain, native_library=None, native_threads=None):
-    """选择整帧 DSP 后端；auto 优先使用 lib 中当前平台的原生构建。"""
-    if backend in ("auto", "native"):
-        try:
-            decoder = NativeJocRenderer(
-                output_scale=gain, library_path=native_library, threads=native_threads)
-            info = {
-                "name": "native",
-                "library": str(decoder.library_path),
-                "build": decoder.build_info,
-                "threads": decoder.threads,
-            }
-            print(f"[backend] native: {info['build']}  threads={info['threads']} "
-                  f"({info['library']})", flush=True)
-            return decoder, info
-        except (NativeBackendUnavailable, OSError) as exc:
-            print(f"[backend] native unavailable, falling back to Python: {exc}", flush=True)
+def create_renderer(gain):
+    """整帧 DSP 后端：Python/numpy。"""
     decoder = JocRenderer(output_scale=gain)
     info = {"name": "python", "library": None, "build": None, "threads": None}
     print("[backend] python/numpy", flush=True)
     return decoder, info
 
 
+def bed_channel_count(index):
+    """床 PCM 的通道数：N=5 档位沿用 6 通道，N=7 档位保留解码器自身的 8 通道。"""
+    return 6 if (getattr(index, "n_channels", None) or 5) == 5 else 8
+
+
+def bed_layout_plan(index):
+    """按通道码把床 PCM 摆进 JOC 输入序（规格 §3、§10.4）。
+
+    返回 {"channels", "joc_indices", "lfe_index"}。N=7 必须同时有核心子流与依赖
+    子流的 chanmap 才能确定额外那一对；缺任何一侧都报变体，不猜一个顺序。
+    """
+    config_idx = getattr(index, "config_idx", None)
+    core_channels = getattr(index, "n_channels", None) or 5
+    if core_channels == 5:
+        # 5.1(side) 的 f32le 顺序为 FL FR FC LFE SL SR。
+        return {"channels": 6, "joc_indices": [0, 1, 2, 4, 5], "lfe_index": 3,
+                "extra_pair_slots": list(BED_EXTRA_SLOTS_BY_CONFIG.get(config_idx, ()))}
+    transport = None
+    for entry in getattr(index, "transports", None) or ():
+        if entry["core_locations"] and entry["chanmap"] is not None:
+            transport = entry
+            break
+    if transport is None:
+        raise UnsupportedVariantError(
+            "eac3", "core_extension_pair",
+            "N=7 档位需要核心子流与依赖子流 chanmap 才能确定床通道顺序",
+            details={"config_idx": getattr(index, "config_idx", None),
+                     "n_channels": core_channels})
+    core = list(transport["core_locations"])
+    locations = core + (["LFE"] if transport["core_lfe"] else [])
+    locations += expand_chanmap(transport["chanmap"])
+    pair = extra_pair(core, transport["chanmap"])
+    order = bed_order(locations)
+    indices = joc_input_indices(locations, pair)
+    if order is None or indices is None:
+        raise UnsupportedVariantError(
+            "eac3", "bed_channel_mapping_unsupported",
+            "床的声道位置无法换算成 JOC 输入序",
+            details={"config_idx": getattr(index, "config_idx", None),
+                     "locations": locations, "extra_pair": list(pair)})
+    lfe_index = None
+    for index, (_position, name) in enumerate(order):
+        if name == "LFE":
+            lfe_index = index
+            break
+    return {"channels": len(order), "joc_indices": indices, "lfe_index": lfe_index,
+            "extra_pair_slots": list(BED_EXTRA_SLOTS_BY_CONFIG.get(config_idx, ()))}
+
+
 def render(index, bed_path, frame_count, raw_path, gain, progress_every,
-           backend="auto", native_library=None, native_threads=None, frame_sink=None,
+           frame_sink=None,
            speaker_renderer=None, speaker_sink=None, speaker_metadata_offset=1473,
            binaural_renderer=None, binaural_sink=None, binaural_metadata_offset=1473,
            raw_scale=1.0):
+    plan = bed_layout_plan(index)
+    bed_channels = plan["channels"]
     values = np.memmap(bed_path, dtype=np.float32, mode="r")
-    frame_width = FRAME_SAMPLES * 6
+    frame_width = FRAME_SAMPLES * bed_channels
     if values.size % frame_width:
-        raise ValueError(f"FFmpeg PCM 长度不是 1536×6 的整数倍: {values.size}")
-    bed = values.reshape(-1, FRAME_SAMPLES, 6)
+        raise ValueError(
+            f"FFmpeg PCM 长度不是 1536×{bed_channels} 的整数倍: {values.size}")
+    bed = values.reshape(-1, FRAME_SAMPLES, bed_channels)
     if len(bed) < frame_count:
         raise ValueError(f"PCM 只有 {len(bed)} 帧，元数据需要 {frame_count} 帧")
     output = (np.memmap(raw_path, dtype=np.float32, mode="w+",
                         shape=(frame_count, FRAME_SAMPLES, 16))
               if raw_path is not None else None)
-    decoder, backend_info = create_renderer(backend, gain, native_library, native_threads)
+    decoder, backend_info = create_renderer(gain)
     started = time.perf_counter()
     dsp_seconds = 0.0
     adm_stream_seconds = 0.0
@@ -385,11 +431,17 @@ def render(index, bed_path, frame_count, raw_path, gain, progress_every,
     elapsed = 0.0
     try:
         for frame_number, row in enumerate(index.rows[:frame_count]):
-            bed6 = np.asarray(bed[frame_number], dtype=np.float32)
+            frame = np.asarray(bed[frame_number], dtype=np.float32)
+            core = frame[:, plan["joc_indices"]].T
+            lfe = (np.zeros(FRAME_SAMPLES, dtype=np.float32)
+                   if plan["lfe_index"] is None else frame[:, plan["lfe_index"]])
             subs = index.subpayloads(row)
             stage = time.perf_counter()
-            pcm16, _ = decoder.render_subpayloads(
-                subs, bed6[:, [0, 1, 2, 4, 5]].T, bed6[:, 3])
+            if subs is None:
+                pcm16, _ = decoder.render_missing_frame(
+                    core, lfe, config_idx=getattr(index, "config_idx", None) or 3)
+            else:
+                pcm16, _ = decoder.render_subpayloads(subs, core, lfe)
             dsp_seconds += time.perf_counter() - stage
             if output is not None:
                 stage = time.perf_counter()
@@ -537,12 +589,7 @@ def build_parser():
     parser.add_argument("--eac3-target-level", type=int, default=0,
                         help="E-AC-3 解码器 -target_level：按码流 dialnorm 归一化电平，"
                              "增益约 target_level - dialnorm dB；0=不施加，默认 0")
-    parser.add_argument("--backend", choices=("auto", "native", "python"), default="auto",
-                        help="JOC/扬声器 DSP 后端；SOFA 双耳 DSP 当前使用 Python")
-    parser.add_argument("--native-library", type=Path,
-                        help="显式指定原生库；默认从单层 lib 目录选择当前平台文件")
-    parser.add_argument("--native-threads", type=int,
-                        help="原生 DSP 总线程数；默认在 4 核以上使用 2，可用环境变量 EAC3JOC_NATIVE_THREADS 覆盖")
+
     metadata_source = parser.add_mutually_exclusive_group()
     metadata_source.add_argument("--metadata-dir", type=Path,
                                  help="含 frames.csv 和 emdf/ 或 payloads/ 的元数据 sidecar")
@@ -680,10 +727,22 @@ def main(argv=None):
         if args.metadata_only:
             return 0
 
+        for entry in getattr(index, "diagnostics", None) or ():
+            print("[diagnostics] "
+                  + json.dumps(entry, ensure_ascii=False, separators=(",", ":")),
+                  file=sys.stderr, flush=True)
+        core_channels = getattr(index, "n_channels", None)
+        if core_channels is not None:
+            print(f"[joc] downmix_config_idx={index.config_idx}  "
+                  f"core_channels={core_channels}  "
+                  f"bed_channels={bed_channel_count(index)}  "
+                  f"extra_pair_slots={bed_layout_plan(index)['extra_pair_slots']}",
+                  flush=True)
         bed_path = timed_call(
             timings, "decode_core", decode_core,
             ffmpeg, eac3, temp_dir / "core51_f32le.raw", duration_sec,
-            options=decode_options)
+            options=decode_options,
+            channels=(6 if core_channels in (None, 5) else None))
         raw_path = (output.with_name(output.name + ".objects16.f32le")
                     if args.keep_raw else None)
         master = None
@@ -700,12 +759,7 @@ def main(argv=None):
             timings["create_binaural_renderer"] = 0.0
             layout = get_speaker_layout(args.speaker_layout)
             speaker_name = speaker_layout_display_name(layout)
-            speaker_decoder, speaker_backend_info = create_speaker_renderer(
-                layout, backend=args.backend, native_library=args.native_library)
-            fallback = speaker_backend_info.get("fallback_reason")
-            if fallback:
-                print(f"[speaker] native unavailable, falling back to Python: {fallback}",
-                      flush=True)
+            speaker_decoder, speaker_backend_info = create_speaker_renderer(layout)
             print(f"[speaker] layout={speaker_name} backend={speaker_backend_info['name']} "
                   f"channels={layout.channel_count}", flush=True)
             spool = SpeakerPcmSpool(
@@ -715,8 +769,7 @@ def main(argv=None):
                 render_seconds, renderer_backend, render_breakdown = timed_call(
                     timings, "render_and_stream", variant_call,
                     output, source, render, index, bed_path, frame_count, raw_path, gain,
-                    max(1, args.progress_every), args.backend, args.native_library,
-                    args.native_threads, None, speaker_decoder, spool,
+                    max(1, args.progress_every), None, speaker_decoder, spool,
                     args.speaker_metadata_offset)
                 spool.finalize()
                 speaker_actual_format = choose_pcm_output_format(
@@ -749,33 +802,14 @@ def main(argv=None):
                 "chunk_frames": args.binaural_chunk_frames,
             }
             if hrtf_source["kind"] == "sofa":
-                binaural_decoder = None
-                if args.backend in ("auto", "native"):
-                    try:
-                        from sofa_native_backend import create_native_sofa_renderer
-                        binaural_decoder = timed_call(
-                            timings, "create_binaural_renderer",
-                            create_native_sofa_renderer,
-                            hrtf_source["path"],
-                            cache_policy=hrtf_source["cache_policy"],
-                            cache_dir=hrtf_source["cache_dir"],
-                            shell_radius_m=args.hrtf_radius_m,
-                            **common_options)
-                    except (ImportError, OSError, RuntimeError, ValueError) as exc:
-                        print(
-                            f"[binaural] native SOFA backend unavailable "
-                            f"({exc.__class__.__name__}: {exc}); "
-                            f"falling back to Python", flush=True)
-                        binaural_decoder = None
-                if binaural_decoder is None:
-                    binaural_decoder = timed_call(
-                        timings, "create_binaural_renderer",
-                        SofaBinauralRenderer.from_sofa,
-                        hrtf_source["path"],
-                        cache_policy=hrtf_source["cache_policy"],
-                        cache_dir=hrtf_source["cache_dir"],
-                        shell_radius_m=args.hrtf_radius_m,
-                        **common_options)
+                binaural_decoder = timed_call(
+                    timings, "create_binaural_renderer",
+                    SofaBinauralRenderer.from_sofa,
+                    hrtf_source["path"],
+                    cache_policy=hrtf_source["cache_policy"],
+                    cache_dir=hrtf_source["cache_dir"],
+                    shell_radius_m=args.hrtf_radius_m,
+                    **common_options)
             elif hrtf_source["kind"] == "rosella":
                 binaural_decoder = timed_call(
                     timings, "create_binaural_renderer",
@@ -785,32 +819,13 @@ def main(argv=None):
                     object_delay_samples=args.object_delay_samples,
                     tail_seconds=args.binaural_tail_seconds,
                     output_gain=gain_float64,
-                    chunk_frames=args.binaural_chunk_frames,
-                    backend=args.backend,
-                    native_library=args.native_library)
+                    chunk_frames=args.binaural_chunk_frames)
             else:
-                binaural_decoder = None
-                if args.backend in ("auto", "native"):
-                    try:
-                        from sofa_native_backend import (
-                            create_native_compiled_cache_renderer)
-                        binaural_decoder = timed_call(
-                            timings, "create_binaural_renderer",
-                            create_native_compiled_cache_renderer,
-                            hrtf_source["path"],
-                            **common_options)
-                    except (ImportError, OSError, RuntimeError, ValueError) as exc:
-                        print(
-                            f"[binaural] native SOFA backend unavailable "
-                            f"({exc.__class__.__name__}: {exc}); "
-                            f"falling back to Python", flush=True)
-                        binaural_decoder = None
-                if binaural_decoder is None:
-                    binaural_decoder = timed_call(
-                        timings, "create_binaural_renderer",
-                        SofaBinauralRenderer.from_compiled_cache,
-                        hrtf_source["path"],
-                        **common_options)
+                binaural_decoder = timed_call(
+                    timings, "create_binaural_renderer",
+                    SofaBinauralRenderer.from_compiled_cache,
+                    hrtf_source["path"],
+                    **common_options)
             print(
                 f"[binaural] mode={binaural_render_mode} "
                 f"backend={binaural_decoder.dsp_backend} "
@@ -835,8 +850,6 @@ def main(argv=None):
                     timings, "render_and_stream", variant_call,
                     output, source, render, index, bed_path, frame_count, raw_path,
                     np.float32(1.0), max(1, args.progress_every),
-                    backend=args.backend, native_library=args.native_library,
-                    native_threads=args.native_threads,
                     binaural_renderer=binaural_decoder, binaural_sink=spool,
                     binaural_metadata_offset=args.object_delay_samples, raw_scale=gain)
                 spool.finalize(minimum_samples=frame_count * FRAME_SAMPLES)
@@ -895,8 +908,7 @@ def main(argv=None):
                 render_seconds, renderer_backend, render_breakdown = timed_call(
                     timings, "render_and_stream", variant_call,
                     output, source, render, index, bed_path, frame_count, raw_path, gain,
-                    max(1, args.progress_every), args.backend, args.native_library,
-                    args.native_threads, master)
+                    max(1, args.progress_every), master)
                 tracks = timed_call(
                     timings, "build_adm_tracks", variant_call,
                     output, source, oamd_tracks.build_adm_tracks,
@@ -927,6 +939,10 @@ def main(argv=None):
         "mode": mode_name,
         "metadata": str(metadata_json) if metadata_json is not None else None,
         "metadata_backend": metadata_backend,
+        "joc_downmix_config_idx": getattr(index, "config_idx", None),
+        "joc_core_channels": getattr(index, "n_channels", None),
+        "joc_extra_pair_slots": bed_layout_plan(index)["extra_pair_slots"],
+        "diagnostics": getattr(index, "diagnostics", None),
         "metadata_cache": str(metadata_cache_dir) if metadata_cache_dir is not None else None,
         "frames": frame_count,
         "duration_sec": duration_sec,
