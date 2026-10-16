@@ -100,4 +100,9 @@ struct ParseTrace {
 Status parse_id11_verbose(const std::uint8_t* payload, std::size_t payload_size, OamdUpdate* out,
                           ParseTrace* trace);
 
+// Parses only the OAMD header and program_assignment(), which is all the
+// cross-layer bed-mask check (spec section 11.2 item 2) needs.
+Status parse_id11_bed_assignments(const std::uint8_t* payload, std::size_t payload_size,
+                                  std::vector<BedAssignment>* out);
+
 }  // namespace joc::oamd

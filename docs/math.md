@@ -211,7 +211,8 @@ $$
 
 ## 4. 核心 PCM 的 analysis QMF
 
-矩阵输入使用核心声道 L、R、C、Ls、Rs；LFE 走独立路径。核心 PCM 先缩放为
+矩阵输入使用 $N$ 个核心声道（$N\in\{5,7\}$，由 $joc\_dmx\_config\_idx$ 查表得到，
+$k=0\ldots4$ 对应 $N=5,7,7,5,7$）；LFE 走独立路径。核心 PCM 先缩放为
 
 $$
 \widetilde x_c[n]=\frac{x_c[n]}{16}.
@@ -238,29 +239,29 @@ $$
 \qquad c\in\{L,R,C\}.
 $$
 
-Ls、Rs 同样延迟 10 个时槽，并在 $b>0$ 时作 $-j$ 旋转：
+Ls、Rs 的 10 时槽延迟、$b>0$ 的 $-j$ 旋转与 band-0 的 21-tap 复 FIR 由**同一个开关**
+$\sigma(k)=1\iff k\in\{3,4\}$ 门控：
 
 $$
-\widehat X_{c,b,t}=-jX_{c,b,t-10},
-\qquad c\in\{Ls,Rs\},\ b>0.
+\widehat X_{c,b,t}=
+\begin{cases}
+-j\,X_{c,b,t-10}, & \sigma(k)=1,\ c\in\{Ls,Rs\},\ b>0,\\[1mm]
+\sum_{m=0}^{20}h_mX_{c,0,t-m}, & \sigma(k)=1,\ c\in\{Ls,Rs\},\ b=0,\\[1mm]
+X_{c,b,t-10}, & \text{其他情况}.
+\end{cases}
 $$
 
-环绕声道的 band 0 还经过 21-tap 复 FIR：
-
-$$
-\widehat X_{c,0,t}=
-\sum_{k=0}^{20}h_kX_{c,0,t-k}.
-$$
-
-这些延迟和滤波历史属于解码状态，不能按帧独立清零。
+$N=7$ 时第 6、7 个核心声道（Lb/Rb 或 Tfl/Tfr）与前级相同，只做 10 时槽延迟：
+通道身份只影响元数据与 ADM 落位，不进入 DSP。这些延迟和滤波历史属于解码状态，
+不能按帧独立清零。
 
 ## 6. 对象矩阵
 
-对每个对象 $o$、子带 $b$ 和时槽 $t$，对象频域值为五个核心声道的线性组合：
+对每个对象 $o$、子带 $b$ 和时槽 $t$，对象频域值为 $N$ 个核心声道的线性组合：
 
 $$
 Z_{o,b,t}=
-\sum_{c=0}^{4}
+\sum_{c=0}^{N-1}
 M_{o,c,b,t}\widehat X_{c,b,t}.
 $$
 

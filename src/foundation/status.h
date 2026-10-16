@@ -33,6 +33,22 @@ private:
     std::string message_;
 };
 
+// Structured detail of the most recent failing call, as returned by
+// joc_last_error_detail().  It is one instance per thread across the whole
+// library, so every C entry point -- the task API and the streaming API alike --
+// reports through the same string.
+inline thread_local std::string last_error_detail;
+
+inline void record_error_detail(const Status& status) {
+    if (status.ok()) {
+        last_error_detail.clear();
+        return;
+    }
+    last_error_detail.assign(status.stage());
+    last_error_detail.append(": ");
+    last_error_detail.append(status.message());
+}
+
 // Stage names are kept as plain literals so that C++ and the Python frontend
 namespace stage {
 inline constexpr const char* kFoundation = "foundation";

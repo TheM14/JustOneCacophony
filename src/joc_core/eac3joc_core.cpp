@@ -69,7 +69,9 @@ public:
         std::memset(synthesis_state_, 0, sizeof(synthesis_state_));
         std::memset(x_, 0, sizeof(x_));
         std::memset(z_, 0, sizeof(z_));
-        analysis_phase_ = 0.0625f;
+        // Sentinel: the first frame after reset takes the new scalar directly,
+        // without an intra-frame transition.
+        analysis_phase_ = -0.5f;
         error_[0] = '\0';
         return 0;
     }
@@ -125,13 +127,11 @@ public:
         return error_[0] ? error_ : "";
     }
 
-    void set_dc_filter(const bool enabled) noexcept {
-        dc_filter_enabled_ = enabled;
-    }
-
     int process(
-        const float* bed5,
+        const float* bed_planar,
         const float* lfe,
+        const uint32_t core_channel_count,
+        const uint32_t phase_shift,
         const uint32_t object_mask,
         const uint8_t* n_bands,
         const uint8_t* n_dpoints,
@@ -144,9 +144,14 @@ public:
         float* output16) noexcept {
 
         error_[0] = '\0';
-        if (!bed5 || !n_bands || !n_dpoints || !slope_idx || !offset_ts || !dq || !output16) {
+        if (!bed_planar || !n_bands || !n_dpoints || !slope_idx || !offset_ts || !dq || !output16) {
             return fail("null pointer passed to ejoc_renderer_process");
         }
+        if (core_channel_count < EJOC_CORE_CHANNELS || core_channel_count > EJOC_MAX_CORE_CHANNELS) {
+            return fail("core_channel_count must be 5 or 7");
+        }
+        core_channels_ = core_channel_count;
+        phase_shift_enabled_ = phase_shift != 0u;
         if (object_mask & ~((1u << EJOC_MAX_OBJECTS) - 1u)) {
             return fail("object_mask contains an object index above 14");
         }
@@ -169,7 +174,7 @@ public:
         }
 
         std::memset(output16, 0, sizeof(float) * EJOC_OUTPUT_CHANNELS * EJOC_FRAME_SAMPLES);
-        analysis(bed5, phase_new);
+        analysis(bed_planar, phase_new);
         render_lfe(lfe, output_scale, output16);
         process_objects(object_mask, n_bands, n_dpoints, slope_idx, offset_ts,
                         dq, clipgain, output_scale, output16);
@@ -299,7 +304,8 @@ private:
                     for (int band = 0; band < 64; ++band) {
                         current[slot][band] = x_[channel][band][group + slot];
                         const Complex delayed = surround_delay_[surround][slot][band];
-                        x_[channel][band][group + slot] = {delayed.im, -delayed.re};
+                        x_[channel][band][group + slot] =
+                            phase_shift_enabled_ ? Complex{delayed.im, -delayed.re} : delayed;
                     }
                 }
 
@@ -309,7 +315,7 @@ private:
                 for (int i = 0; i < 4; ++i) {
                     dc_buffer[20 + i] = current[i][0];
                 }
-                if (dc_filter_enabled_) {
+                if (phase_shift_enabled_) {
                     for (int slot = 0; slot < 4; ++slot) {
                         Complex sum{0.0, 0.0};
                         for (int tap = 0; tap < 21; ++tap) {
@@ -338,7 +344,7 @@ private:
     }
 
     void analysis_channel(const int channel) noexcept {
-        const float* bed5 = job_bed5_;
+        const float* bed_planar = job_bed_;
         const float phase_old = job_phase_old_;
         const float phase_new = job_phase_new_;
         const bool ramp_phase = phase_old != phase_new;
@@ -354,37 +360,49 @@ private:
                     const float product = static_cast<float>(static_cast<float>(frame_sample) * phase_step);
                     gain = static_cast<float>(phase_old + product);
                 }
-                scaled[sample] = static_cast<float>(bed5[channel * 1536 + frame_sample] * gain);
+                scaled[sample] = static_cast<float>(bed_planar[channel * 1536 + frame_sample] * gain);
             }
+            // L/R/C and, for 7 core channels, the extra pair (5 and 6) take the
+            // ten-slot delay here; Ls/Rs take the same delay inside surround_post().
             const float* analysis_input = scaled;
-            if (channel < 3) {
-                std::memcpy(delayed, analysis_delay_[channel][0], sizeof(delayed));
-                std::memmove(&analysis_delay_[channel][0][0],
-                             &analysis_delay_[channel][1][0],
+            const int delay_lane = channel < 3 ? channel : channel - 2;
+            if (channel < 3 || channel >= 5) {
+                std::memcpy(delayed, analysis_delay_[delay_lane][0], sizeof(delayed));
+                std::memmove(&analysis_delay_[delay_lane][0][0],
+                             &analysis_delay_[delay_lane][1][0],
                              sizeof(float) * 9 * 64);
-                std::memcpy(analysis_delay_[channel][9], scaled, sizeof(scaled));
+                std::memcpy(analysis_delay_[delay_lane][9], scaled, sizeof(scaled));
                 analysis_input = delayed;
             }
             analysis_slot(channel, analysis_input, timeslot);
         }
     }
 
-    void analysis(const float* bed5, const float phase_new) noexcept {
-        job_bed5_ = bed5;
+    void analysis(const float* bed_planar, const float phase_new) noexcept {
+        job_bed_ = bed_planar;
+        // Analysis-side scalar = the structural 1/16 times this frame's clipgain.
+        // clipgain enters the analysis at this stage and the x16 at the output
+        // cancels the 1/16, so the net effect is a multiply by joc_clipgain; the
+        // previous frame's scalar is the ramp start.
+        const float scalar = static_cast<float>(phase_new * job_clipgain_);
         job_phase_old_ = analysis_phase_;
-        job_phase_new_ = phase_new;
+        if (job_phase_old_ <= 0.0f && job_phase_old_ != 0.0f) {
+            job_phase_old_ = scalar;
+        }
+        job_phase_new_ = scalar;
         job_kind_ = JobKind::Analysis;
-        job_count_ = 5;
-        for (int channel = 0; channel < 5; ++channel) {
-            job_objects_[channel] = channel;
+        job_count_ = static_cast<int>(core_channels_);
+        for (uint32_t channel = 0; channel < core_channels_; ++channel) {
+            job_objects_[channel] = static_cast<int>(channel);
         }
         dispatch_jobs();
-        analysis_phase_ = phase_new;
+        analysis_phase_ = scalar;
         surround_post();
     }
 
     static std::size_t dq_index(const int object, const int point, const int channel, const int band) noexcept {
-        return static_cast<std::size_t>((((object * 2 + point) * 5 + channel) * kMaxBands) + band);
+        return static_cast<std::size_t>(
+            (((object * 2 + point) * EJOC_MAX_CORE_CHANNELS + channel) * kMaxBands) + band);
     }
 
     void matrix_object(
@@ -401,7 +419,7 @@ private:
         const int slope = slope_idx[object];
         const uint8_t* pb_map = parameter_band_map(bands);
 
-        for (int channel = 0; channel < 5; ++channel) {
+        for (uint32_t channel = 0; channel < core_channels_; ++channel) {
             for (int subband = 0; subband < 64; ++subband) {
                 const int parameter_band = pb_map[subband];
                 const double previous = matrix_previous_[object][channel][subband];
@@ -465,7 +483,6 @@ private:
 
     void synthesis_object(
         const int object,
-        const double clipgain,
         const float output_scale,
         float* output16) noexcept {
 
@@ -493,8 +510,10 @@ private:
             qmf5_step(state, rotated, pcm64);
             for (int sample = 0; sample < 64; ++sample) {
                 const double clipped = clamp_unit(16.0 * pcm64[sample]);
-                const float value = static_cast<float>(clipped * clipgain);
-                destination[timeslot * 64 + sample] = static_cast<float>(value * output_scale);
+                // joc_clipgain already entered the analysis (see analysis()); what
+                // remains here is the user output gain.
+                const float value = static_cast<float>(clipped * output_scale);
+                destination[timeslot * 64 + sample] = value;
             }
         }
     }
@@ -502,7 +521,7 @@ private:
     void process_one_object(const int object) noexcept {
         matrix_object(object, job_n_bands_, job_n_dpoints_, job_slope_idx_,
                       job_offset_ts_, job_dq_);
-        synthesis_object(object, job_clipgain_, job_output_scale_, job_output16_);
+        synthesis_object(object, job_output_scale_, job_output16_);
     }
 
     void execute_job_loop() noexcept {
@@ -630,7 +649,7 @@ private:
     int job_objects_[EJOC_MAX_OBJECTS]{};
     int job_count_ = 0;
     JobKind job_kind_ = JobKind::Objects;
-    const float* job_bed5_ = nullptr;
+    const float* job_bed_ = nullptr;
     float job_phase_old_ = 0.0625f;
     float job_phase_new_ = 0.0625f;
     const uint8_t* job_n_bands_ = nullptr;
@@ -642,17 +661,19 @@ private:
     float job_output_scale_ = 1.0f;
     float* job_output16_ = nullptr;
 
-    alignas(64) double analysis_fifo_[5][9][64];
-    alignas(64) float analysis_delay_[3][10][64];
-    float analysis_phase_;
+    uint32_t core_channels_ = EJOC_CORE_CHANNELS;
+    alignas(64) double analysis_fifo_[EJOC_MAX_CORE_CHANNELS][9][64];
+    // Delay lanes: 0..2 hold L/R/C, 3..4 hold the extra pair of a 7-channel frame.
+    alignas(64) float analysis_delay_[5][10][64];
+    float analysis_phase_ = -0.5f;
     alignas(64) Complex surround_delay_[2][10][64];
     alignas(64) Complex surround_history_[2][20];
-    // band-0 的 21-tap DC 补偿开关；仅 downmix 配置 3/4 由调用方置位。
-    bool dc_filter_enabled_ = true;
+    // sigma(k) switch; the caller sets it for downmix configurations 3 and 4.
+    bool phase_shift_enabled_ = true;
     alignas(64) double lfe_delay_[kLfeDelay];
-    alignas(64) double matrix_previous_[15][5][64];
+    alignas(64) double matrix_previous_[15][EJOC_MAX_CORE_CHANNELS][64];
     alignas(64) double synthesis_state_[15][640];
-    alignas(64) Complex x_[5][64][24];
+    alignas(64) Complex x_[EJOC_MAX_CORE_CHANNELS][64][24];
     alignas(64) Complex z_[15][64][24];
 
     uint8_t bit_reverse_[64];
@@ -704,14 +725,6 @@ int EJOC_CALL ejoc_renderer_set_threads(ejoc_renderer_handle handle, uint32_t to
     return static_cast<ejoc::Renderer*>(handle)->set_threads(total_threads);
 }
 
-int EJOC_CALL ejoc_renderer_set_dc_filter(ejoc_renderer_handle handle, uint32_t enabled) {
-    if (!handle) {
-        return -1;
-    }
-    static_cast<ejoc::Renderer*>(handle)->set_dc_filter(enabled != 0);
-    return 0;
-}
-
 uint32_t EJOC_CALL ejoc_renderer_thread_count(ejoc_renderer_handle handle) {
     if (!handle) {
         return 0;
@@ -728,8 +741,10 @@ const char* EJOC_CALL ejoc_renderer_last_error(ejoc_renderer_handle handle) {
 
 int EJOC_CALL ejoc_renderer_process(
     ejoc_renderer_handle handle,
-    const float* bed5_planar,
+    const float* bed_planar,
     const float* lfe,
+    const uint32_t core_channel_count,
+    const uint32_t phase_shift,
     const uint32_t object_mask,
     const uint8_t* n_bands,
     const uint8_t* n_dpoints,
@@ -744,8 +759,8 @@ int EJOC_CALL ejoc_renderer_process(
         return -1;
     }
     return static_cast<ejoc::Renderer*>(handle)->process(
-        bed5_planar, lfe, object_mask, n_bands, n_dpoints, slope_idx,
-        offset_ts, dq, clipgain, phase_new, output_scale, output16_planar);
+        bed_planar, lfe, core_channel_count, phase_shift, object_mask, n_bands, n_dpoints,
+        slope_idx, offset_ts, dq, clipgain, phase_new, output_scale, output16_planar);
 }
 
 }  // extern "C"

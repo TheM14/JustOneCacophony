@@ -148,6 +148,7 @@ void test_eac3_frame_bytes() {
     frame[1] = 0x77;
     frame[2] = 0x05;
     frame[3] = 0xFF;  // frmsiz words = 1536 -> 3072 bytes
+    frame[5] = 0x80;  // bsid (bits 40..44) = 16 marks E-AC-3
     std::size_t size = 0;
     CHECK(joc::eac3::FrameReader::frame_bytes(frame.data(), frame.size(), 0, &size) == JOC_OK);
     CHECK(size == 3072);
@@ -156,6 +157,17 @@ void test_eac3_frame_bytes() {
     frame[1] = 0x78;
     CHECK(joc::eac3::FrameReader::frame_bytes(frame.data(), frame.size(), 0, &size) ==
           JOC_ERR_EAC3_SYNCFRAME);
+
+    // bsid <= 8 is AC-3: the frame length comes from fscod/frmsizecod instead.
+    std::vector<std::uint8_t> ac3(2560, 0);
+    ac3[0] = 0x0B;
+    ac3[1] = 0x77;
+    ac3[4] = 0x24;  // fscod = 0, frmsizecod = 36 -> 1280 words -> 2560 bytes
+    ac3[5] = 0x30;  // bsid = 6
+    CHECK(joc::eac3::FrameReader::frame_bytes(ac3.data(), ac3.size(), 0, &size) == JOC_OK);
+    CHECK(size == 2560);
+    CHECK(joc::eac3::FrameReader::frame_bytes(ac3.data(), ac3.size() - 1, 0, &size) ==
+          JOC_ERR_BITSTREAM_TRUNCATED);
 }
 
 void test_mini_json() {

@@ -113,12 +113,16 @@ Status parse_at(const std::uint8_t* data, std::size_t size, std::size_t start_bi
                                                                      : syntax_fail(reader.error_message());
             }
         }
+        std::uint8_t group_id = 0;
+        std::uint8_t has_group_id = 0;
         if (reader.read(1) != 0u) {
-            std::uint32_t ignored = 0;
-            if (!bits::variable_bits(reader, 2, 8, &ignored)) {
+            std::uint32_t value = 0;
+            if (!bits::variable_bits(reader, 2, 8, &value)) {
                 return reader.error() == JOC_ERR_BITSTREAM_TRUNCATED ? truncated_fail(reader)
                                                                      : syntax_fail(reader.error_message());
             }
+            group_id = static_cast<std::uint8_t>(value);
+            has_group_id = 1;
         }
         if (reader.read(1) != 0u) {
             if (!reader.skip(8)) {
@@ -160,6 +164,8 @@ Status parse_at(const std::uint8_t* data, std::size_t size, std::size_t start_bi
         Payload& entry = container.payloads[container.payload_count++];
         entry.id = static_cast<std::uint8_t>(payload_id);
         entry.sample_offset = sample_offset;
+        entry.group_id = group_id;
+        entry.has_group_id = has_group_id;
         entry.bit_offset = reader.position();
         entry.size = payload_size;
 
@@ -206,7 +212,8 @@ void marker_offsets(const std::uint8_t* data, std::size_t size, std::vector<std:
     std::sort(out->begin(), out->end());
 }
 
-Status find_joc_emdf(const std::uint8_t* data, std::size_t size, Container* out) {
+Status find_joc_emdf(const std::uint8_t* data, std::size_t size, Container* out,
+                     ContainerPredicate usable, bool* ignored_extra) {
     if (data == nullptr || out == nullptr) {
         return Status::fail(JOC_ERR_INVALID_ARGUMENT, stage::kEmdf, "null buffer or output");
     }
@@ -264,12 +271,62 @@ Status find_joc_emdf(const std::uint8_t* data, std::size_t size, Container* out)
     }
 
     if (top_level.size() != 1u) {
+        // Several containers can be genuine: a real stream carries a second
+        // container whose ID14 is a different structure altogether.  The predicate
+        // tells those apart; what it leaves ambiguous stays an error.
+        if (usable != nullptr) {
+            int best = 0;
+            const Container* winner = nullptr;
+            int winners = 0;
+            for (const Container& candidate : top_level) {
+                const int score = usable(data, size, candidate);
+                if (score > best) {
+                    best = score;
+                    winner = &candidate;
+                    winners = 1;
+                } else if (score == best && score > 0) {
+                    ++winners;
+                }
+            }
+            if (best > 0 && winners == 1 && winner != nullptr) {
+                if (ignored_extra != nullptr) {
+                    *ignored_extra = true;
+                }
+                *out = *winner;
+                return Status::success();
+            }
+        }
         return Status::fail(JOC_ERR_EMDF_TRANSPORT, stage::kEmdf,
                             "multiple top-level JOC EMDF containers (" +
                                 std::to_string(top_level.size()) +
                                 "); automatic selection is not defined");
     }
     *out = top_level.front();
+    return Status::success();
+}
+
+Status find_joc_emdf_optional(const std::uint8_t* data, std::size_t size, bool* present,
+                              Container* out, ContainerPredicate usable, bool* ignored_extra) {
+    if (present == nullptr) {
+        return Status::fail(JOC_ERR_INVALID_ARGUMENT, stage::kEmdf, "null presence flag");
+    }
+    const Status status = find_joc_emdf(data, size, out, usable, ignored_extra);
+    if (status.ok()) {
+        *present = true;
+        return status;
+    }
+    if (status.code() != JOC_ERR_EMDF_TRANSPORT) {
+        return status;
+    }
+    // find_joc_emdf reports "no usable container in this syncframe" and "several
+    // usable containers" with the same code.  Only the former is normal for a
+    // core syncframe (audio data can contain bytes that look like a marker);
+    // an ambiguous frame stays an error.
+    static constexpr const char* kAmbiguous = "multiple top-level";
+    if (status.message().rfind(kAmbiguous, 0) == 0) {
+        return status;
+    }
+    *present = false;
     return Status::success();
 }
 

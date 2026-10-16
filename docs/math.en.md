@@ -211,7 +211,7 @@ When a frame contains two data points, `offset_ts` gives the segment boundary. E
 
 ## 4. Analysis QMF for core PCM
 
-The matrix input uses core channels L, R, C, Ls, and Rs; LFE follows a separate path. Core PCM is first scaled as
+The matrix input uses $N$ core channels ($N\in\{5,7\}$, read from $joc\_dmx\_config\_idx$: $k=0\ldots4$ maps to $N=5,7,7,5,7$); LFE follows a separate path. Core PCM is first scaled as
 
 $$
 \widetilde x_c[n]=\frac{x_c[n]}{16}.
@@ -238,29 +238,30 @@ $$
 \qquad c\in\{L,R,C\}.
 $$
 
-Ls and Rs use the same ten-slot delay and a $-j$ rotation for $b>0$:
+For Ls and Rs the ten-slot delay, the $-j$ rotation for $b>0$ and the band-0 21-tap
+complex FIR are all gated by the **same switch** $\sigma(k)=1\iff k\in\{3,4\}$:
 
 $$
-\widehat X_{c,b,t}=-jX_{c,b,t-10},
-\qquad c\in\{Ls,Rs\},\ b>0.
+\widehat X_{c,b,t}=
+\begin{cases}
+-j\,X_{c,b,t-10}, & \sigma(k)=1,\ c\in\{Ls,Rs\},\ b>0,\\[1mm]
+\sum_{m=0}^{20}h_mX_{c,0,t-m}, & \sigma(k)=1,\ c\in\{Ls,Rs\},\ b=0,\\[1mm]
+X_{c,b,t-10}, & \text{otherwise}.
+\end{cases}
 $$
 
-Band 0 of each surround channel additionally passes through a 21-tap complex FIR:
-
-$$
-\widehat X_{c,0,t}=
-\sum_{k=0}^{20}h_kX_{c,0,t-k}.
-$$
-
-These delays and filter histories are decoder state and cannot be reset independently for every frame.
+For $N=7$ the sixth and seventh core channels (Lb/Rb or Tfl/Tfr) behave like the front
+channels and only take the ten-slot delay: channel identity affects metadata and the ADM
+placement, not the DSP. These delays and filter histories are decoder state and cannot be
+reset independently for every frame.
 
 ## 6. Object matrix
 
-For each object $o$, subband $b$, and slot $t$, the object's frequency-domain value is a linear combination of the five core channels:
+For each object $o$, subband $b$, and slot $t$, the object's frequency-domain value is a linear combination of the $N$ core channels:
 
 $$
 Z_{o,b,t}=
-\sum_{c=0}^{4}
+\sum_{c=0}^{N-1}
 M_{o,c,b,t}\widehat X_{c,b,t}.
 $$
 

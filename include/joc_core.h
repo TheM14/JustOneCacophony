@@ -34,7 +34,9 @@
 #include <stdint.h>
 #include <stddef.h>
 
-#define JOC_ABI_VERSION 3u
+#include "joc_version.h"
+
+#define JOC_ABI_VERSION 5u
 #define JOC_FRAME_PARAMS_VERSION 1u
 #define JOC_EMDF_INFO_VERSION 1u
 #define JOC_TASK_CONFIG_VERSION 3u
@@ -193,7 +195,7 @@ typedef struct joc_frame_params {
     uint8_t  n_channels;         /* 5 or 7 */
     uint8_t  clipgain_x_bits;
     uint8_t  clipgain_y_bits;
-    uint8_t  reserved;
+    uint8_t  objects_clamped;    /* num_objects_bits+1 exceeded 15            */
     uint32_t seq_count;          /* 10-bit JOC sequence counter, parsed only  */
     uint32_t present_mask;       /* bit i == object i present */
     uint32_t data_end_bits;      /* bit position just after joc_data          */

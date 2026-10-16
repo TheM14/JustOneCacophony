@@ -21,8 +21,8 @@ bool variable_bits(BitReader& reader, unsigned width, unsigned max_groups, std::
         }
         value = (value + 1u) << width;
     }
-    // Same failure mode as the reference implementation: an extension chain
-    // that never terminates is a syntax error, not a truncation.
+    // An extension chain that never terminates is a syntax error, not a
+    // truncation.
     reader.fail(JOC_ERR_EMDF_SYNTAX, "variable_bits extension groups exceeded");
     return false;
 }

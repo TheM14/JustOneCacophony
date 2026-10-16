@@ -29,6 +29,15 @@ $$Y_p = \sum_{q\in C_p}\Bigl(\mathrm{Re}X_q + j\,s_q\,\mathrm{Im}X_q\Bigr),\qqua
 
 相同数值可在 FFmpeg（`aacps_tablegen.h`、`aacsbrdata.h`）等公开实现中查到。
 
+### AC-3 / E-AC-3 传输层与通道码表
+
+`src/eac3_transport/eac3_reader.cpp` 的 AC-3 同步帧长度表由 A/52 的
+`fscod`/`frmsizecod` 比特率表换算得到（48/44.1/32 kHz 三列），E-AC-3 帧长用标准
+`frmsiz` 字段；`src/joc_bitstream/joc_parser.cpp` 的 16 bit `chanmap` 位表与 A/52
+`acmod` 通道序来自 **ATSC A/52 Annex E**（等同 ETSI TS 102 366 Annex E）的
+Table E2.5 / `chanmap` 定义，位置命名沿用 ETSI TS 103 420 的 JOC 名称
+（Lb/Rb、Tfl/Tfr）。这些表是按公开标准写的数值，不含任何第三方实现代码。
+
 ## HRTF 数据与 `.jochrtf`
 
 `.jochrtf` 含有特定源 SOFA/HRTF 数据集的变换系数与 delay；其使用、复制与再分发仍受源

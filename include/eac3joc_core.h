@@ -23,11 +23,12 @@ extern "C" {
 #endif
 
 enum {
-    EJOC_ABI_VERSION = 1,
+    EJOC_ABI_VERSION = 2,
     EJOC_FRAME_SAMPLES = 1536,
     EJOC_TIMESLOTS = 24,
     EJOC_SUBBANDS = 64,
-    EJOC_CORE_CHANNELS = 5,
+    EJOC_CORE_CHANNELS = 5,          /* downmix configurations 0 and 3 */
+    EJOC_MAX_CORE_CHANNELS = 7,      /* downmix configurations 1, 2 and 4 */
     EJOC_OUTPUT_CHANNELS = 16,
     EJOC_MAX_OBJECTS = 15,
     EJOC_MAX_DPOINTS = 2,
@@ -47,14 +48,17 @@ typedef void* ejoc_binaural_renderer_handle;
 
 /*
 Fixed array layouts used by ejoc_renderer_process():
-  bed5_planar  [5][1536]
+  bed_planar   [core_channel_count][1536]
   lfe          [1536] or NULL
   n_bands      [15]
   n_dpoints    [15]
   slope_idx    [15]
   offset_ts    [15][2]
-  dq           [15][2][5][23]
+  dq           [15][2][7][23]
   output16     [16][1536]
+
+core_channel_count comes from ejoc_renderer_set_core_channels() and defaults to
+EJOC_CORE_CHANNELS; the dq stride is always EJOC_MAX_CORE_CHANNELS.
 
 Only objects selected by object_mask are read from the descriptor arrays.
 dq carries already dequantized matrix coefficients in double precision; the
@@ -69,21 +73,24 @@ EJOC_API void EJOC_CALL ejoc_renderer_destroy(ejoc_renderer_handle handle);
 EJOC_API int EJOC_CALL ejoc_renderer_reset(ejoc_renderer_handle handle);
 EJOC_API int EJOC_CALL ejoc_renderer_set_threads(ejoc_renderer_handle handle, uint32_t total_threads);
 /*
-Enables or disables the Ls/Rs band-0 21-tap DC compensation. The caller derives
-it from the JOC downmix configuration: only configurations 3 and 4 enable the
-filter. When disabled, band 0 keeps the common per-band processing (surround
-delay plus -j rotation) instead of being overwritten by the FIR. The delay line
-and DC history advance either way, so the flag may change between frames.
-Defaults to enabled when never called.
+core_channel_count comes from joc_dmx_config_idx: 5 for configurations 0 and 3,
+7 for 1, 2 and 4. bed_planar is then [core_channel_count][1536] and only channels
+below core_channel_count are read from dq, whose stride stays [15][2][7][23].
+
+phase_shift is sigma(k) = (k in {3,4}): it enables the Ls/Rs -j rotation of
+subbands above 0 together with the band-0 21-tap DC compensation. With the switch
+off, channels 3 and 4 only take the common ten-slot surround delay. The delay
+line and DC history advance either way, so the flag may change between frames.
 */
-EJOC_API int EJOC_CALL ejoc_renderer_set_dc_filter(ejoc_renderer_handle handle, uint32_t enabled);
 EJOC_API uint32_t EJOC_CALL ejoc_renderer_thread_count(ejoc_renderer_handle handle);
 EJOC_API const char* EJOC_CALL ejoc_renderer_last_error(ejoc_renderer_handle handle);
 
 EJOC_API int EJOC_CALL ejoc_renderer_process(
     ejoc_renderer_handle handle,
-    const float* bed5_planar,
+    const float* bed_planar,
     const float* lfe,
+    uint32_t core_channel_count,
+    uint32_t phase_shift,
     uint32_t object_mask,
     const uint8_t* n_bands,
     const uint8_t* n_dpoints,

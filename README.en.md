@@ -26,12 +26,13 @@ unit-tested by `.github/workflows/ci.yml`. Floating-point behaviour is part of t
 byte-exact acceptance, so fast-math is never enabled: `/fp:precise` on MSVC,
 `-fno-fast-math` elsewhere.
 
-Windows Release builds target AVX2 by default (`JOC_ENABLE_AVX2`, ON, see
-`CMakeLists.txt`). That switch is itself part of the byte-exact acceptance — the
-SHA-256 of every rendered output is identical — and buys 12.4% on the SOFA binaural
-kernel and 1.8% on Rosella. The price is a runtime requirement: such a `joc_core.dll`
-executes AVX2 instructions and dies on an illegal instruction on pre-2013 x86. There
-is no runtime dispatch, so a binary is one or the other:
+The heaviest binaural loops are **runtime-dispatched**: one binary carries several
+ISA variants and picks the widest one at startup from CPUID/XGETBV, with the output
+byte-identical either way (see [SIMD dispatch](docs/simd.en.md)). `JOC_ENABLE_AVX2` /
+`JOC_ENABLE_AVX512` (both ON by default) only decide whether those units are linked
+in: carrying the AVX2 unit buys 12.4% on the SOFA binaural kernel and 1.8% on
+Rosella, while a CPU without AVX2 still runs the baseline (SSE2) path. To produce a
+baseline-only binary:
 
 ```powershell
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DJOC_ENABLE_AVX2=OFF
@@ -67,8 +68,8 @@ other two modes, and without `-o` the result lands in `output/`.
 
 ```powershell
 # Default: ADM BWF (inherently 24-bit, so there is no format option)
-joc_cli "07. Gold Forever (2021 Master).m4a"
-#   -> output/07. Gold Forever (2021 Master).adm.wav
+joc_cli input.m4a
+#   -> output/input.adm.wav
 
 joc_cli input.m4a -o out/adm.wav                 # explicit output
 
@@ -148,10 +149,50 @@ native library and are never edited (see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NO
 
 ## Compatibility note
 
+### How `joc_clipgain` is applied
+
+`joc_clipgain` is folded into the **analysis-side scalar**: `scalar = 1/16 x g` (`g = 1 + (y/32)·2^(x-4)`,
+from the 8-bit field `x:3 | y:5`). The x16 at the output cancels the 1/16, so the net effect is a multiply
+by `g` and the clamp therefore sits **after** the gain (`clamp(16·IQMF·g_interp)`). The scalar is kept in
+two per-frame slots: the first 256 samples of a frame ramp linearly from the previous value, the rest stays
+constant, and the first frame after a reset takes the new value directly. For `g = 1` the interpolation is the identity and `clamp(x)·1 == clamp(x·1)`.
+
 `object_delay_samples` defaults to **1473**, preserving the behaviour of the existing
 implementation; it is a configurable field and changing it changes the OAMD/ADM time
 alignment. Upstream investigation suggests the value should be 0; this project keeps
 the current default to stay byte-identical.
+
+### `joc_dmx_config_idx` 0..4
+
+All five configurations are covered: $N=5,7,7,5,7$ with the phase switch
+$\sigma(k)=(k\in\{3,4\})$ gating the Ls/Rs $-j$ rotation and the band-0 21-tap FIR together.
+A 7-channel configuration needs an **8-channel** bed, mapped by channel code:
+
+| $k$ | extra pair | decoder 8-channel order | JOC input (bed index) |
+|---|---|---|---|
+| 1 | Lb/Rb | FL FR FC LFE **BL BR** SL SR | 0 1 2 6 7 4 5 |
+| 2 / 4 | Tfl/Tfr | FL FR FC LFE SL SR TFL TFR | 0 1 2 4 5 6 7 |
+
+ffmpeg gets `-ac 6` only for the $N=5$ configurations; $N=7$ keeps the decoder's own layout
+(`-ac 6` downmixes 5.1.2/7.1 into 5.1 and `-ac 8` remaps 5.1.2 into 7.1; both lose information).
+
+**Cross-layer consistency** (section 11.2): the substreams' full-band channel count must equal $N$,
+a non-zero $joc\_ext\_config\_idx$ is an unmapped variant, and a declared object count above 15 is
+clamped to 15 and recorded as a diagnostic - those change the DSP input, so a mismatch is refused.
+The extra pair's **identity** never reaches the DSP (section 10.1): when the dependent-substream
+`chanmap` disagrees with $k$, or an OAMD standard bed mask does, the mismatch is recorded as a
+diagnostic and the frame still renders, with the bed mapping following the channel codes the
+`chanmap` declares. When one audio frame holds several EMDF containers carrying ID11/ID14, they
+are scored by the association rule of section 8.2 and its Table 56: a container whose OAMD and JOC
+payloads share a group id and whose ID14 parses completely wins, then one whose ID14 merely parses;
+only a unique best score is used and the others are recorded as a diagnostic
+(`emdf/extra_container_ignored`). The extra pair's 10-slot ADM skeleton placement ($k=1\to6/7$,
+$k\in\{2,4\}\to8/9$) is recorded, but bed channels are not output channels under the current
+contract.
+
+An audio frame with no JOC EMDF at all (for example when the encoder wrote none for the first
+frame) emits silent object channels while the QMF analysis and synthesis state keep advancing,
+and it is counted separately in the statistics.
 
 ## License
 

@@ -11,16 +11,8 @@
 
 namespace {
 
-thread_local std::string g_detail;
-
 joc_error finish(const joc::Status& status) {
-    if (status.ok()) {
-        g_detail.clear();
-        return JOC_OK;
-    }
-    g_detail.assign(status.stage());
-    g_detail.append(": ");
-    g_detail.append(status.message());
+    joc::record_error_detail(status);
     return status.code();
 }
 
@@ -49,7 +41,7 @@ extern "C" {
 
 std::uint32_t JOC_CALL joc_abi_version(void) { return JOC_ABI_VERSION; }
 
-const char* JOC_CALL joc_version_string(void) { return "0.1.0-m1"; }
+const char* JOC_CALL joc_version_string(void) { return JOC_VERSION_STRING; }
 
 std::uint32_t JOC_CALL joc_event_size(void) { return static_cast<std::uint32_t>(sizeof(joc_event)); }
 std::uint32_t JOC_CALL joc_task_config_size(void) {
@@ -167,7 +159,7 @@ const char* JOC_CALL joc_error_stage(joc_error code) {
     }
 }
 
-const char* JOC_CALL joc_last_error_detail(void) { return g_detail.c_str(); }
+const char* JOC_CALL joc_last_error_detail(void) { return joc::last_error_detail.c_str(); }
 
 joc_error JOC_CALL joc_parse_id14(const std::uint8_t* payload, std::size_t payload_size,
                                  joc_frame_params* out_params) {

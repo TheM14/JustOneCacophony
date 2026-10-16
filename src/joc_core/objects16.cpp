@@ -6,21 +6,22 @@
 namespace joc::joc {
 
 Status rebuild_objects16(ejoc_renderer_handle handle, const joc_frame_params& params,
-                         const float* bed5_planar, const float* lfe, float gain,
+                         const float* bed_planar, const float* lfe, float gain,
                          std::vector<float>* out16, std::string* error) {
-    if (handle == nullptr || bed5_planar == nullptr || out16 == nullptr) {
+    if (handle == nullptr || bed_planar == nullptr || out16 == nullptr) {
         return Status::fail(JOC_ERR_INVALID_ARGUMENT, stage::kDsp, "null argument");
     }
-    if (params.n_channels != JOC_CORE_CHANNELS) {
+    if (params.n_channels != JOC_CORE_CHANNELS &&
+        params.n_channels != JOC_MAX_CORE_CHANNELS) {
         if (error != nullptr) {
-            *error = "the reused JOC kernel requires 5 core channels, frame declares " +
+            *error = "the reused JOC kernel requires 5 or 7 core channels, frame declares " +
                      std::to_string(static_cast<unsigned>(params.n_channels));
         }
         return Status::fail(JOC_ERR_JOC_UNSUPPORTED_VARIANT, stage::kDsp, *error);
     }
 
     std::vector<double> dq(static_cast<std::size_t>(JOC_MAX_OBJECTS) * JOC_MAX_DPOINTS *
-                               JOC_CORE_CHANNELS * JOC_MAX_PARAMETER_BANDS,
+                               JOC_MAX_CORE_CHANNELS * JOC_MAX_PARAMETER_BANDS,
                            0.0);
     std::uint8_t n_bands[JOC_MAX_OBJECTS] = {};
     std::uint8_t n_dpoints[JOC_MAX_OBJECTS] = {};
@@ -38,10 +39,11 @@ Status rebuild_objects16(ejoc_renderer_handle handle, const joc_frame_params& pa
             offset_ts[obj * JOC_MAX_DPOINTS + dp] = object.offset_ts[dp];
         }
         for (unsigned dp = 0; dp < object.n_dpoints; ++dp) {
-            for (unsigned ch = 0; ch < JOC_CORE_CHANNELS; ++ch) {
+            for (unsigned ch = 0; ch < params.n_channels; ++ch) {
                 for (unsigned pb = 0; pb < object.n_bands; ++pb) {
                     const std::size_t index =
-                        ((static_cast<std::size_t>(obj) * JOC_MAX_DPOINTS + dp) * JOC_CORE_CHANNELS +
+                        ((static_cast<std::size_t>(obj) * JOC_MAX_DPOINTS + dp) *
+                             JOC_MAX_CORE_CHANNELS +
                          ch) *
                             JOC_MAX_PARAMETER_BANDS +
                         pb;
@@ -52,18 +54,14 @@ Status rebuild_objects16(ejoc_renderer_handle handle, const joc_frame_params& pa
     }
 
     out16->assign(static_cast<std::size_t>(JOC_OUTPUT_CHANNELS) * JOC_FRAME_SAMPLES, 0.0f);
-    // band-0 的 21-tap DC 补偿只在 downmix 配置 3/4 下启用，其余配置 band 0
-    // 走与其他 band 相同的处理。
-    const bool dc_filter = params.dmx_config_idx == 3 || params.dmx_config_idx == 4;
-    if (ejoc_renderer_set_dc_filter(handle, dc_filter ? 1u : 0u) != 0) {
-        if (error != nullptr) {
-            *error = "ejoc_renderer_set_dc_filter failed";
-        }
-        return Status::fail(JOC_ERR_RENDER_FAILED, stage::kDsp, "ejoc_renderer_set_dc_filter failed");
-    }
+    // sigma(k) = (k in {3,4}) gates the Ls/Rs -j rotation and the band-0 21-tap
+    // DC compensation together; other configurations keep the common processing.
+    const std::uint32_t phase_shift =
+        (params.dmx_config_idx == 3 || params.dmx_config_idx == 4) ? 1u : 0u;
     const int result = ejoc_renderer_process(
-        handle, bed5_planar, lfe, params.present_mask, n_bands, n_dpoints, slope_idx, offset_ts,
-        dq.data(), params.clipgain, 0.0625f, gain, out16->data());
+        handle, bed_planar, lfe, params.n_channels, phase_shift, params.present_mask, n_bands,
+        n_dpoints, slope_idx, offset_ts, dq.data(), params.clipgain, 0.0625f, gain,
+        out16->data());
     if (result != 0) {
         const char* detail = ejoc_renderer_last_error(handle);
         const std::string message =

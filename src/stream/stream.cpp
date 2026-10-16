@@ -17,9 +17,6 @@ namespace joc::stream {
 namespace {
 
 constexpr std::size_t kFrameSamples = JOC_FRAME_SAMPLES;
-constexpr std::size_t kBedChannels = 6;
-constexpr int kCoreChannels[5] = {0, 1, 2, 4, 5};
-constexpr int kLfeChannel = 3;
 
 }  // namespace
 
@@ -37,6 +34,14 @@ Stream::~Stream() {
 void Stream::reset_state() {
     reader_ = eac3::FrameReader();
     metadata_.clear();
+    pending_frame_ = FrameMetadata();
+    bed_plan_ = joc::BedPlan();
+    bed_channels_ = 0;
+    config_idx_ = -1;
+    core_channels_ = 0;
+    bed_plan_failed_ = false;
+    bed_plan_error_ = Status::success();
+    bed_input_channels_ = 0;
     bed_pending_.clear();
     bed_read_offset_ = 0;
     objects16_.clear();
@@ -181,6 +186,43 @@ Status Stream::create(const Config& config) {
     return Status::success();
 }
 
+Status Stream::flush_pending_frame() {
+    if (pending_frame_.streams.empty()) {
+        return Status::success();
+    }
+    FrameMetadata entry = pending_frame_;
+    pending_frame_ = FrameMetadata();
+    if (entry.has_joc) {
+        std::string error;
+        joc::CrossLayerNotes notes;
+        const Status checked = joc::check_cross_layer(
+            entry.params, entry.has_core ? &entry.core_frame : nullptr, entry.has_core,
+            entry.has_dependent, entry.has_chanmap, entry.chanmap,
+            entry.bed_assignments.empty() ? nullptr : &entry.bed_assignments, &error, &notes);
+        if (!checked.ok()) {
+            return Status::fail(checked.code(), checked.stage(),
+                                error.empty() ? checked.message() : error);
+        }
+        if (notes.chanmap_pair_mismatch) {
+            ++info_.chanmap_pair_mismatch_frames;
+        }
+        if (notes.bed_mask_mismatch) {
+            ++info_.bed_mask_mismatch_frames;
+        }
+        if (entry.params.objects_clamped != 0u) {
+            ++info_.objects_clamped_frames;
+        }
+    } else {
+        // No JOC metadata for this audio frame: the object channels stay silent
+        // while the kernel state still advances for the frame.
+        ++info_.missing_joc_frames;
+        joc::make_silent_frame_params(&entry.params);
+        entry.has_update = false;
+    }
+    metadata_.push_back(entry);
+    return Status::success();
+}
+
 Status Stream::push_eac3(const std::uint8_t* data, std::size_t size, std::size_t* consumed) {
     if (rebuilder_ == nullptr) {
         return Status::fail(JOC_ERR_STATE, stage::kEmdf, "stream is not an E-AC-3 input");
@@ -201,13 +243,65 @@ Status Stream::push_eac3(const std::uint8_t* data, std::size_t size, std::size_t
         if (state == eac3::FrameReader::Next::Fail) {
             return Status::fail(reader_.error(), stage::kEac3, reader_.error_message());
         }
-        FrameMetadata entry;
+        // A repeated (codec, strmtyp, substreamid) combination starts the next
+        // audio frame, so the group that is still open is complete.
+        bool repeats = false;
+        for (const eac3::Frame& prior : pending_frame_.streams) {
+            if (prior.same_stream(frame)) {
+                repeats = true;
+                break;
+            }
+        }
+        if (repeats) {
+            const Status flushed = flush_pending_frame();
+            if (!flushed.ok()) {
+                return flushed;
+            }
+        }
+        eac3::Frame header = frame;
+        header.data = nullptr;
+        header.size = 0;
+        header.offset = frame.offset;
+        pending_frame_.streams.push_back(header);
+        if (frame.codec == 0u || frame.strmtyp == 0u) {
+            pending_frame_.core_frame = header;
+            pending_frame_.has_core = true;
+        } else {
+            pending_frame_.has_dependent = true;
+            if (frame.has_chanmap != 0u) {
+                pending_frame_.has_chanmap = true;
+                pending_frame_.chanmap = frame.chanmap;
+            }
+        }
+
+        bool present = false;
+        bool ignored_extra = false;
         emdf::Container container;
+        const Status found = emdf::find_joc_emdf_optional(
+            frame.data, frame.size, &present, &container, &joc::score_container_as_joc,
+            &ignored_extra);
+        if (!found.ok()) {
+            return found;
+        }
+        if (ignored_extra) {
+            ++info_.extra_container_frames;
+        }
+        if (!present) {
+            continue;
+        }
+        if (container.find(emdf::kIdJoc) == nullptr) {
+            continue;
+        }
+        joc_frame_params params;
         const Status parsed =
-            joc::parse_eac3_frame(frame.data, frame.size, &entry.params, &container, nullptr);
+            joc::parse_eac3_frame(frame.data, frame.size, &params, &container, nullptr);
         if (!parsed.ok()) {
             return parsed;
         }
+        pending_frame_.params = params;
+        pending_frame_.has_joc = true;
+        pending_frame_.syncframe_offset = frame.offset;
+        pending_frame_.syncframe_size = frame.size;
         if (const emdf::Payload* payload = container.find(emdf::kIdOamd)) {
             std::vector<std::uint8_t> bytes;
             const Status extracted =
@@ -215,30 +309,80 @@ Status Stream::push_eac3(const std::uint8_t* data, std::size_t size, std::size_t
             if (!extracted.ok()) {
                 return extracted;
             }
-            const Status oamd = oamd::parse_id11(bytes.data(), bytes.size(), &entry.update);
+            const Status oamd = oamd::parse_id11(bytes.data(), bytes.size(), &pending_frame_.update);
             if (!oamd.ok()) {
                 return oamd;
             }
-            entry.has_update = true;
-            entry.outer_offset = static_cast<std::int64_t>(payload->sample_offset);
+            pending_frame_.has_update = true;
+            pending_frame_.outer_offset = static_cast<std::int64_t>(payload->sample_offset);
+            const Status bed = oamd::parse_id11_bed_assignments(
+                bytes.data(), bytes.size(), &pending_frame_.bed_assignments);
+            if (!bed.ok()) {
+                return bed;
+            }
         }
-        metadata_.push_back(entry);
     }
+    resolve_bed_plan();
     return process_ready_frames(false);
 }
 
-Status Stream::push_bed(const float* interleaved6, std::size_t samples, std::size_t* consumed) {
+Status Stream::push_bed(const float* interleaved, std::size_t samples, std::uint32_t channels,
+                        std::size_t* consumed) {
     if (rebuilder_ == nullptr) {
         return Status::fail(JOC_ERR_STATE, stage::kDsp, "stream is not an E-AC-3 input");
+    }
+    if (channels != 6u && channels != 8u) {
+        return Status::fail(JOC_ERR_INVALID_ARGUMENT, stage::kDsp,
+                            "the core PCM must be interleaved as 6 or 8 channels, got " +
+                                std::to_string(channels));
+    }
+    if (bed_input_channels_ == 0u) {
+        bed_input_channels_ = channels;
+    } else if (bed_input_channels_ != channels) {
+        return Status::fail(JOC_ERR_INVALID_ARGUMENT, stage::kDsp,
+                            "the core PCM channel count changed from " +
+                                std::to_string(bed_input_channels_) + " to " +
+                                std::to_string(channels));
     }
     if (consumed != nullptr) {
         *consumed = samples;
     }
-    if (interleaved6 != nullptr && samples != 0u) {
-        bed_pending_.insert(bed_pending_.end(), interleaved6,
-                            interleaved6 + samples * kBedChannels);
+    if (interleaved != nullptr && samples != 0u) {
+        bed_pending_.insert(bed_pending_.end(), interleaved,
+                            interleaved + samples * static_cast<std::size_t>(channels));
     }
     return process_ready_frames(false);
+}
+
+bool Stream::resolve_bed_plan() {
+    if (bed_channels_ != 0u) {
+        return true;
+    }
+    const FrameMetadata* joc_entry = nullptr;
+    for (const FrameMetadata& candidate : metadata_) {
+        if (candidate.has_joc) {
+            joc_entry = &candidate;
+            break;
+        }
+    }
+    if (joc_entry == nullptr) {
+        return false;
+    }
+    joc::BedPlan plan;
+    const Status status = joc::compute_bed_plan(
+        joc_entry->has_core ? &joc_entry->core_frame : nullptr, joc_entry->has_core,
+        joc_entry->has_dependent, joc_entry->has_chanmap, joc_entry->chanmap,
+        joc_entry->params.dmx_config_idx, &plan);
+    if (!status.ok()) {
+        bed_plan_failed_ = true;
+        bed_plan_error_ = status;
+        return false;
+    }
+    bed_plan_ = plan;
+    bed_channels_ = static_cast<std::size_t>(plan.channels);
+    config_idx_ = static_cast<int>(joc_entry->params.dmx_config_idx);
+    core_channels_ = static_cast<int>(joc_entry->params.n_channels);
+    return true;
 }
 
 Status Stream::push_objects16(const float* planar16, std::size_t samples, std::size_t* consumed) {
@@ -299,26 +443,62 @@ Status Stream::process_objects16_frames(bool drain_all) {
 }
 
 Status Stream::process_ready_frames(bool drain_all) {
-    while (bed_pending_.size() - bed_read_offset_ >= kFrameSamples * kBedChannels &&
+    if (bed_plan_failed_) {
+        return bed_plan_error_;
+    }
+    resolve_bed_plan();
+    if (bed_channels_ == 0u) {
+        if (!drain_all || metadata_.empty()) {
+            return Status::success();  // waiting for the first JOC-bearing frame
+        }
+        return Status::fail(JOC_ERR_EMDF_TRANSPORT, stage::kEmdf,
+                            "no_contiguous_joc_container: the input carries no JOC EMDF "
+                            "container in any audio frame");
+    }
+    if (bed_input_channels_ != 0u && bed_input_channels_ != bed_channels_) {
+        return Status::fail(JOC_ERR_JOC_UNSUPPORTED_VARIANT, "eac3",
+                            "core_channel_count_mismatch: the caller pushed " +
+                                std::to_string(bed_input_channels_) +
+                                "-channel bed PCM but joc_dmx_config_idx=" +
+                                std::to_string(config_idx_) + " decodes to " +
+                                std::to_string(bed_channels_) + " channels");
+    }
+    while (bed_pending_.size() - bed_read_offset_ >= kFrameSamples * bed_channels_ &&
            !metadata_.empty()) {
         // Leave the rest queued, in order, for a later push or for flush().
         if (!drain_all && buffered_samples() >= kMaxRenderAheadSamples) {
             break;
         }
-        const FrameMetadata entry = metadata_.front();
+        FrameMetadata entry = metadata_.front();
         metadata_.pop_front();
 
-        const float* bed = bed_pending_.data() + bed_read_offset_;
-        bed5_.resize(static_cast<std::size_t>(JOC_CORE_CHANNELS) * kFrameSamples);
-        lfe_.resize(kFrameSamples);
-        for (std::size_t sample = 0; sample < kFrameSamples; ++sample) {
-            for (std::size_t channel = 0; channel < JOC_CORE_CHANNELS; ++channel) {
-                bed5_[channel * kFrameSamples + sample] =
-                    bed[sample * kBedChannels + kCoreChannels[channel]];
-            }
-            lfe_[sample] = bed[sample * kBedChannels + kLfeChannel];
+        const int core_channels = entry.has_joc ? static_cast<int>(entry.params.n_channels)
+                                                : core_channels_;
+        if (core_channels <= 0) {
+            return Status::fail(JOC_ERR_STATE, stage::kDsp,
+                                "the JOC core channel count is not known yet");
         }
-        bed_read_offset_ += kFrameSamples * kBedChannels;
+        if (!entry.has_joc) {
+            entry.params.dmx_config_idx = static_cast<std::uint8_t>(config_idx_);
+            entry.params.n_channels = static_cast<std::uint8_t>(core_channels);
+        }
+        const float* bed = bed_pending_.data() + bed_read_offset_;
+        bed5_.assign(static_cast<std::size_t>(core_channels) * kFrameSamples, 0.0f);
+        lfe_.assign(kFrameSamples, 0.0f);
+        for (std::size_t sample = 0; sample < kFrameSamples; ++sample) {
+            for (int lane = 0; lane < core_channels; ++lane) {
+                const int source = bed_plan_.lane[lane];
+                if (source >= 0) {
+                    bed5_[static_cast<std::size_t>(lane) * kFrameSamples + sample] =
+                        bed[sample * bed_channels_ + static_cast<std::size_t>(source)];
+                }
+            }
+            if (bed_plan_.lfe_channel >= 0) {
+                lfe_[sample] = bed[sample * bed_channels_ +
+                                   static_cast<std::size_t>(bed_plan_.lfe_channel)];
+            }
+        }
+        bed_read_offset_ += kFrameSamples * bed_channels_;
         compact_bed_pending();
 
         std::string error;
@@ -484,6 +664,10 @@ Status Stream::pull(float* destination, std::size_t capacity_samples, std::size_
 Status Stream::flush() {
     // Input has ended, so drain what the cap held back: nothing else will
     // trigger rendering.
+    const Status pending = flush_pending_frame();
+    if (!pending.ok()) {
+        return pending;
+    }
     const Status remaining = process_ready_frames(true);
     if (!remaining.ok()) {
         return remaining;

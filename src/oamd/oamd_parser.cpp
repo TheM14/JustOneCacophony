@@ -335,6 +335,42 @@ Status parse_id11(const std::uint8_t* payload, std::size_t payload_size, OamdUpd
     return parse_id11_verbose(payload, payload_size, out, nullptr);
 }
 
+Status parse_id11_bed_assignments(const std::uint8_t* payload, std::size_t payload_size,
+                                  std::vector<BedAssignment>* out) {
+    if (payload == nullptr || out == nullptr) {
+        return Status::fail(JOC_ERR_INVALID_ARGUMENT, stage::kOamd, "null payload or output");
+    }
+    if (payload_size == 0) {
+        return variant("header_truncated", "OAMD payload is empty");
+    }
+    out->clear();
+    bits::BitReader reader(payload, payload_size);
+    std::uint32_t version = reader.read(2);
+    if (reader.failed()) {
+        return variant("header_truncated", "OAMD payload cannot hold the 2-bit version");
+    }
+    if (version == 3u) {
+        version += reader.read(3);
+        if (reader.failed()) {
+            return syntax("OAMD version extension truncated");
+        }
+    }
+    std::uint32_t object_count_bits = reader.read(5);
+    if (object_count_bits == 0x1Fu) {
+        object_count_bits += reader.read(7);
+    }
+    if (reader.failed()) {
+        return syntax("OAMD object count truncated");
+    }
+    ProgramInfo program;
+    const Status status = parse_program_assignment(reader, &program);
+    if (!status.ok()) {
+        return status;
+    }
+    *out = program.bed_assignments;
+    return Status::success();
+}
+
 Status parse_id11_verbose(const std::uint8_t* payload, std::size_t payload_size, OamdUpdate* out,
                           ParseTrace* trace) {
     if (payload == nullptr || out == nullptr) {

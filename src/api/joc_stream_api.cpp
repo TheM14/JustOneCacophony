@@ -13,6 +13,9 @@ struct joc_stream {
 namespace {
 
 joc_error finish_stream(const joc::Status& status) {
+    // The structured detail is not dropped here: joc_last_error_detail() reports
+    // it for the streaming entry points as well as for the task API.
+    joc::record_error_detail(status);
     return status.code();
 }
 
@@ -93,12 +96,14 @@ joc_error JOC_CALL joc_stream_push(joc_stream* stream, const joc_stream_buffer* 
             return pushed;
         }
         std::size_t consumed = 0;
+        const std::uint32_t channels = input->channels != 0u ? input->channels : 6u;
         const joc::Status pushed =
-            stream->instance.push_bed(input->pcm, input->sample_count, &consumed);
+            stream->instance.push_bed(input->pcm, input->sample_count, channels, &consumed);
         if (consumed_samples != nullptr) {
             *consumed_samples = static_cast<std::uint32_t>(consumed);
         }
-        return pushed;    }();
+        return pushed;
+    }();
     return finish_stream(status);
 }
 
@@ -149,6 +154,11 @@ joc_error JOC_CALL joc_stream_status(const joc_stream* stream, joc_stream_status
     out->buffered_samples = stream->instance.buffered_samples();
     out->oamd_payloads = info.oamd_payloads;
     out->oamd_transitions = info.oamd_transitions;
+    out->missing_joc_frames = info.missing_joc_frames;
+    out->objects_clamped_frames = info.objects_clamped_frames;
+    out->extra_container_frames = info.extra_container_frames;
+    out->chanmap_pair_mismatch_frames = info.chanmap_pair_mismatch_frames;
+    out->bed_mask_mismatch_frames = info.bed_mask_mismatch_frames;
     out->output_channels = info.output_channels;
     out->ended = info.ended;
     return JOC_OK;

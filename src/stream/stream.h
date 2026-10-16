@@ -10,6 +10,7 @@
 #include "eac3_transport/eac3_reader.h"
 #include "foundation/status.h"
 #include "hrtf/rosella_renderer.h"
+#include "joc_bitstream/joc_parser.h"
 #include "joc_core.h"
 #include "joc_stream.h"
 #include "oamd/oamd_parser.h"
@@ -46,16 +47,41 @@ struct Info {
     std::uint64_t bytes_in = 0;
     std::uint64_t oamd_payloads = 0;
     std::uint64_t oamd_transitions = 0;
+    std::uint64_t missing_joc_frames = 0;
+    std::uint64_t objects_clamped_frames = 0;
+    // Audio frames whose syncframe held more than one top-level JOC container and
+    // were decoded from the single one that carries a complete joc() payload.
+    std::uint64_t extra_container_frames = 0;
+    // Audio frames whose extra-pair identity disagreed across layers (spec 11.2
+    // checks 1 and 2).  The identity is metadata only, so these still render.
+    std::uint64_t chanmap_pair_mismatch_frames = 0;
+    std::uint64_t bed_mask_mismatch_frames = 0;
     std::uint32_t output_channels = 0;
     std::uint32_t ended = 0;
 };
 
-// One frame's metadata, queued while the matching core PCM arrives.
+// One audio frame's metadata, queued while the matching core PCM arrives.
+//
+// One audio frame is the group of syncframes up to (and excluding) the first
+// repeated (codec, strmtyp, substreamid) combination; the JOC payload usually
+// lives in the dependent substream while the independent substream carries only
+// the 5.1 core.  The L2 fields below feed the spec section 11.2 cross-layer
+// checks.
 struct FrameMetadata {
     joc_frame_params params{};
     oamd::OamdUpdate update{};
     bool has_update = false;
     std::int64_t outer_offset = 0;
+    bool has_joc = false;
+    eac3::Frame core_frame{};   // independent substream header (codec/strmtyp=0)
+    bool has_core = false;
+    bool has_dependent = false;
+    bool has_chanmap = false;
+    std::uint16_t chanmap = 0;
+    std::size_t syncframe_offset = 0;
+    std::size_t syncframe_size = 0;
+    std::vector<eac3::Frame> streams;
+    std::vector<oamd::BedAssignment> bed_assignments;
 };
 
 class Stream {
@@ -68,7 +94,8 @@ public:
 
     Status create(const Config& config);
     Status push_eac3(const std::uint8_t* data, std::size_t size, std::size_t* consumed);
-    Status push_bed(const float* interleaved6, std::size_t samples, std::size_t* consumed);
+    Status push_bed(const float* interleaved, std::size_t samples, std::uint32_t channels,
+                    std::size_t* consumed);
     Status push_objects16(const float* planar16, std::size_t samples, std::size_t* consumed);
     Status pull(float* destination, std::size_t capacity_samples, std::size_t* produced);
     Status flush();
@@ -103,6 +130,11 @@ private:
     void reset_state();
     // Drops the bed samples that have already been rendered, keeping the rest.
     void compact_bed_pending();
+    // Closes the audio frame currently being assembled and queues it.
+    Status flush_pending_frame();
+    // Resolves the bed layout from the first queued frame that carries JOC;
+    // returns false while it is still unknown and more input may arrive.
+    bool resolve_bed_plan();
     // Renders the queued objects16 frames, bounded by kMaxRenderAheadSamples.
     Status process_objects16_frames(bool drain_all);
 
@@ -111,6 +143,14 @@ private:
     eac3::FrameReader reader_;
     std::deque<FrameMetadata> metadata_;
     FrameMetadata pending_metadata_;
+    FrameMetadata pending_frame_;
+    joc::BedPlan bed_plan_;
+    std::size_t bed_channels_ = 0;
+    int config_idx_ = -1;
+    int core_channels_ = 0;
+    bool bed_plan_failed_ = false;
+    Status bed_plan_error_;
+    std::uint32_t bed_input_channels_ = 0;
     std::vector<float> bed_pending_;
     std::size_t bed_read_offset_ = 0;
     std::vector<float> bed5_;

@@ -80,6 +80,7 @@ struct Options {
     bool dry_run = false;
     bool quiet = false;
     bool help = false;
+    bool version = false;
 };
 
 const char* kLayoutChoices =
@@ -88,6 +89,8 @@ const char* kLayoutChoices =
 void print_usage() {
     std::printf(
         "usage: joc_cli [options] input\n"
+        "  -h, --help            显示本帮助\n"
+        "  --version             显示版本并退出\n"
         "\n"
         "JustOneCacophony (JOC)：E-AC-3 JOC → 25ch ADM BWF、扬声器 WAV 或双耳 WAV\n"
         "\n"
@@ -210,6 +213,7 @@ void parse_args(const std::vector<std::string>& arguments, Options* options) {
     for (int index = 1; index < argc; ++index) {
         const std::string arg = arguments[static_cast<std::size_t>(index)];
         if (arg == "-h" || arg == "--help") { options->help = true; }
+        else if (arg == "--version") { options->version = true; }
         else if (arg == "-o" || arg == "--output") { options->output = require_value(arguments, &index); }
         else if (arg == "--speaker-output") { options->speaker_output = require_value(arguments, &index); }
         else if (arg == "--binaural-output") { options->binaural_output = require_value(arguments, &index); }
@@ -529,6 +533,11 @@ int main(int argc, char** argv) {
     } catch (const std::exception& error) {
         std::fprintf(stderr, "joc_cli: error: %s\n", error.what());
         return 2;
+    }
+    if (options.version) {
+        std::printf("joc_cli %s (joc_core ABI %u)\n", joc_version_string(),
+                    static_cast<unsigned>(joc_abi_version()));
+        return 0;
     }
     if (options.help) {
         print_usage();

@@ -53,11 +53,8 @@ namespace {
 namespace fs = std::filesystem;
 using Clock = std::chrono::steady_clock;
 
-constexpr std::size_t kBedFrameBytes = static_cast<std::size_t>(JOC_FRAME_SAMPLES) * 6u * 4u;
 constexpr std::size_t kReadChunk = 1u << 20;
 constexpr double kDefaultTailThreshold = 1.0e-8;
-constexpr int kCoreChannels[5] = {0, 1, 2, 4, 5};
-constexpr int kLfeChannel = 3;
 
 std::string lower(std::string text) {
     for (char& c : text) {
@@ -210,6 +207,9 @@ std::string create_temp_dir(const Settings& cfg) {    const fs::path base = cfg.
     return fs_utf8::from_path(target);
 }
 
+// One audio frame is every syncframe up to (and excluding) the first repeated
+// (codec, strmtyp, substreamid) combination: a 7-channel program interleaves an
+// independent substream with a dependent one, and an AC-3 core may come first.
 std::uint64_t count_frames(const std::string& path) {
     std::ifstream input = fs_utf8::open_input(path);
     if (!input) {
@@ -219,6 +219,7 @@ std::uint64_t count_frames(const std::string& path) {
     std::vector<char> chunk(kReadChunk);
     std::uint64_t frames = 0;
     bool done = false;
+    std::vector<::joc::eac3::Frame> group;
     while (!done) {
         input.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
         const std::streamsize got = input.gcount();
@@ -232,15 +233,28 @@ std::uint64_t count_frames(const std::string& path) {
         for (;;) {
             ::joc::eac3::Frame frame;
             const ::joc::eac3::FrameReader::Next state = reader.next(&frame);
-            if (state == ::joc::eac3::FrameReader::Next::Ok) {
-                ++frames;
-                continue;
+            if (state == ::joc::eac3::FrameReader::Next::End) {
+                break;
             }
             if (state == ::joc::eac3::FrameReader::Next::Fail) {
-                return frames;
+                return frames + (group.empty() ? 0u : 1u);
             }
-            break;
+            bool repeats = false;
+            for (const ::joc::eac3::Frame& prior : group) {
+                if (prior.same_stream(frame)) {
+                    repeats = true;
+                    break;
+                }
+            }
+            if (repeats) {
+                ++frames;
+                group.clear();
+            }
+            group.push_back(frame);
         }
+    }
+    if (!group.empty()) {
+        ++frames;
     }
     return frames;
 }
@@ -251,6 +265,53 @@ bool stdin_is_interactive() {
 #else
     return isatty(fileno(stdin)) != 0;
 #endif
+}
+
+// Reads joc_dmx_config_idx from the first syncframe that carries a JOC payload,
+// without decoding anything else.  Returns -1 when the stream has no JOC.
+int probe_config_idx(const std::string& path) {
+    std::ifstream input = fs_utf8::open_input(path);
+    if (!input) {
+        return -1;
+    }
+    ::joc::eac3::FrameReader reader;
+    std::vector<char> chunk(1u << 16);
+    int config = -1;
+    bool done = false;
+    while (!done && config < 0) {
+        input.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+        const std::streamsize got = input.gcount();
+        if (got > 0) {
+            reader.push(reinterpret_cast<const std::uint8_t*>(chunk.data()),
+                        static_cast<std::size_t>(got));
+        } else {
+            reader.finish();
+            done = true;
+        }
+        for (;;) {
+            ::joc::eac3::Frame frame;
+            const ::joc::eac3::FrameReader::Next state = reader.next(&frame);
+            if (state != ::joc::eac3::FrameReader::Next::Ok) {
+                break;
+            }
+            bool present = false;
+            ::joc::emdf::Container container;
+            if (!::joc::emdf::find_joc_emdf_optional(
+                     frame.data, frame.size, &present, &container,
+                     &::joc::joc::score_container_as_joc, nullptr)
+                     .ok() ||
+                !present) {
+                continue;
+            }
+            joc_frame_params params{};
+            if (::joc::joc::parse_eac3_frame(frame.data, frame.size, &params, &container, nullptr)
+                    .ok()) {
+                config = static_cast<int>(params.dmx_config_idx);
+                break;
+            }
+        }
+    }
+    return config;
 }
 
 // Rendered PCM is spooled to a float32 file so the output format can be decided
@@ -480,6 +541,7 @@ Status report_metadata(const Settings& cfg, telemetry::EventBus* bus, const std:
     double clipgain_max = 0.0;
     bool stream_done = false;
     Status failure = Status::success();
+    std::vector<::joc::eac3::Frame> group;
     while (!stream_done && frames < total_frames) {
         input.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
         const std::streamsize got = input.gcount();
@@ -503,8 +565,36 @@ Status report_metadata(const Settings& cfg, telemetry::EventBus* bus, const std:
                 stream_done = true;
                 break;
             }
-            joc_frame_params params{};
+            // Count audio frames, not syncframes: a 7-channel program interleaves
+            // two substreams and one bed frame covers both.
+            bool repeats = false;
+            for (const ::joc::eac3::Frame& prior : group) {
+                if (prior.same_stream(frame)) {
+                    repeats = true;
+                    break;
+                }
+            }
+            if (repeats) {
+                ++frames;
+                group.clear();
+                if (frames >= total_frames) {
+                    stream_done = true;
+                    break;
+                }
+            }
+            group.push_back(frame);
+            bool present = false;
             ::joc::emdf::Container container;
+            const Status found = ::joc::emdf::find_joc_emdf_optional(
+                frame.data, frame.size, &present, &container,
+                &::joc::joc::score_container_as_joc, nullptr);
+            if (!found.ok()) {
+                return Status::fail(found.code(), found.stage(), found.message());
+            }
+            if (!present || container.find(::joc::emdf::kIdJoc) == nullptr) {
+                continue;
+            }
+            joc_frame_params params{};
             const Status parsed = ::joc::joc::parse_eac3_frame(frame.data, frame.size, &params,
                                                               &container, nullptr);
             if (!parsed.ok()) {
@@ -593,35 +683,51 @@ Status report_metadata(const Settings& cfg, telemetry::EventBus* bus, const std:
     return failure;
 }
 
+// The decoded core PCM, read one frame at a time and laid out for the JOC
+// kernel according to the bed plan (spec section 3: map by channel code, not by
+// bed channel number).
 class BedSource {
 public:
-    bool open(const std::string& path) {
+    bool open(const std::string& path, std::size_t channels) {
+        channels_ = channels;
         file_.open(path, std::ios::binary);
         return static_cast<bool>(file_);
     }
 
-    bool read_frame(std::uint64_t index, std::vector<float>* bed5, std::vector<float>* lfe) {
-        bed5->assign(static_cast<std::size_t>(JOC_CORE_CHANNELS) * JOC_FRAME_SAMPLES, 0.0f);
+    bool read_frame(std::uint64_t index, int core_channels, const ::joc::joc::BedPlan& plan,
+                    std::vector<float>* bed, std::vector<float>* lfe) {
+        bed->assign(static_cast<std::size_t>(core_channels) * JOC_FRAME_SAMPLES, 0.0f);
         lfe->assign(JOC_FRAME_SAMPLES, 0.0f);
+        const std::size_t frame_values = static_cast<std::size_t>(JOC_FRAME_SAMPLES) * channels_;
+        interleaved_.assign(frame_values, 0.0f);
         file_.clear();
-        file_.seekg(static_cast<std::streamoff>(index * kBedFrameBytes), std::ios::beg);
-        std::vector<float> interleaved(static_cast<std::size_t>(JOC_FRAME_SAMPLES) * 6u);
-        file_.read(reinterpret_cast<char*>(interleaved.data()),
-                   static_cast<std::streamsize>(interleaved.size() * sizeof(float)));
-        if (file_.gcount() != static_cast<std::streamsize>(interleaved.size() * sizeof(float))) {
+        file_.seekg(static_cast<std::streamoff>(index * frame_values * sizeof(float)),
+                    std::ios::beg);
+        file_.read(reinterpret_cast<char*>(interleaved_.data()),
+                   static_cast<std::streamsize>(frame_values * sizeof(float)));
+        if (file_.gcount() != static_cast<std::streamsize>(frame_values * sizeof(float))) {
             return false;
         }
         for (std::size_t n = 0; n < JOC_FRAME_SAMPLES; ++n) {
-            for (std::size_t c = 0; c < JOC_CORE_CHANNELS; ++c) {
-                (*bed5)[c * JOC_FRAME_SAMPLES + n] = interleaved[n * 6u + kCoreChannels[c]];
+            for (int lane = 0; lane < core_channels; ++lane) {
+                const int source = plan.lane[lane];
+                if (source >= 0) {
+                    (*bed)[static_cast<std::size_t>(lane) * JOC_FRAME_SAMPLES + n] =
+                        interleaved_[n * channels_ + static_cast<std::size_t>(source)];
+                }
             }
-            (*lfe)[n] = interleaved[n * 6u + kLfeChannel];
+            if (plan.lfe_channel >= 0) {
+                (*lfe)[n] = interleaved_[n * channels_ +
+                                         static_cast<std::size_t>(plan.lfe_channel)];
+            }
         }
         return true;
     }
 
 private:
     std::ifstream file_;
+    std::size_t channels_ = 6;
+    std::vector<float> interleaved_;
 };
 
 // ---------------------------------------------------------------------------
@@ -1115,17 +1221,37 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
         }
     }
 
+    // The stream itself decides how many channels the decoded bed has; the same
+    // answer feeds the ffmpeg decode below and the bed reader.
+    const int stream_config_idx = probe_config_idx(eac3_path);
+    const int stream_core_channels =
+        stream_config_idx >= 0
+            ? static_cast<int>(::joc::joc::num_channels_for_config(
+                  static_cast<std::uint32_t>(stream_config_idx)))
+            : static_cast<int>(JOC_CORE_CHANNELS);
+    const std::size_t stream_bed_channels =
+        stream_core_channels == JOC_MAX_CORE_CHANNELS ? 8u : 6u;
+
     std::string bed_path = cfg.bed_path;
     if (bed_path.empty() && !cfg.metadata_only) {
         if (temp_dir.empty()) {
             temp_dir = create_temp_dir(cfg);
         }
-        bed_path = fs_utf8::from_path(fs_utf8::to_path(temp_dir) / "core51_f32le.raw");
-        bus.stage(JOC_STAGE_DECODE, "decoding the 5.1 core PCM with ffmpeg");
+        bed_path = fs_utf8::from_path(fs_utf8::to_path(temp_dir) / "core_f32le.raw");
+        // A 7-channel program decodes to 8 bed channels; -ac 6 would downmix
+        // 5.1.2/7.1 into 5.1 and drop the extra pair, and -ac 8 would remap
+        // 5.1.2 into 7.1, so the native decoder layout is what we want there.
+        const bool native_bed = stream_core_channels == JOC_MAX_CORE_CHANNELS;
+        bus.stage(JOC_STAGE_DECODE, native_bed
+                                        ? "decoding the core PCM with ffmpeg (native layout)"
+                                        : "decoding the 5.1 core PCM with ffmpeg");
         std::vector<std::string> argv = {cfg.ffmpeg_path, "-hide_banner", "-loglevel", "error", "-y",
                                          "-i", eac3_path};
-        argv.insert(argv.end(), {"-map", "0:a:0", "-vn", "-ac", "6", "-ar", "48000",
-                                 "-c:a", "pcm_f32le", "-f", "f32le", bed_path});
+        argv.insert(argv.end(), {"-map", "0:a:0", "-vn"});
+        if (!native_bed) {
+            argv.insert(argv.end(), {"-ac", "6"});
+        }
+        argv.insert(argv.end(), {"-ar", "48000", "-c:a", "pcm_f32le", "-f", "f32le", bed_path});
         argv.insert(argv.begin() + 4, {"-drc_scale", fmt("%.10g", cfg.drc_scale)});
         if (cfg.target_level != 0) {
             argv.insert(argv.begin() + 4, {"-target_level", std::to_string(cfg.target_level)});
@@ -1336,7 +1462,7 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
     }
 
     BedSource bed;
-    if (!bed.open(bed_path)) {
+    if (!bed.open(bed_path, stream_bed_channels)) {
         return finalize_with_error(JOC_ERR_INPUT_NOT_FOUND, "bed_path",
                                    "cannot open the core PCM: " + bed_path);
     }
@@ -1370,6 +1496,15 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
     std::thread producer;
     std::thread writer;
     StageJoiner joiner(&joc_ring, &output_ring, &stop, &producer, &writer);
+    // Metadata the JOC stage had to work around, counted there and reported after
+    // the stages join: frames with no JOC payload, frames whose declared object
+    // count was clamped to 15, and frames whose syncframe carried a second EMDF
+    // container that is not this frame's JOC metadata.
+    std::uint64_t missing_joc_frames = 0;
+    std::uint64_t objects_clamped_frames = 0;
+    std::uint64_t extra_container_frames = 0;
+    std::uint64_t chanmap_pair_mismatch_frames = 0;
+    std::uint64_t bed_mask_mismatch_frames = 0;
 
     // ---- stage 1: the bitstream, on its own thread ------------------------ //
     // The serial loop's read/decode/JOC section, verbatim apart from its error
@@ -1380,9 +1515,116 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
         bool stream_done = false;
         double seconds = 0.0;
         JocJob job;
+        // Audio-frame assembly state (kept across chunk reads).
+        std::vector<::joc::eac3::Frame> group;
+        ::joc::eac3::Frame group_core;
+        bool group_has_core = false;
+        bool group_has_dependent = false;
+        bool group_has_chanmap = false;
+        bool group_has_joc = false;
+        std::uint16_t group_chanmap = 0;
+        joc_frame_params group_params{};
+        std::vector<::joc::oamd::BedAssignment> group_bed_assignments;
+        ::joc::joc::BedPlan plan;
+        bool plan_ready = false;
+        int resolved_core_channels = 0;
         try {
             while (!stream_done && !stop.requested()) {
                 auto stage_started = Clock::now();
+
+                // Emits the audio frame the group has accumulated so far.
+                auto emit_group = [&]() -> Status {
+                    const bool has_joc = group_has_joc;
+                    joc_frame_params params = group_params;
+                    const bool has_core = group_has_core;
+                    const eac3::Frame core_header = group_core;
+                    const bool has_dependent = group_has_dependent;
+                    const bool has_chanmap = group_has_chanmap;
+                    const std::uint16_t chanmap = group_chanmap;
+                    std::vector<::joc::oamd::BedAssignment> assignments =
+                        std::move(group_bed_assignments);
+                    group.clear();
+                    group_has_core = false;
+                    group_has_dependent = false;
+                    group_has_chanmap = false;
+                    group_has_joc = false;
+                    group_chanmap = 0;
+                    group_params = joc_frame_params{};
+                    group_bed_assignments.clear();
+
+                    if (has_joc) {
+                        std::string error;
+                        ::joc::joc::CrossLayerNotes notes;
+                        const Status checked = ::joc::joc::check_cross_layer(
+                            params, has_core ? &core_header : nullptr, has_core, has_dependent,
+                            has_chanmap, chanmap,
+                            assignments.empty() ? nullptr : &assignments, &error, &notes);
+                        if (!checked.ok()) {
+                            return Status::fail(checked.code(), checked.stage(),
+                                                error.empty() ? checked.message() : error);
+                        }
+                        if (notes.chanmap_pair_mismatch) {
+                            ++chanmap_pair_mismatch_frames;
+                        }
+                        if (notes.bed_mask_mismatch) {
+                            ++bed_mask_mismatch_frames;
+                        }
+                        if (params.objects_clamped != 0u) {
+                            ++objects_clamped_frames;
+                        }
+                    } else {
+                        ++missing_joc_frames;
+                    }
+                    if (!plan_ready) {
+                        if (stream_config_idx < 0) {
+                            return Status::fail(JOC_ERR_EMDF_TRANSPORT, "emdf",
+                                                "no_contiguous_joc_container: the input carries "
+                                                "no JOC EMDF container in any audio frame");
+                        }
+                        const Status planned = ::joc::joc::compute_bed_plan(
+                            has_core ? &core_header : nullptr, has_core, has_dependent,
+                            has_chanmap, chanmap,
+                            static_cast<std::uint8_t>(stream_config_idx), &plan);
+                        if (!planned.ok()) {
+                            return planned;
+                        }
+                        resolved_core_channels = stream_core_channels;
+                        plan_ready = true;
+                    }
+                    if (!has_joc) {
+                        ::joc::joc::make_silent_frame_params(&params);
+                    }
+                    params.dmx_config_idx = static_cast<std::uint8_t>(stream_config_idx);
+                    params.n_channels = static_cast<std::uint8_t>(resolved_core_channels);
+                    if (!bed.read_frame(produced, resolved_core_channels, plan, &bed5, &lfe)) {
+                        return Status::fail(JOC_ERR_INPUT_FORMAT, "bed_path",
+                                            "core PCM ended before frame " +
+                                                std::to_string(produced));
+                    }
+                    std::string dsp_error;
+                    const Status rebuilt = ::joc::joc::rebuild_objects16(
+                        rebuilder, params, bed5.data(), lfe.data(), gain, &objects16,
+                        &dsp_error);
+                    if (!rebuilt.ok()) {
+                        return Status::fail(rebuilt.code(), "joc", dsp_error);
+                    }
+                    job.index = produced;
+                    job.objects = params.n_objects;
+                    job.clipgain = params.clipgain;
+                    job.objects16.swap(objects16);
+                    // The clock stops before the handoff, so the stage's number is
+                    // its own work (including the chunk read) and never the time it
+                    // spent waiting for the DSP to make room in the ring.
+                    seconds +=
+                        std::chrono::duration<double>(Clock::now() - stage_started).count();
+                    if (!joc_ring.push(&job)) {
+                        return Status::fail(JOC_ERR_STATE, "output",
+                                            "the output ring closed while rendering");
+                    }
+                    ++produced;
+                    stage_started = Clock::now();
+                    return Status::success();
+                };
                 input.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
                 const std::streamsize got = input.gcount();
                 if (got > 0) {
@@ -1408,14 +1650,63 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                         stream_done = true;
                         break;
                     }
-                    if (!bed.read_frame(produced, &bed5, &lfe)) {
-                        failures.record(produced, StageRank::kJoc, JOC_ERR_INPUT_FORMAT, "bed_path",
-                                        "core PCM ended before frame " + std::to_string(produced));
+                    // A repeated (codec, strmtyp, substreamid) combination closes the
+                    // audio frame the group is holding.
+                    bool repeats = false;
+                    for (const ::joc::eac3::Frame& prior : group) {
+                        if (prior.same_stream(frame)) {
+                            repeats = true;
+                            break;
+                        }
+                    }
+                    if (repeats) {
+                        const Status emitted = emit_group();
+                        if (!emitted.ok()) {
+                            failures.record(produced, StageRank::kJoc, emitted.code(),
+                                            emitted.stage(), emitted.message());
+                            stream_done = true;
+                            break;
+                        }
+                        if (produced >= total_frames) {
+                            stream_done = true;
+                            break;
+                        }
+                    }
+                    ::joc::eac3::Frame header = frame;
+                    header.data = nullptr;
+                    header.size = 0;
+                    group.push_back(header);
+                    if (frame.codec == 0u || frame.strmtyp == 0u) {
+                        group_core = header;
+                        group_has_core = true;
+                    } else {
+                        group_has_dependent = true;
+                        if (frame.has_chanmap != 0u) {
+                            group_has_chanmap = true;
+                            group_chanmap = frame.chanmap;
+                        }
+                    }
+
+                    bool present = false;
+                    bool extra_container_ignored = false;
+                    ::joc::emdf::Container container;
+                    const Status found = ::joc::emdf::find_joc_emdf_optional(
+                        frame.data, frame.size, &present, &container,
+                        &::joc::joc::score_container_as_joc, &extra_container_ignored);
+                    if (extra_container_ignored) {
+                        ++extra_container_frames;
+                    }
+                    if (!found.ok()) {
+                        failures.record(produced, StageRank::kJoc, found.code(), found.stage(),
+                                        "frame " + std::to_string(produced) + ": " +
+                                            found.message());
                         stream_done = true;
                         break;
                     }
+                    if (!present || container.find(::joc::emdf::kIdJoc) == nullptr) {
+                        continue;
+                    }
                     joc_frame_params params{};
-                    ::joc::emdf::Container container;
                     const Status parsed = ::joc::joc::parse_eac3_frame(frame.data, frame.size,
                                                                        &params, &container, nullptr);
                     if (!parsed.ok()) {
@@ -1425,6 +1716,8 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                         stream_done = true;
                         break;
                     }
+                    group_params = params;
+                    group_has_joc = true;
                     job.update = ::joc::oamd::OamdUpdate{};
                     job.has_update = false;
                     job.outer_offset = 0;
@@ -1449,30 +1742,24 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                         }
                         job.has_update = true;
                         job.outer_offset = static_cast<std::int64_t>(payload->sample_offset);
+                        const Status bed_ok = ::joc::oamd::parse_id11_bed_assignments(
+                            bytes.data(), bytes.size(), &group_bed_assignments);
+                        if (!bed_ok.ok()) {
+                            failures.record(produced, StageRank::kJoc, bed_ok.code(),
+                                            bed_ok.stage(), bed_ok.message());
+                            stream_done = true;
+                            break;
+                        }
                     }
-                    std::string dsp_error;
-                    const Status rebuilt = ::joc::joc::rebuild_objects16(
-                        rebuilder, params, bed5.data(), lfe.data(), gain, &objects16, &dsp_error);
-                    if (!rebuilt.ok()) {
-                        failures.record(produced, StageRank::kJoc, rebuilt.code(), "joc",
-                                        "frame " + std::to_string(produced) + ": " + dsp_error);
-                        stream_done = true;
-                        break;
+                }
+                // The final frame of an input that ends exactly on a group boundary
+                // has already been emitted above.
+                if (stream_done && !group.empty() && produced < total_frames) {
+                    const Status emitted = emit_group();
+                    if (!emitted.ok()) {
+                        failures.record(produced, StageRank::kJoc, emitted.code(),
+                                        emitted.stage(), emitted.message());
                     }
-                    job.index = produced;
-                    job.objects = params.n_objects;
-                    job.clipgain = params.clipgain;
-                    job.objects16.swap(objects16);
-                    // The clock stops before the handoff, so the stage's number is
-                    // its own work (including the chunk read) and never the time it
-                    // spent waiting for the DSP to make room in the ring.
-                    seconds += std::chrono::duration<double>(Clock::now() - stage_started).count();
-                    if (!joc_ring.push(&job)) {
-                        stream_done = true;
-                        break;
-                    }
-                    ++produced;
-                    stage_started = Clock::now();
                 }
             }
         } catch (...) {
@@ -1733,6 +2020,29 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
     // frames and join it.  Every in-loop write is finished before the finalize
     // (tail flush, spool -> WAV, SHA-256, report) looks at the output.
     joiner.shutdown(false);
+    if (missing_joc_frames != 0u) {
+        bus.warning(std::to_string(missing_joc_frames) +
+                    " audio frame(s) carried no JOC payload; their object channels stay silent");
+    }
+    if (objects_clamped_frames != 0u) {
+        bus.warning(std::to_string(objects_clamped_frames) +
+                    " audio frame(s) declared more than 15 objects; the count was clamped to 15");
+    }
+    if (extra_container_frames != 0u) {
+        bus.warning(std::to_string(extra_container_frames) +
+                    " audio frame(s) carried a second EMDF container; the container whose OAMD "
+                    "and JOC payloads share a group id (and whose JOC payload parses) was used");
+    }
+    if (chanmap_pair_mismatch_frames != 0u) {
+        bus.warning(std::to_string(chanmap_pair_mismatch_frames) +
+                    " audio frame(s): the chanmap declares a different extra pair than "
+                    "joc_dmx_config_idx; the bed mapping follows the chanmap");
+    }
+    if (bed_mask_mismatch_frames != 0u) {
+        bus.warning(std::to_string(bed_mask_mismatch_frames) +
+                    " audio frame(s): the OAMD bed mask declares a different extra pair than "
+                    "joc_dmx_config_idx; the bed mask only affects metadata");
+    }
     StageFailure recorded;
     if (failures.earliest(&recorded)) {
         return finalize_with_error(recorded.code, recorded.stage_text, recorded.message);

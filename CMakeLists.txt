@@ -1,6 +1,23 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(joc_core VERSION 0.1.0 LANGUAGES C CXX)
+# The product version lives in include/joc_version.h so that the CMake build, the
+# MSBuild kernel the foobar2000 component vendors and the release workflow all read
+# the same numbers instead of keeping a copy each; parse it rather than repeat it.
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/joc_version.h" JOC_VERSION_LINES
+     REGEX "#define JOC_VERSION_(MAJOR|MINOR|PATCH) ")
+foreach(_joc_part MAJOR MINOR PATCH)
+    foreach(_joc_line IN LISTS JOC_VERSION_LINES)
+        if(_joc_line MATCHES "#define JOC_VERSION_${_joc_part} ([0-9]+)")
+            set(JOC_VERSION_${_joc_part} "${CMAKE_MATCH_1}")
+        endif()
+    endforeach()
+endforeach()
+if(NOT JOC_VERSION_MAJOR MATCHES "^[0-9]+$" OR NOT JOC_VERSION_MINOR MATCHES "^[0-9]+$"
+   OR NOT JOC_VERSION_PATCH MATCHES "^[0-9]+$")
+    message(FATAL_ERROR "include/joc_version.h does not declare a numeric version")
+endif()
+project(joc_core VERSION "${JOC_VERSION_MAJOR}.${JOC_VERSION_MINOR}.${JOC_VERSION_PATCH}"
+        LANGUAGES C CXX)
 
 # ---------------------------------------------------------------------------
 # Products
@@ -246,14 +263,17 @@ add_executable(joc_cli src/cli/joc_cli.cpp src/foundation/fs_utf8.cpp)
 target_link_libraries(joc_cli PRIVATE joc_core)
 target_include_directories(joc_cli PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
-# The installed CLI is in bin/ and the shared library in lib/, and ELF/Mach-O
-# strip the build rpath on install, so the relative lookup has to be recorded
-# here or `bin/joc_cli` cannot find `../lib/libjoc_core.*`.
+# The install tree keeps the CLI in bin/ with the shared library next to it in
+# lib/, while the packaged archive puts the CLI at its root with the same lib/
+# below.  ELF and Mach-O strip the build rpath on install, so both relative
+# lookups are recorded here or the CLI cannot find the library in one of them.
 if(UNIX)
     if(APPLE)
-        set_target_properties(joc_cli PROPERTIES INSTALL_RPATH "@loader_path/../lib")
+        set_target_properties(joc_cli PROPERTIES
+            INSTALL_RPATH "@loader_path/lib;@loader_path/../lib")
     else()
-        set_target_properties(joc_cli PROPERTIES INSTALL_RPATH "$ORIGIN/../lib")
+        set_target_properties(joc_cli PROPERTIES
+            INSTALL_RPATH "$ORIGIN/lib;$ORIGIN/../lib")
     endif()
 endif()
 

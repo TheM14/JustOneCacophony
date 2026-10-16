@@ -199,28 +199,25 @@ Status parse_id14(const std::uint8_t* payload, std::size_t payload_size, joc_fra
     out->num_objects_bits = static_cast<std::uint8_t>(reader.read(6));
     out->ext_config_idx = static_cast<std::uint8_t>(reader.read(3));
 
-    const std::uint32_t n_objects = static_cast<std::uint32_t>(out->num_objects_bits) + 1u;
+    const std::uint32_t declared_objects = static_cast<std::uint32_t>(out->num_objects_bits) + 1u;
     const std::int16_t n_channels = num_channels_for_config(out->dmx_config_idx);
     if (n_channels < 0) {
         return syntax_fail("unknown JOC downmix configuration " +
                            std::to_string(out->dmx_config_idx));
     }
     out->n_channels = static_cast<std::uint8_t>(n_channels);
-    if (n_objects > JOC_MAX_OBJECTS) {
-        // The reference implementation has no check here and fails later inside
-        // NumPy; the port reports it explicitly (plan 28.2).
-        return Status::fail(JOC_ERR_JOC_UNSUPPORTED_VARIANT, stage::kJoc,
-                            "JOC frame declares " + std::to_string(n_objects) +
-                                " objects, the ABI supports at most " +
-                                std::to_string(static_cast<int>(JOC_MAX_OBJECTS)));
-    }
+    // A declared object count above 15 is clamped to 15: the frame is parsed for
+    // 15 objects only, and the clamp is reported separately.
+    out->objects_clamped = declared_objects > JOC_MAX_OBJECTS ? 1u : 0u;
+    const std::uint32_t n_objects =
+        std::min<std::uint32_t>(declared_objects, JOC_MAX_OBJECTS);
     out->n_objects = static_cast<std::uint8_t>(n_objects);
 
     out->clipgain_x_bits = static_cast<std::uint8_t>(reader.read(3));
     out->clipgain_y_bits = static_cast<std::uint8_t>(reader.read(5));
     out->seq_count = reader.read(10);
-    // clipgain = 1 + (y/32) * 2^(x-4).  The reference multiplies by an exact
-    // exactly for the whole legal range.
+    // clipgain = 1 + (y/32) * 2^(x-4); ldexp builds the power of two exactly
+    // over the whole legal range.
     out->clipgain = 1.0 + static_cast<double>(out->clipgain_y_bits) / 32.0 *
                               std::ldexp(1.0, static_cast<int>(out->clipgain_x_bits) - 4);
 
@@ -361,13 +358,36 @@ Status parse_id14(const std::uint8_t* payload, std::size_t payload_size, joc_fra
     return Status::success();
 }
 
+int score_container_as_joc(const std::uint8_t* data, std::size_t size,
+                           const emdf::Container& container) {
+    const emdf::Payload* payload = container.find(emdf::kIdJoc);
+    const emdf::Payload* oamd = container.find(emdf::kIdOamd);
+    if (payload == nullptr || oamd == nullptr) {
+        return 0;
+    }
+    bool parses = false;
+    std::vector<std::uint8_t> bytes;
+    if (emdf::extract_payload_bytes(data, size, *payload, &bytes).ok()) {
+        joc_frame_params params;
+        FrameSymbols symbols;
+        parses = parse_id14(bytes.data(), bytes.size(), &params, &symbols).ok();
+    }
+    const bool associated = oamd->has_group_id != 0u && payload->has_group_id != 0u &&
+                            oamd->group_id == payload->group_id;
+    if (associated && parses) {
+        return 2;
+    }
+    return parses ? 1 : 0;
+}
+
 Status parse_eac3_frame(const std::uint8_t* frame, std::size_t frame_size, joc_frame_params* out,
                         emdf::Container* container, FrameSymbols* symbols) {
     if (frame == nullptr || out == nullptr) {
         return Status::fail(JOC_ERR_INVALID_ARGUMENT, stage::kJoc, "null frame or output");
     }
     emdf::Container local;
-    const Status status = emdf::find_joc_emdf(frame, frame_size, &local);
+    const Status status =
+        emdf::find_joc_emdf(frame, frame_size, &local, &score_container_as_joc, nullptr);
     if (!status.ok()) {
         return status;
     }
@@ -412,4 +432,516 @@ Status check_id14_padding(const std::uint8_t* payload, std::size_t payload_size,
     return Status::success();
 }
 
+void make_silent_frame_params(joc_frame_params* out) {
+    if (out == nullptr) {
+        return;
+    }
+    std::memset(out, 0, sizeof(*out));
+    out->struct_size = sizeof(joc_frame_params);
+    out->struct_version = JOC_FRAME_PARAMS_VERSION;
+    out->dmx_config_idx = 0u;
+    out->n_channels = static_cast<std::uint8_t>(JOC_CORE_CHANNELS);
+    out->n_objects = static_cast<std::uint8_t>(JOC_MAX_OBJECTS);
+    out->present_mask = (1u << JOC_MAX_OBJECTS) - 1u;
+    out->clipgain = 1.0;
+    for (unsigned object = 0; object < JOC_MAX_OBJECTS; ++object) {
+        out->objects[object].present = 1u;
+        out->objects[object].num_bands_idx = 0u;  // one parameter band
+        out->objects[object].n_bands = 1u;
+        out->objects[object].sparse = 0u;
+        out->objects[object].quant_idx = 0u;
+        out->objects[object].slope_idx = 0u;
+        out->objects[object].num_dpoints_bits = 0u;
+        out->objects[object].n_dpoints = 1u;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Channel identity / bed layout (spec sections 3, 10.2, 10.4)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+struct PositionBit {
+    Position position;
+    std::uint32_t bit;
+};
+
+// Position -> ffmpeg channel bit.  A decoded bed frame lists its channels in
+// ascending bit order, so sorting the positions by bit reproduces the decoder's
+// channel order without asking the decoder.
+constexpr PositionBit kPositionBits[] = {
+    {Position::kLeft, 0x1u},
+    {Position::kRight, 0x2u},
+    {Position::kCenter, 0x4u},
+    {Position::kLfe, 0x8u},
+    {Position::kLeftRearSurround, 0x10u},
+    {Position::kRightRearSurround, 0x20u},
+    {Position::kCenterSurround, 0x100u},
+    {Position::kLeftSurround, 0x200u},
+    {Position::kRightSurround, 0x400u},
+    {Position::kTopSurround, 0x800u},
+    {Position::kVerticalHeightLeft, 0x1000u},
+    {Position::kVerticalHeightCenter, 0x2000u},
+    {Position::kVerticalHeightRight, 0x4000u},
+    {Position::kTopSurroundLeft, 0x8000u},
+    {Position::kTopSurroundRight, 0x20000u},
+};
+
+std::uint32_t position_bit(Position position) {
+    for (const PositionBit& entry : kPositionBits) {
+        if (entry.position == position) {
+            return entry.bit;
+        }
+    }
+    return 0u;
+}
+
+void push_unique(std::vector<Position>* positions, Position position) {
+    if (position == Position::kNone) {
+        return;
+    }
+    for (const Position existing : *positions) {
+        if (existing == position) {
+            return;
+        }
+    }
+    positions->push_back(position);
+}
+
+// ADM 10-slot skeleton placement of the extra pair, indexed by joc_dmx_config_idx.
+constexpr int kExtraPairSlots[5][2] = {
+    {-1, -1}, {6, 7}, {8, 9}, {-1, -1}, {8, 9},
+};
+
+Status variant_error(const char* stage_name, const char* name, const std::string& message,
+                     std::string* error) {
+    const std::string text = std::string(name) + ": " + message;
+    if (error != nullptr) {
+        *error = text;
+    }
+    return Status::fail(JOC_ERR_JOC_UNSUPPORTED_VARIANT, stage_name, text);
+}
+
+std::string position_name(Position position) {
+    switch (position) {
+        case Position::kLeft: return "L";
+        case Position::kRight: return "R";
+        case Position::kCenter: return "C";
+        case Position::kLfe: return "LFE";
+        case Position::kLeftSurround: return "Ls";
+        case Position::kRightSurround: return "Rs";
+        case Position::kLeftRearSurround: return "Lrs";
+        case Position::kRightRearSurround: return "Rrs";
+        case Position::kVerticalHeightLeft: return "Vhl";
+        case Position::kVerticalHeightRight: return "Vhr";
+        case Position::kTopSurroundLeft: return "Lts";
+        case Position::kTopSurroundRight: return "Rts";
+        case Position::kCenterSurround: return "Cs";
+        case Position::kTopSurround: return "Ts";
+        case Position::kVerticalHeightCenter: return "Vhc";
+        case Position::kLfe2: return "LFE2";
+        default: return "?";
+    }
+}
+
+std::string position_list(const std::vector<Position>& positions) {
+    std::string text = "[";
+    for (std::size_t index = 0; index < positions.size(); ++index) {
+        if (index != 0) {
+            text += ",";
+        }
+        text += position_name(positions[index]);
+    }
+    return text + "]";
+}
+
+}  // namespace
+
+void expand_chanmap(std::uint16_t chanmap, std::vector<Position>* out) {
+    if (out == nullptr) {
+        return;
+    }
+    // Table E2.5; bit 0 sits in the field's most significant bit.
+    static const Position kSingles[16] = {
+        Position::kLeft, Position::kCenter, Position::kRight,
+        Position::kLeftSurround, Position::kRightSurround, Position::kNone,
+        Position::kNone, Position::kCenterSurround, Position::kTopSurround,
+        Position::kNone, Position::kNone, Position::kNone,
+        Position::kVerticalHeightCenter, Position::kNone, Position::kLfe2,
+        Position::kLfe,
+    };
+    for (int bit = 0; bit < 16; ++bit) {
+        if (((chanmap >> (15 - bit)) & 1u) == 0u) {
+            continue;
+        }
+        switch (bit) {
+            case 5:
+                out->push_back(Position::kLeftSurround);
+                out->push_back(Position::kRightSurround);
+                break;
+            case 6:
+                out->push_back(Position::kLeftRearSurround);
+                out->push_back(Position::kRightRearSurround);
+                break;
+            case 9:
+            case 10:
+                // Lsd/Rsd and Lw/Rw have no JOC counterpart and stay unmapped.
+                break;
+            case 11:
+                out->push_back(Position::kVerticalHeightLeft);
+                out->push_back(Position::kVerticalHeightRight);
+                break;
+            case 13:
+                out->push_back(Position::kTopSurroundLeft);
+                out->push_back(Position::kTopSurroundRight);
+                break;
+            default:
+                out->push_back(kSingles[bit]);
+                break;
+        }
+    }
+}
+
+void acmod_positions(std::uint8_t acmod, std::vector<Position>* out) {
+    if (out == nullptr) {
+        return;
+    }
+    switch (acmod) {
+        case 0:
+        case 1:
+            out->push_back(Position::kCenter);
+            break;
+        case 2:
+            out->push_back(Position::kLeft);
+            out->push_back(Position::kRight);
+            break;
+        case 3:
+            out->push_back(Position::kLeft);
+            out->push_back(Position::kCenter);
+            out->push_back(Position::kRight);
+            break;
+        case 4:
+            out->push_back(Position::kLeft);
+            out->push_back(Position::kRight);
+            out->push_back(Position::kCenterSurround);
+            break;
+        case 5:
+            out->push_back(Position::kLeft);
+            out->push_back(Position::kCenter);
+            out->push_back(Position::kRight);
+            out->push_back(Position::kCenterSurround);
+            break;
+        case 6:
+            out->push_back(Position::kLeft);
+            out->push_back(Position::kRight);
+            out->push_back(Position::kLeftSurround);
+            out->push_back(Position::kRightSurround);
+            break;
+        case 7:
+        default:
+            out->push_back(Position::kLeft);
+            out->push_back(Position::kCenter);
+            out->push_back(Position::kRight);
+            out->push_back(Position::kLeftSurround);
+            out->push_back(Position::kRightSurround);
+            break;
+    }
+}
+
+void expected_pair(std::uint8_t dmx_config_idx, std::vector<Position>* out) {
+    if (out == nullptr) {
+        return;
+    }
+    if (dmx_config_idx == 1u) {
+        out->push_back(Position::kLeftRearSurround);
+        out->push_back(Position::kRightRearSurround);
+    } else if (dmx_config_idx == 2u || dmx_config_idx == 4u) {
+        out->push_back(Position::kVerticalHeightLeft);
+        out->push_back(Position::kVerticalHeightRight);
+    }
+}
+
+void chanmap_extra_pair(const std::vector<Position>& core, std::uint16_t chanmap,
+                        std::vector<Position>* out) {
+    if (out == nullptr) {
+        return;
+    }
+    std::vector<Position> declared;
+    expand_chanmap(chanmap, &declared);
+    for (const Position position : declared) {
+        bool in_core = false;
+        for (const Position existing : core) {
+            if (existing == position) {
+                in_core = true;
+                break;
+            }
+        }
+        if (!in_core) {
+            push_unique(out, position);
+        }
+    }
+}
+
+int bed_channels_for_core(int core_channels) {
+    return core_channels == 7 ? 8 : 6;
+}
+
+Status compute_bed_plan(const eac3::Frame* core_frame, bool has_core, bool has_dependent,
+                        bool has_chanmap, std::uint16_t chanmap, std::uint8_t dmx_config_idx,
+                        BedPlan* out) {
+    if (out == nullptr) {
+        return Status::fail(JOC_ERR_INVALID_ARGUMENT, stage::kJoc, "null bed plan");
+    }
+    const std::int16_t core_channels = num_channels_for_config(dmx_config_idx);
+    if (core_channels < 0) {
+        return variant_error("joc", "unsupported_configuration",
+                             "unknown JOC downmix configuration " +
+                                 std::to_string(dmx_config_idx), nullptr);
+    }
+    std::vector<Position> core_positions;
+    if (has_core && core_frame != nullptr) {
+        acmod_positions(core_frame->acmod, &core_positions);
+        if (core_frame->lfeon != 0u) {
+            core_positions.push_back(Position::kLfe);
+        }
+    }
+    std::vector<Position> extra;
+    std::vector<Position> locations = core_positions;
+    if (has_dependent && has_chanmap) {
+        std::vector<Position> declared;
+        expand_chanmap(chanmap, &declared);
+        chanmap_extra_pair(core_positions, chanmap, &extra);
+        locations.insert(locations.end(), declared.begin(), declared.end());
+    }
+
+    std::vector<Position> ordered;
+    for (const Position position : locations) {
+        push_unique(&ordered, position);
+    }
+    std::sort(ordered.begin(), ordered.end(), [](Position left, Position right) {
+        return position_bit(left) < position_bit(right);
+    });
+    for (const Position position : ordered) {
+        if (position_bit(position) == 0u) {
+            return variant_error("eac3", "bed_channel_mapping_unsupported",
+                                 "unmapped channel position " + position_name(position),
+                                 nullptr);
+        }
+    }
+
+    BedPlan plan;
+    plan.channels = static_cast<int>(ordered.size());
+    const int expected_channels = bed_channels_for_core(core_channels);
+    if (plan.channels != expected_channels) {
+        return variant_error("eac3", "core_channel_count_mismatch",
+                             "the bed declares " + std::to_string(plan.channels) +
+                                 " channels, configuration " + std::to_string(dmx_config_idx) +
+                                 " needs " + std::to_string(expected_channels),
+                             nullptr);
+    }
+    for (int index = 0; index < plan.channels; ++index) {
+        if (ordered[index] == Position::kLfe) {
+            plan.lfe_channel = index;
+        }
+    }
+
+    std::vector<Position> wanted = {Position::kLeft, Position::kRight, Position::kCenter,
+                                    Position::kLeftSurround, Position::kRightSurround};
+    wanted.insert(wanted.end(), extra.begin(), extra.end());
+    if (wanted.size() != static_cast<std::size_t>(core_channels)) {
+        return variant_error("eac3", "chanmap_cfg_mismatch",
+                             "the bed cannot supply " + std::to_string(core_channels) +
+                                 " JOC core channels (found " + std::to_string(wanted.size()) +
+                                 ")",
+                             nullptr);
+    }
+    for (std::size_t lane = 0; lane < wanted.size(); ++lane) {
+        int found = -1;
+        for (int index = 0; index < plan.channels; ++index) {
+            if (ordered[index] == wanted[lane]) {
+                found = index;
+                break;
+            }
+        }
+        if (found < 0) {
+            return variant_error("eac3", "bed_channel_mapping_unsupported",
+                                 "channel " + position_name(wanted[lane]) +
+                                     " is missing from the bed " + position_list(ordered),
+                                 nullptr);
+        }
+        plan.lane[lane] = found;
+    }
+    if (dmx_config_idx < 5u) {
+        plan.extra_pair_slot[0] = kExtraPairSlots[dmx_config_idx][0];
+        plan.extra_pair_slot[1] = kExtraPairSlots[dmx_config_idx][1];
+    }
+    *out = plan;
+    return Status::success();
+}
+
+Status compute_bed_plan_for_config(std::uint8_t dmx_config_idx, BedPlan* out) {
+    if (out == nullptr) {
+        return Status::fail(JOC_ERR_INVALID_ARGUMENT, stage::kJoc, "null bed plan");
+    }
+    const std::int16_t core_channels = num_channels_for_config(dmx_config_idx);
+    if (core_channels < 0) {
+        return variant_error("joc", "unsupported_configuration",
+                             "unknown JOC downmix configuration " +
+                                 std::to_string(dmx_config_idx), nullptr);
+    }
+    std::vector<Position> extra;
+    expected_pair(dmx_config_idx, &extra);
+    std::vector<Position> wanted = {Position::kLeft, Position::kRight, Position::kCenter,
+                                    Position::kLeftSurround, Position::kRightSurround};
+    wanted.insert(wanted.end(), extra.begin(), extra.end());
+
+    std::vector<Position> ordered = {Position::kLeft, Position::kRight, Position::kCenter,
+                                     Position::kLfe, Position::kLeftSurround,
+                                     Position::kRightSurround};
+    ordered.insert(ordered.end(), extra.begin(), extra.end());
+    std::sort(ordered.begin(), ordered.end(), [](Position left, Position right) {
+        return position_bit(left) < position_bit(right);
+    });
+    ordered.erase(std::unique(ordered.begin(), ordered.end()), ordered.end());
+
+    BedPlan plan;
+    plan.channels = static_cast<int>(ordered.size());
+    for (int index = 0; index < plan.channels; ++index) {
+        if (ordered[index] == Position::kLfe) {
+            plan.lfe_channel = index;
+        }
+    }
+    for (std::size_t lane = 0; lane < wanted.size(); ++lane) {
+        for (int index = 0; index < plan.channels; ++index) {
+            if (ordered[index] == wanted[lane]) {
+                plan.lane[lane] = index;
+                break;
+            }
+        }
+        if (plan.lane[lane] < 0) {
+            return variant_error("eac3", "bed_channel_mapping_unsupported",
+                                 "channel " + position_name(wanted[lane]) +
+                                     " is missing from the bed " + position_list(ordered),
+                                 nullptr);
+        }
+    }
+    if (dmx_config_idx < 5u) {
+        plan.extra_pair_slot[0] = kExtraPairSlots[dmx_config_idx][0];
+        plan.extra_pair_slot[1] = kExtraPairSlots[dmx_config_idx][1];
+    }
+    *out = plan;
+    return Status::success();
+}
+
+Status check_cross_layer(const joc_frame_params& params, const eac3::Frame* core_frame,
+                         bool has_core, bool has_dependent, bool has_chanmap,
+                         std::uint16_t chanmap,
+                         const std::vector<oamd::BedAssignment>* bed_assignments,
+                         std::string* error, CrossLayerNotes* notes) {
+    const std::uint8_t config_idx = params.dmx_config_idx;
+    const int core_channels = params.n_channels;
+    std::vector<Position> wanted;
+    expected_pair(config_idx, &wanted);
+
+    if (params.ext_config_idx != 0u) {
+        return variant_error("joc", "ext_config_idx_unsupported",
+                             "joc_ext_config_idx=" + std::to_string(params.ext_config_idx) +
+                                 " has no mapping in this implementation",
+                             error);
+    }
+    if (core_channels != JOC_CORE_CHANNELS && core_channels != JOC_MAX_CORE_CHANNELS) {
+        return variant_error("joc", "unsupported_configuration",
+                             "unsupported JOC core channel count " +
+                                 std::to_string(core_channels),
+                             error);
+    }
+
+    std::vector<Position> core_positions;
+    if (has_core && core_frame != nullptr) {
+        acmod_positions(core_frame->acmod, &core_positions);
+        if (core_frame->lfeon != 0u) {
+            core_positions.push_back(Position::kLfe);
+        }
+    }
+
+    if (core_channels == JOC_MAX_CORE_CHANNELS) {
+        if (!has_core || !has_chanmap) {
+            return variant_error(
+                "eac3", "core_extension_pair",
+                "a 7-channel configuration needs both an independent substream and a "
+                "dependent-substream chanmap",
+                error);
+        }
+        std::vector<Position> pair;
+        chanmap_extra_pair(core_positions, chanmap, &pair);
+        if (pair != wanted) {
+            // The bed mapping follows the chanmap's channel codes; the name a
+            // configuration implies does not reach the DSP, so the frame renders
+            // and the disagreement is reported instead.
+            if (notes != nullptr) {
+                notes->chanmap_pair_mismatch = true;
+            }
+        }
+    } else if (has_chanmap) {
+        std::vector<Position> pair;
+        chanmap_extra_pair(core_positions, chanmap, &pair);
+        if (!pair.empty()) {
+            return variant_error("eac3", "core_channel_count_mismatch",
+                                 "a 5-channel configuration declares extra dependent "
+                                 "channels " + position_list(pair),
+                                 error);
+        }
+    }
+
+    std::vector<Position> declared = core_positions;
+    if (has_chanmap) {
+        std::vector<Position> expanded;
+        expand_chanmap(chanmap, &expanded);
+        for (const Position position : expanded) {
+            push_unique(&declared, position);
+        }
+    }
+    int full_band = 0;
+    for (const Position position : declared) {
+        if (position != Position::kLfe && position != Position::kLfe2) {
+            ++full_band;
+        }
+    }
+    if (!declared.empty() && full_band != core_channels) {
+        return variant_error("eac3", "core_channel_count_mismatch",
+                             "the substreams declare " + std::to_string(full_band) +
+                                 " full-band channels, joc_dmx_config_idx=" +
+                                 std::to_string(config_idx) + " declares " +
+                                 std::to_string(core_channels),
+                             error);
+    }
+
+    if (bed_assignments != nullptr) {
+        static constexpr std::uint32_t kBedBitLeftRear = 1u << 4;   // RC_LB/RC_RB
+        static constexpr std::uint32_t kBedBitTopFront = 1u << 5;   // RC_TFL/RC_TFR
+        std::vector<Position> declared_pair;
+        for (const oamd::BedAssignment& assignment : *bed_assignments) {
+            if (!assignment.standard || assignment.mask == 0u) {
+                continue;
+            }
+            if ((assignment.mask & kBedBitLeftRear) != 0u) {
+                push_unique(&declared_pair, Position::kLeftRearSurround);
+                push_unique(&declared_pair, Position::kRightRearSurround);
+            }
+            if ((assignment.mask & kBedBitTopFront) != 0u) {
+                push_unique(&declared_pair, Position::kVerticalHeightLeft);
+                push_unique(&declared_pair, Position::kVerticalHeightRight);
+            }
+        }
+        if (!declared_pair.empty() && declared_pair != wanted) {
+            if (notes != nullptr) {
+                notes->bed_mask_mismatch = true;
+            }
+        }
+    }
+    return Status::success();
+}
+
 }  // namespace joc::joc
+

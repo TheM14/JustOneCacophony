@@ -1,4 +1,3 @@
-
 #pragma once
 
 #include <cstddef>
@@ -10,11 +9,33 @@
 
 namespace joc::eac3 {
 
+// One syncframe plus its transport-layer (L2) header.  codec/strmtyp/substreamid
+// identify the substream: within one audio frame each combination appears once.
 struct Frame {
     const std::uint8_t* data = nullptr;
     std::size_t size = 0;
     std::size_t offset = 0;  // byte offset of the frame start in the fed stream
+    std::uint8_t codec = 0;  // 0 = AC-3, 1 = E-AC-3
+    std::uint8_t strmtyp = 0;
+    std::uint8_t substreamid = 0;
+    std::uint8_t acmod = 0;
+    std::uint8_t lfeon = 0;
+    std::uint8_t bsid = 0;
+    std::uint8_t has_chanmap = 0;
+    std::uint16_t chanmap = 0;
+
+    bool same_stream(const Frame& other) const {
+        return codec == other.codec && strmtyp == other.strmtyp &&
+               substreamid == other.substreamid;
+    }
 };
+
+// Parses the syncframe header at `offset`.  Returns false when the syncword is
+// missing or the declared size cannot be derived.  `out` may be null to query
+// only the size.  AC-3 and E-AC-3 are told apart by bsid (bits 40..44): <= 8 is
+// AC-3, whose frame size comes from fscod/frmsizecod, everything above is E-AC-3.
+bool parse_syncframe_header(const std::uint8_t* data, std::size_t size, std::size_t offset,
+                            Frame* out);
 
 class FrameReader {
 public:

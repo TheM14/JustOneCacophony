@@ -102,6 +102,16 @@ typedef struct joc_stream_status_info {
     uint64_t buffered_samples; /* rendered but not yet pulled, per channel */
     uint64_t oamd_payloads;
     uint64_t oamd_transitions;
+    /* Metadata the renderer had to work around, per audio frame: no JOC payload at
+     * all, a declared object count clamped to 15, and a syncframe carrying a second
+     * EMDF container that is not this frame's JOC metadata. */
+    uint64_t missing_joc_frames;
+    uint64_t objects_clamped_frames;
+    uint64_t extra_container_frames;
+    /* Extra-pair identity disagreements across layers (spec 11.2 checks 1 and 2).
+     * The identity is metadata only, so those frames still render. */
+    uint64_t chanmap_pair_mismatch_frames;
+    uint64_t bed_mask_mismatch_frames;
     uint32_t output_channels;
     uint32_t ended; /* 1 after flush() */
 } joc_stream_status_info;

@@ -3,7 +3,7 @@
 [English](README.en.md) · [数学说明](docs/math.md) · [双耳渲染](docs/binaural.md) · [SIMD 派发](docs/simd.md)
 
 JustOneCacophony 的 C++ 实现：E-AC-3 JOC 码流解析、对象重建与渲染的执行内核。它从 E-AC-3
-同步帧中提取 EMDF、ID14 JOC 参数与 ID11 OAMD 元数据，结合 FFmpeg 解码出的核心 5.1 PCM
+同步帧中提取 EMDF、ID14 JOC 参数与 ID11 OAMD 元数据，结合 FFmpeg 解码出的核心 PCM（N=5 或 7）
 重建 LFE 与 15 路对象 PCM，并输出 ADM BWF、指定扬声器布局的 WAV，或用编译好的 HRTF 方向场
 直接输出双耳 WAV。
 
@@ -22,10 +22,11 @@ Windows（MSVC / VS 2022，静态 CRT）、Linux 与 macOS 由 `.github/workflow
 单元测试；本地只验证 MSVC。浮点行为是逐字节验收的一部分，因此不启用 fast-math：MSVC 用
 `/fp:precise`，其他编译器用 `-fno-fast-math`。
 
-Windows Release 默认带 `/arch:AVX2`（`JOC_ENABLE_AVX2`，默认 ON，见 `CMakeLists.txt`）。这个
-开关是逐字节验收过的：所有渲染产物的 SHA-256 完全一致，换来 SOFA 双耳内核 12.4%、Rosella
-1.8% 的提升。代价是运行要求——这样的 `joc_core.dll` 会执行 AVX2 指令，在 2013 年以前的 x86 上
-直接非法指令退出。没有运行时派发，一个二进制只能二选一，所以：
+最重的双耳循环由**运行时派发**：同一份二进制里装多套 ISA 代码，启动时按 CPUID/XGETBV 选最宽
+的一套，输出逐字节不变（见 [SIMD 与运行时派发](docs/simd.md)）。`JOC_ENABLE_AVX2` /
+`JOC_ENABLE_AVX512`（默认都 ON）只决定是否把这些单元编进二进制：带上 AVX2 单元让 SOFA 双耳
+内核快 12.4%、Rosella 快 1.8%，而没有 AVX2 的 CPU 仍走基线（SSE2）路径。要产出只带基线 ISA
+的二进制：
 
 ```powershell
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DJOC_ENABLE_AVX2=OFF
@@ -57,8 +58,8 @@ UTF-8，因此日文/中文等非 ASCII 路径（含 ffmpeg 子进程与输出�
 
 ```powershell
 # 默认：ADM BWF（本身就是 24-bit，没有也不需要格式参数）
-joc_cli "07. Gold Forever (2021 Master).m4a"
-#   -> output/07. Gold Forever (2021 Master).adm.wav
+joc_cli input.m4a
+#   -> output/input.adm.wav
 
 joc_cli input.m4a -o out/adm.wav                 # 指定输出
 
@@ -129,8 +130,40 @@ docs/        数学说明、双耳渲染流程与 SIMD 派发
 
 ## 兼容性说明
 
+### `joc_clipgain` 的施加方式
+
+`joc_clipgain` 在**分析端**并入分析标量：`标量 = 1/16 × g`（`g = 1 + (y/32)·2^(x−4)`，8 bit 字段
+`x:3 | y:5`）。出口的 ×16 抵消 1/16，净效果是 `×g`，因此 clamp 处在增益**之后**
+（`clamp(16·IQMF·g_interp)`）。标量按帧保存在两个槽里：本帧前 256 个采样从上一帧值线性过渡、之后为
+常数，复位后的第一帧直接取新值。`g = 1` 时插值恒等，且 `clamp(x)·1 == clamp(x·1)`。
+
 `object_delay_samples` 默认 **1473**，与既有实现的行为保持一致；它是可配置字段，改动它会
 改变 OAMD/ADM 时间对齐。上游调查认为该值应为 0，本项目为保持逐字节等价暂不改默认值。
+
+### `joc_dmx_config_idx` 0..4
+
+覆盖全部五个档位：$N=5,7,7,5,7$，相位开关 $\sigma(k)=(k\in\{3,4\})$ 同时门控 Ls/Rs 的
+$-j$ 旋转与 band-0 21-tap FIR。$N=7$ 档位必须解出 **8 通道**床，并按通道码映射：
+
+| $k$ | 额外那一对 | 解码器给出 8 通道的顺序 | JOC 输入序（床下标） |
+|---|---|---|---|
+| 1 | Lb/Rb | FL FR FC LFE **BL BR** SL SR | 0 1 2 6 7 4 5 |
+| 2 / 4 | Tfl/Tfr | FL FR FC LFE SL SR TFL TFR | 0 1 2 4 5 6 7 |
+
+ffmpeg 侧只在 $N=5$ 档位传 `-ac 6`；$N=7$ 档位不传 `-ac`，保留解码器自身的布局
+（`-ac 6` 会把 5.1.2/7.1 下混成 5.1，`-ac 8` 会把 5.1.2 重映射成 7.1，两者都会丢信息）。
+
+**跨层一致性校验**（§11.2）：子流声明的全频段通道数必须等于 $N$，$joc\_ext\_config\_idx$ 非零
+时报未映射变体，对象数超过 15 时截断到 15 并记入 diagnostics——这几项会改变 DSP 输入，不一致就
+拒绝。额外那一对的**身份**只进元数据、不进 DSP（§10.1）：依赖子流 `chanmap` 与 $k$ 不一致、或
+OAMD 标准 bed 掩码与 $k$ 不一致时，只记 diagnostics 并照常解码，床映射按 `chanmap` 的通道码走。
+同一音频帧里出现多个含 ID11/ID14 的 EMDF 容器时，按规格 §8.2 + Table 56 的关联规则打分：
+OAMD 与 JOC 载荷 groupid 相同且 ID14 能完整解析的优先，其次只看 ID14 能否解析；唯一最高分才用，
+其余记入 diagnostics（`emdf/extra_container_ignored`）。额外那一对在 10 槽 ADM 骨架上的落位
+（$k=1\to6/7$、$k\in\{2,4\}\to8/9$）会被记录，但床通道按现行契约不作为输出通道。
+
+音频帧内完全没有 JOC EMDF 时（例如编码器没写首帧元数据），该帧的对象通道静音，
+QMF 分析与合成状态照常推进，并在统计里单独计数。
 
 ## 许可
 
