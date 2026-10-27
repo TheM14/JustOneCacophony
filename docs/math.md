@@ -435,7 +435,8 @@ $$
 \mathbf h(u)\odot\mathbf v(v).
 $$
 
-对于只有一对水平环绕、没有独立 side/rear 两对的 5.1 系列布局，纵向坐标使用
+对于只有一对水平环绕、没有独立 side/rear 两对的布局（5.1 系列，以及 4.0 Quad 与
+4.0 Surround 这类只有一对后置声道的布局），纵向坐标使用
 
 $$
 v_{\mathrm{floor}}=

@@ -15,7 +15,9 @@ This is research code, not a complete, standards-compliant, or production-grade 
 - Parse ID11 OAMD position updates and build object trajectories.
 - Reconstruct LFE plus 15 object channels through analysis QMF, parameter interpolation, the object matrix, and inverse QMF.
 - Write a 25-channel ADM BWF: a 10-channel 7.1.2 bed (silent except for LFE) plus 15 objects.
-- Render directly to `2.0`, `3.1`, `5.1`, `7.1`, `5.1.2`, `5.1.4`, `7.1.2`, `7.1.4`, `9.1.4`, or `9.1.6`.
+- Render directly to `2.0`, `3.1`, `4.0 Surround`, `4.0 Quad`, `5.1`, `7.1`, `5.1.2`, `5.1.4`,
+  `7.1.2`, `7.1.4`, `9.1.4`, or `9.1.6` (the two 4.0 layouts are different speaker sets: Surround is a
+  front trio plus a back centre, Quad is a front and a back pair).
 - Run public SOFA binaural rendering directly from `pcm16 + ID11/OAMD`, without a temporary ADM BWF.
 - Keep the binaural DSP in float64/complex128, including 961-sample latency compensation, cross-frame state, and the room tail.
 - Use a shared float32/PCM24 WAV writer and explicit PCM24 clipping policy for direct outputs.
