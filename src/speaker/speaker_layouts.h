@@ -39,7 +39,7 @@ struct LayoutGeometry {
     std::array<RegionGeometry, 7> regions{};
 };
 
-inline constexpr std::array<LayoutGeometry, 10> kLayouts{{
+inline constexpr std::array<LayoutGeometry, 12> kLayouts{{
     LayoutGeometry{
         0x1u, 0, 2,
         {{0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
@@ -132,6 +132,102 @@ inline constexpr std::array<LayoutGeometry, 10> kLayouts{{
             3, 1, 1, 0,
             {{SpeakerPoint{{0, 0, 0}, 0}, SpeakerPoint{{32767, 0, 0}, 1}, SpeakerPoint{{16384, 0, 0}, 2}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}}},
             {{AxisGroup{3, {0, 2, 1}}, AxisGroup{}, AxisGroup{}, AxisGroup{}}},
+            {{AxisGroup{}, AxisGroup{}, AxisGroup{}, AxisGroup{}}}
+        }
+        }}
+    },
+    LayoutGeometry{
+        0x23u, 0xFFu, 4,
+        {{0, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+        {{
+        RegionGeometry{
+            4, 2, 2, 0,
+            {{SpeakerPoint{{0, 0, 0}, 0}, SpeakerPoint{{32767, 0, 0}, 1}, SpeakerPoint{{16384, 0, 0}, 2}, SpeakerPoint{{16384, 32767, 0}, 3}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}}},
+            {{AxisGroup{3, {0, 2, 1}}, AxisGroup{1, {3, 0, 0}}, AxisGroup{}, AxisGroup{}}},
+            {{AxisGroup{}, AxisGroup{}, AxisGroup{}, AxisGroup{}}}
+        },
+        RegionGeometry{
+            3, 1, 1, 0,
+            {{SpeakerPoint{{0, 0, 0}, 0}, SpeakerPoint{{32767, 0, 0}, 1}, SpeakerPoint{{16384, 0, 0}, 2}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}}},
+            {{AxisGroup{3, {0, 2, 1}}, AxisGroup{}, AxisGroup{}, AxisGroup{}}},
+            {{AxisGroup{}, AxisGroup{}, AxisGroup{}, AxisGroup{}}}
+        },
+        RegionGeometry{
+            4, 2, 2, 0,
+            {{SpeakerPoint{{0, 0, 0}, 0}, SpeakerPoint{{32767, 0, 0}, 1}, SpeakerPoint{{16384, 0, 0}, 2}, SpeakerPoint{{16384, 32767, 0}, 3}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}}},
+            {{AxisGroup{3, {0, 2, 1}}, AxisGroup{1, {3, 0, 0}}, AxisGroup{}, AxisGroup{}}},
+            {{AxisGroup{}, AxisGroup{}, AxisGroup{}, AxisGroup{}}}
+        },
+        RegionGeometry{
+            2, 2, 2, 0,
+            {{SpeakerPoint{{16384, 0, 0}, 2}, SpeakerPoint{{16384, 32767, 0}, 3}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}}},
+            {{AxisGroup{1, {0, 0, 0}}, AxisGroup{1, {1, 0, 0}}, AxisGroup{}, AxisGroup{}}},
+            {{AxisGroup{}, AxisGroup{}, AxisGroup{}, AxisGroup{}}}
+        },
+        RegionGeometry{
+            3, 1, 1, 0,
+            {{SpeakerPoint{{0, 0, 0}, 0}, SpeakerPoint{{32767, 0, 0}, 1}, SpeakerPoint{{16384, 0, 0}, 2}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}}},
+            {{AxisGroup{3, {0, 2, 1}}, AxisGroup{}, AxisGroup{}, AxisGroup{}}},
+            {{AxisGroup{}, AxisGroup{}, AxisGroup{}, AxisGroup{}}}
+        },
+        RegionGeometry{
+            1, 1, 1, 0,
+            {{SpeakerPoint{{16384, 32767, 0}, 3}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}}},
+            {{AxisGroup{1, {0, 0, 0}}, AxisGroup{}, AxisGroup{}, AxisGroup{}}},
+            {{AxisGroup{}, AxisGroup{}, AxisGroup{}, AxisGroup{}}}
+        },
+        RegionGeometry{
+            3, 1, 1, 0,
+            {{SpeakerPoint{{0, 0, 0}, 0}, SpeakerPoint{{32767, 0, 0}, 1}, SpeakerPoint{{16384, 0, 0}, 2}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}}},
+            {{AxisGroup{3, {0, 2, 1}}, AxisGroup{}, AxisGroup{}, AxisGroup{}}},
+            {{AxisGroup{}, AxisGroup{}, AxisGroup{}, AxisGroup{}}}
+        }
+        }}
+    },
+    LayoutGeometry{
+        0x9u, 0xFFu, 4,
+        {{0, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+        {{
+        RegionGeometry{
+            4, 2, 2, 0,
+            {{SpeakerPoint{{0, 0, 0}, 0}, SpeakerPoint{{32767, 0, 0}, 1}, SpeakerPoint{{0, 32767, 0}, 2}, SpeakerPoint{{32767, 32767, 0}, 3}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}}},
+            {{AxisGroup{2, {0, 1, 0}}, AxisGroup{2, {2, 3, 0}}, AxisGroup{}, AxisGroup{}}},
+            {{AxisGroup{}, AxisGroup{}, AxisGroup{}, AxisGroup{}}}
+        },
+        RegionGeometry{
+            4, 2, 2, 0,
+            {{SpeakerPoint{{0, 0, 0}, 0}, SpeakerPoint{{32767, 0, 0}, 1}, SpeakerPoint{{0, 32767, 0}, 2}, SpeakerPoint{{32767, 32767, 0}, 3}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}}},
+            {{AxisGroup{2, {0, 1, 0}}, AxisGroup{2, {2, 3, 0}}, AxisGroup{}, AxisGroup{}}},
+            {{AxisGroup{}, AxisGroup{}, AxisGroup{}, AxisGroup{}}}
+        },
+        RegionGeometry{
+            4, 2, 2, 0,
+            {{SpeakerPoint{{0, 0, 0}, 0}, SpeakerPoint{{32767, 0, 0}, 1}, SpeakerPoint{{0, 32767, 0}, 2}, SpeakerPoint{{32767, 32767, 0}, 3}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}}},
+            {{AxisGroup{2, {0, 1, 0}}, AxisGroup{2, {2, 3, 0}}, AxisGroup{}, AxisGroup{}}},
+            {{AxisGroup{}, AxisGroup{}, AxisGroup{}, AxisGroup{}}}
+        },
+        RegionGeometry{
+            2, 1, 1, 0,
+            {{SpeakerPoint{{0, 32767, 0}, 2}, SpeakerPoint{{32767, 32767, 0}, 3}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}}},
+            {{AxisGroup{2, {0, 1, 0}}, AxisGroup{}, AxisGroup{}, AxisGroup{}}},
+            {{AxisGroup{}, AxisGroup{}, AxisGroup{}, AxisGroup{}}}
+        },
+        RegionGeometry{
+            2, 1, 1, 0,
+            {{SpeakerPoint{{0, 0, 0}, 0}, SpeakerPoint{{32767, 0, 0}, 1}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}}},
+            {{AxisGroup{2, {0, 1, 0}}, AxisGroup{}, AxisGroup{}, AxisGroup{}}},
+            {{AxisGroup{}, AxisGroup{}, AxisGroup{}, AxisGroup{}}}
+        },
+        RegionGeometry{
+            2, 1, 1, 0,
+            {{SpeakerPoint{{0, 32767, 0}, 2}, SpeakerPoint{{32767, 32767, 0}, 3}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}}},
+            {{AxisGroup{2, {0, 1, 0}}, AxisGroup{}, AxisGroup{}, AxisGroup{}}},
+            {{AxisGroup{}, AxisGroup{}, AxisGroup{}, AxisGroup{}}}
+        },
+        RegionGeometry{
+            2, 1, 1, 0,
+            {{SpeakerPoint{{0, 0, 0}, 0}, SpeakerPoint{{32767, 0, 0}, 1}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}, SpeakerPoint{}}},
+            {{AxisGroup{2, {0, 1, 0}}, AxisGroup{}, AxisGroup{}, AxisGroup{}}},
             {{AxisGroup{}, AxisGroup{}, AxisGroup{}, AxisGroup{}}}
         }
         }}
