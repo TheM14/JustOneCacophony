@@ -518,12 +518,7 @@ def render(index, bed_path, frame_count, raw_path, gain, progress_every,
 
 
 def _layout_choice(value: str) -> str:
-    """Canonical layout name for a --speaker-layout value.
-
-    Legacy spellings resolve here rather than being listed as choices, so "4.0"
-    still means the layout that name has always meant while the help text shows
-    the two 4.0 layouts by their own names.
-    """
+    """Canonical layout name for a --speaker-layout value."""
     return speaker_layout_display_name(get_speaker_layout(value))
 
 
@@ -540,7 +535,7 @@ def build_parser():
     direct_mode = parser.add_mutually_exclusive_group()
     direct_mode.add_argument("--speaker-layout", type=_layout_choice,
                              choices=SPEAKER_LAYOUT_CHOICES,
-                             help="直接扬声器渲染布局，例如 2.0、4.0 Quad、5.1、7.1.2")
+                             help="直接扬声器渲染布局，例如 2.0、4.0、5.1、7.1.2")
     direct_mode.add_argument("--binaural", action="store_true",
                              help="直接 SOFA 双耳渲染；不生成临时 ADM BWF")
     parser.add_argument("--speaker-format", choices=("float32", "int24"), default="float32",

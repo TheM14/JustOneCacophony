@@ -15,9 +15,9 @@ This is research code, not a complete, standards-compliant, or production-grade 
 - Parse ID11 OAMD position updates and build object trajectories.
 - Reconstruct LFE plus 15 object channels through analysis QMF, parameter interpolation, the object matrix, and inverse QMF.
 - Write a 25-channel ADM BWF: a 10-channel 7.1.2 bed (silent except for LFE) plus 15 objects.
-- Render directly to `2.0`, `3.1`, `4.0 Surround`, `4.0 Quad`, `5.1`, `7.1`, `5.1.2`, `5.1.4`,
-  `7.1.2`, `7.1.4`, `9.1.4`, or `9.1.6` (the two 4.0 layouts are different speaker sets: Surround is a
-  front trio plus a back centre, Quad is a front and a back pair).
+- Render directly to `2.0`, `3.1`, `4.0`, `5.1`, `7.1`, `5.1.2`, `5.1.4`, `7.1.2`, `7.1.4`, `9.1.4`
+  or `9.1.6` (`4.0` is the quad layout, a front and a back pair; see
+  [Speaker layouts and channel order](#speaker-layouts-and-channel-order)).
 - Run public SOFA binaural rendering directly from `pcm16 + ID11/OAMD`, without a temporary ADM BWF.
 - Keep the binaural DSP in float64/complex128, including 961-sample latency compensation, cross-frame state, and the room tail.
 - Use a shared float32/PCM24 WAV writer and explicit PCM24 clipping policy for direct outputs.
@@ -229,6 +229,38 @@ python main.py --help
 ```
 
 Without `-o`, output still goes to `output/` at the repository root. The directory move intentionally preserves this behavior.
+
+## Speaker layouts and channel order
+
+`--speaker-layout` accepts the eleven layouts below, and the PCM/WAV channel order is the order in
+the table:
+
+| Layout | Channel order |
+|---|---|
+| 2.0 | L, R |
+| 3.1 | L, R, C, LFE |
+| 4.0 | L, R, Lrs, Rrs |
+| 5.1 | L, R, C, LFE, Ls, Rs |
+| 7.1 | L, R, C, LFE, Ls, Rs, Lrs, Rrs |
+| 5.1.2 | L, R, C, LFE, Ls, Rs, Ltm, Rtm |
+| 5.1.4 | L, R, C, LFE, Ls, Rs, Ltf, Rtf, Ltr, Rtr |
+| 7.1.2 | L, R, C, LFE, Ls, Rs, Lrs, Rrs, Ltm, Rtm |
+| 7.1.4 | L, R, C, LFE, Ls, Rs, Lrs, Rrs, Ltf, Rtf, Ltr, Rtr |
+| 9.1.4 | L, R, C, LFE, Ls, Rs, Lrs, Rrs, Lw, Rw, Ltf, Rtf, Ltr, Rtr |
+| 9.1.6 | L, R, C, LFE, Ls, Rs, Lrs, Rrs, Lw, Rw, Ltf, Rtf, Ltm, Rtm, Ltr, Rtr |
+
+`4.0` is the quad layout this project adds (the traditional `FL FR BL BR`, here `L R Lrs Rrs`); it is
+not part of the Dolby layout set. Every other layout and channel order follows the Dolby
+specifications.
+
+Multichannel WAV files use `WAVE_FORMAT_EXTENSIBLE` with `dwChannelMask = 0`: the file declares no
+Windows speaker positions, and the PCM channel order is exactly the table above, never rearranged
+into mask-bit order. Players, ASIO, DAWs and other devices have to map the channel numbers
+themselves; this project guarantees the content and numbering of each PCM channel, not that a
+downstream player recognises Dolby speaker positions on its own.
+
+The command line accepts only the eleven names in the table; anything else is rejected as an unknown
+layout.
 
 ## Repository layout
 

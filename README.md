@@ -15,8 +15,8 @@
 - 解析 ID11 OAMD 位置更新并生成对象轨迹；
 - 通过 analysis QMF、参数插值、对象矩阵和 inverse QMF 重建 LFE + 15 路对象 PCM；
 - 输出 25 声道 ADM BWF：10 声道 7.1.2 bed（除 LFE 外静音）+ 15 个对象；
-- 直接渲染 `2.0`、`3.1`、`4.0 Surround`、`4.0 Quad`、`5.1`、`7.1`、`5.1.2`、`5.1.4`、`7.1.2`、
-  `7.1.4`、`9.1.4`、`9.1.6`（两种 4.0 是不同的扬声器集合：Surround 是前置三声道加后中，Quad 是前后各一对）；
+- 直接渲染 `2.0`、`3.1`、`4.0`、`5.1`、`7.1`、`5.1.2`、`5.1.4`、`7.1.2`、`7.1.4`、`9.1.4`、
+  `9.1.6`（`4.0` 是 Quad 布局，前后各一对；声道排列见[扬声器布局与声道顺序](#扬声器布局与声道顺序)）；
 - 从 `pcm16 + ID11/OAMD` 直接运行公开 SOFA 双耳渲染，不生成临时 ADM BWF；
 - 双耳 DSP 全程使用 float64/complex128，并保留 961-sample latency compensation、跨帧状态和 room 尾声；
 - 直接输出统一支持 float32 或 PCM24 WAV，并在 PCM24 削波前提供明确处理策略；
@@ -199,6 +199,33 @@ python main.py --help
 ```
 
 未指定 `-o` 时，输出仍写入仓库根目录的 `output/`。这是文件移动后特意保持的原有行为。
+
+## 扬声器布局与声道顺序
+
+`--speaker-layout` 只接受下表 11 个布局，PCM/WAV 的声道顺序就是表里的顺序：
+
+| 布局 | 声道顺序 |
+|---|---|
+| 2.0 | L, R |
+| 3.1 | L, R, C, LFE |
+| 4.0 | L, R, Lrs, Rrs |
+| 5.1 | L, R, C, LFE, Ls, Rs |
+| 7.1 | L, R, C, LFE, Ls, Rs, Lrs, Rrs |
+| 5.1.2 | L, R, C, LFE, Ls, Rs, Ltm, Rtm |
+| 5.1.4 | L, R, C, LFE, Ls, Rs, Ltf, Rtf, Ltr, Rtr |
+| 7.1.2 | L, R, C, LFE, Ls, Rs, Lrs, Rrs, Ltm, Rtm |
+| 7.1.4 | L, R, C, LFE, Ls, Rs, Lrs, Rrs, Ltf, Rtf, Ltr, Rtr |
+| 9.1.4 | L, R, C, LFE, Ls, Rs, Lrs, Rrs, Lw, Rw, Ltf, Rtf, Ltr, Rtr |
+| 9.1.6 | L, R, C, LFE, Ls, Rs, Lrs, Rrs, Lw, Rw, Ltf, Rtf, Ltm, Rtm, Ltr, Rtr |
+
+`4.0` 是本项目补充的 Quad 布局（传统 Quad 的 `FL FR BL BR`），声道为 `L R Lrs Rrs`，不在杜比
+文档的布局列表里；除它以外的布局及声道顺序均依据杜比相关规范定义。
+
+多声道 WAV 使用 `WAVE_FORMAT_EXTENSIBLE`，`dwChannelMask = 0`：文件不声明 Windows 扬声器位置，
+PCM 声道顺序严格按上表，不按掩码位序重排。播放器、ASIO、DAW 或其他设备需要按声道编号自行完成
+输出映射；本项目保证各 PCM 声道的内容和编号符合上表，不保证下游播放器自动识别杜比扬声器位置。
+
+命令行只接受上表 11 个名字；其它名字按未知布局拒绝。
 
 ## 目录结构
 

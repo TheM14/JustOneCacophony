@@ -446,8 +446,7 @@ $$
 $$
 
 For layouts with one horizontal surround pair rather than separate side and rear pairs (the 5.1
-family, and layouts such as 4.0 Quad and 4.0 Surround that carry one rear pair only), the
-longitudinal coordinate is
+family, and 4.0, which carries one rear pair only), the longitudinal coordinate is
 
 $$
 v_{\mathrm{floor}}=
