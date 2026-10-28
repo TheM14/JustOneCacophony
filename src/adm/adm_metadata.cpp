@@ -125,8 +125,8 @@ Status build_dbmd(std::uint32_t object_count, BinauralMode mode, std::string* ou
     out->push_back(static_cast<char>(checksum(segment7)));
 
     std::string segment9(248, '\0');
-    const std::string creator = "Created with EAC3JOC";
-    const std::string renderer = "EAC3JOC Python Renderer";
+    const std::string creator = "JustOneCacophony";
+    const std::string renderer = "JustOneCacophony";
     std::memcpy(&segment9[0], creator.data(), creator.size());
     std::memcpy(&segment9[32], renderer.data(), renderer.size());
     segment9[96] = 2;
