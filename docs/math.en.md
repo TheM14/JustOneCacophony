@@ -216,7 +216,7 @@ When a frame contains two data points, `offset_ts` gives the segment boundary. E
 
 ## 4. Analysis QMF for core PCM
 
-The matrix input uses core channels L, R, C, Ls, and Rs; LFE follows a separate path. Core PCM is first scaled as
+The matrix input uses $N$ core channels ($N\in\{5,7\}$, read from $joc\_dmx\_config\_idx$: $k=0\ldots4$ maps to $N=5,7,7,5,7$); LFE follows a separate path. Core PCM is first scaled as
 
 $$
 \widetilde x_c[n]=\frac{x_c[n]}{16}.
@@ -236,10 +236,16 @@ This consists of the analysis window/polyphase stage, modulation, a 64-point FFT
 
 ## 5. QMF-domain processing of core channels
 
-$k$ selects the core channel count $N\in\{5,7\}$ ($k=0\ldots4$ maps to $N=5,7,7,5,7$) and the
-phase switch $\sigma(k)=1\iff k\in\{3,4\}$. Every core channel is delayed by ten QMF slots
-before entering the object matrix; the $-j$ rotation ($b>0$) and the band-0 21-tap complex FIR
-are both gated by that same switch and applied to Ls and Rs only:
+L, R, and C are delayed by ten QMF slots before entering the object matrix:
+
+$$
+\widehat X_{c,b,t}=X_{c,b,t-10},
+\qquad c\in\{L,R,C\}.
+$$
+
+Ls and Rs take the same delay inside the surround path, whose delay line advances
+regardless; the $-j$ rotation for $b>0$ and the band-0 21-tap complex FIR are gated by
+the **same switch** $\sigma(k)=1\iff k\in\{3,4\}$:
 
 $$
 \widehat X_{c,b,t}=
@@ -250,9 +256,10 @@ X_{c,b,t-10}, & \text{otherwise}.
 \end{cases}
 $$
 
-For $N=7$ the sixth and seventh core channels (Lb/Rb or Tfl/Tfr) behave like the front channels
-and only take the ten-slot delay: channel identity affects metadata and rendering, not the DSP.
-These delays and filter histories are decoder state and cannot be reset independently for every frame.
+For $N=7$ the sixth and seventh core channels (Lb/Rb or Tfl/Tfr) behave like the front
+channels and only take the ten-slot delay: channel identity affects metadata and rendering,
+not the DSP. These delays and filter histories are decoder state and cannot be reset
+independently for every frame.
 
 ## 6. Object matrix
 
