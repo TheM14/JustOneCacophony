@@ -225,6 +225,12 @@ def build_dbmd(object_count=25, joc_binaural_mode=4):
     # sync (4), count (2), reserved (1), nine 15-byte config trims,
     # then one trim-bypass byte per track before the headphone modes.
     # Preserve the existing template's bed fields and trailing bytes.
+    # The nine configuration trims start at byte 7; the first byte of each
+    # carries the auto-trim flag in bit 0 (1 = automatic, 0 = manual).  The
+    # default is automatic, so a freshly rendered master opens with automatic
+    # trims in the renderer.
+    for layout in range(9):
+        ob[7 + 15 * layout] |= 1
     object_modes = 4 + 2 + 1 + 9 * 15 + object_count
     for i in range(10, min(object_count, 10 + N_OBJ)):
         ob[object_modes + i] = (ob[object_modes + i] & 0xF8) | mode
