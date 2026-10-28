@@ -208,7 +208,7 @@ def build_dbmd(object_count=25, joc_binaural_mode=4):
     out.append(7); out += struct.pack("<H", 96); out += bytes(dd)
     out.append(_checksum(dd))
     at = bytearray(248)
-    c0 = b"Created with EAC3JOC"; c1 = b"EAC3JOC Python Renderer"
+    c0 = b"JustOneCacophony"; c1 = b"JustOneCacophony"
     at[0:len(c0)] = c0
     at[32:32 + len(c1)] = c1
     at[96], at[97], at[98] = 2, 1, 0
