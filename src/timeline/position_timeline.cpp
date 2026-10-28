@@ -1,8 +1,10 @@
 #include "timeline/position_timeline.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "foundation/geometry.h"
+#include "foundation/metadata_timing.h"
 
 namespace joc::timeline {
 
@@ -145,14 +147,10 @@ Status OamdPositionTimeline::submit_update(const oamd::OamdUpdate& update,
         return Status::success();
     }
 
-    const std::int64_t ramp_duration = static_cast<std::int64_t>(update.ramp_duration_samples);
     const std::int64_t effective_ramp =
-        ramp_duration - kOamdUpdateQuantumSamples > 0 ? ramp_duration - kOamdUpdateQuantumSamples
-                                                      : 0;
-    std::int64_t transition_start = coded_event + object_delay_samples;
-    if (effective_ramp != 0) {
-        transition_start += kOamdUpdateQuantumSamples;
-    }
+        std::max<std::int64_t>(0, static_cast<std::int64_t>(update.ramp_duration_samples));
+    const std::int64_t transition_start =
+        timing::align_metadata_sample(coded_event + object_delay_samples);
     for (int index = 0; index < kTimelineObjects; ++index) {
         const bool changed = !has_previous_[index] ||
                              std::memcmp(previous_targets_[index], targets[index],

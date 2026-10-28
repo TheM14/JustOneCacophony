@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "adm/adm_metadata.h"
+#include "foundation/metadata_timing.h"
 #include "foundation/status.h"
 #include "oamd/oamd_parser.h"
 
@@ -26,10 +27,11 @@ enum class TrajectoryMode { Compact, Dense64 };
 // runs, and records one event per object whenever its coordinates change.
 class TrajectoryBuilder {
 public:
-    TrajectoryBuilder(std::uint32_t rate = 48000, std::int64_t update_quantum_samples = 64,
+    TrajectoryBuilder(std::uint32_t rate = 48000,
+                      std::int64_t update_block_samples = timing::kMetadataBlockSamples,
                       std::int64_t object_delay_samples = 1473)
         : rate_(rate),
-          quantum_(update_quantum_samples),
+          block_(update_block_samples),
           object_delay_(object_delay_samples) {}
 
     void submit_frame(std::int64_t frame_index, const oamd::OamdUpdate* update, std::int64_t outer_offset);
@@ -42,7 +44,7 @@ public:
 
 private:
     std::uint32_t rate_;
-    std::int64_t quantum_;
+    std::int64_t block_;
     std::int64_t object_delay_;
     oamd::OamdState state_;
     std::vector<OamdEvent> events_[kObjectCount];
@@ -51,11 +53,11 @@ private:
 };
 
 Status expand_compact(const std::vector<OamdEvent>& events, std::int64_t total_samples, std::uint32_t rate,
-                      std::int64_t update_quantum_samples, std::int64_t object_delay_samples,
+                      std::int64_t update_block_samples, std::int64_t object_delay_samples,
                       int object_index, std::vector<Keyframe>* out);
 
 Status expand_dense64(const std::vector<OamdEvent>& events, std::int64_t total_samples, std::uint32_t rate,
-                      std::int64_t update_quantum_samples, std::int64_t object_delay_samples,
+                      std::int64_t update_block_samples, std::int64_t object_delay_samples,
                       int object_index, std::vector<Keyframe>* out);
 
 }  // namespace joc::adm

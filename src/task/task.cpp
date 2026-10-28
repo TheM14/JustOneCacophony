@@ -1423,7 +1423,8 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
     }
 
     ::joc::io::AdmBwfWriter adm_writer;
-    ::joc::adm::TrajectoryBuilder trajectory(48000, 64, cfg.object_delay_samples);
+    ::joc::adm::TrajectoryBuilder trajectory(48000, ::joc::timing::kMetadataBlockSamples,
+                                             cfg.object_delay_samples);
     const bool adm_enabled = cfg.operation == JOC_OP_ADM_BWF;
     if (adm_enabled) {
         const Status status = adm_writer.open(cfg.output_path);

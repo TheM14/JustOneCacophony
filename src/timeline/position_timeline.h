@@ -10,7 +10,6 @@
 
 namespace joc::timeline {
 
-inline constexpr std::int64_t kOamdUpdateQuantumSamples = 64;
 inline constexpr int kTimelineObjects = 15;
 
 struct PositionTransition {

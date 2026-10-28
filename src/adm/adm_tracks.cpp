@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "foundation/geometry.h"
+#include "foundation/metadata_timing.h"
 
 namespace joc::adm {
 
@@ -66,7 +67,7 @@ Status non_monotonic(const char* name, const char* message, int object_index, st
 }  // namespace
 
 Status expand_compact(const std::vector<OamdEvent>& events, std::int64_t total_samples, std::uint32_t rate,
-                      std::int64_t update_quantum_samples, std::int64_t object_delay_samples,
+                      std::int64_t update_block_samples, std::int64_t object_delay_samples,
                       int object_index, std::vector<Keyframe>* out) {
     out->clear();
     const double scale = static_cast<double>(rate);
@@ -88,18 +89,17 @@ Status expand_compact(const std::vector<OamdEvent>& events, std::int64_t total_s
 
     for (std::size_t index = 1; index < events.size(); ++index) {
         const OamdEvent& event = events[index];
-        const std::int64_t event_start = event.sample + object_delay_samples;
+        const std::int64_t event_start = timing::align_metadata_sample(
+            event.sample + object_delay_samples, update_block_samples);
         if (event_start >= total_samples) {
             break;
         }
-        const std::int64_t effective_ramp =
-            std::max<std::int64_t>(0, event.ramp_samples - update_quantum_samples);
-        const std::int64_t block_start =
-            event_start + (effective_ramp != 0 ? update_quantum_samples : 0);
+        const std::int64_t ramp = std::max<std::int64_t>(0, event.ramp_samples);
+        const std::int64_t block_start = event_start;
         if (block_start >= total_samples) {
             break;
         }
-        const std::int64_t ramp_end = block_start + effective_ramp;
+        const std::int64_t ramp_end = block_start + ramp;
 
         if (block_start < points.back().sample) {
             return non_monotonic("non_monotonic_compact_position_updates",
@@ -107,11 +107,8 @@ Status expand_compact(const std::vector<OamdEvent>& events, std::int64_t total_s
                                  block_start, points.back().sample);
         }
         if (index + 1 < events.size()) {
-            const std::int64_t next_event_start = events[index + 1].sample + object_delay_samples;
-            const std::int64_t next_effective =
-                std::max<std::int64_t>(0, events[index + 1].ramp_samples - update_quantum_samples);
-            const std::int64_t next_block_start =
-                next_event_start + (next_effective != 0 ? update_quantum_samples : 0);
+            const std::int64_t next_block_start = timing::align_metadata_sample(
+                events[index + 1].sample + object_delay_samples, update_block_samples);
             if (next_block_start < ramp_end) {
                 return non_monotonic("overlapping_compact_position_ramps",
                                      "a new position update arrived before the previous compact "
@@ -121,11 +118,10 @@ Status expand_compact(const std::vector<OamdEvent>& events, std::int64_t total_s
         }
 
         double target[3] = {event.x, event.y, event.z};
-        std::int64_t interpolation = effective_ramp;
+        std::int64_t interpolation = ramp;
         const std::int64_t available = total_samples - block_start;
-        if (effective_ramp > available) {
-            const double amount =
-                static_cast<double>(available) / static_cast<double>(effective_ramp);
+        if (ramp > available) {
+            const double amount = static_cast<double>(available) / static_cast<double>(ramp);
             double x = 0.0;
             double y = 0.0;
             double z = 0.0;
@@ -147,7 +143,7 @@ Status expand_compact(const std::vector<OamdEvent>& events, std::int64_t total_s
 }
 
 Status expand_dense64(const std::vector<OamdEvent>& events, std::int64_t total_samples, std::uint32_t rate,
-                      std::int64_t update_quantum_samples, std::int64_t object_delay_samples,
+                      std::int64_t update_block_samples, std::int64_t object_delay_samples,
                       int object_index, std::vector<Keyframe>* out) {
     out->clear();
     (void)rate;
@@ -164,7 +160,8 @@ Status expand_dense64(const std::vector<OamdEvent>& events, std::int64_t total_s
 
     for (std::size_t index = 1; index < events.size(); ++index) {
         const OamdEvent& event = events[index];
-        const std::int64_t start = event.sample + object_delay_samples;
+        const std::int64_t start =
+            timing::align_metadata_sample(event.sample + object_delay_samples, update_block_samples);
         if (start >= total_samples) {
             break;
         }
@@ -176,20 +173,19 @@ Status expand_dense64(const std::vector<OamdEvent>& events, std::int64_t total_s
         if (start > points.back().sample) {
             append_point(&points, start, current[0], current[1], current[2], 0);
         }
-        const std::int64_t effective_ramp =
-            std::max<std::int64_t>(0, event.ramp_samples - update_quantum_samples);
-        if (effective_ramp == 0) {
+        const std::int64_t ramp = std::max<std::int64_t>(0, event.ramp_samples);
+        if (ramp == 0) {
             append_point(&points, start, event.x, event.y, event.z, 0);
             current[0] = event.x;
             current[1] = event.y;
             current[2] = event.z;
             continue;
         }
-        const std::int64_t steps =
-            (effective_ramp + update_quantum_samples - 1) / update_quantum_samples;
-        const std::int64_t end = start + steps * update_quantum_samples;
+        const std::int64_t steps = (ramp + update_block_samples - 1) / update_block_samples;
+        const std::int64_t end = start + steps * update_block_samples;
         if (index + 1 < events.size()) {
-            const std::int64_t next_start = events[index + 1].sample + object_delay_samples;
+            const std::int64_t next_start = timing::align_metadata_sample(
+                events[index + 1].sample + object_delay_samples, update_block_samples);
             if (next_start < end) {
                 return non_monotonic("overlapping_position_ramps",
                                      "a new position update arrived before the previous ramp "
@@ -197,12 +193,12 @@ Status expand_dense64(const std::vector<OamdEvent>& events, std::int64_t total_s
                                      object_index, start, end);
             }
         }
-        std::int64_t future = effective_ramp;
+        std::int64_t future = ramp;
         std::int64_t elapsed = 0;
         double position[3] = {current[0], current[1], current[2]};
         while (future > 0) {
             const double amount =
-                std::min(static_cast<double>(update_quantum_samples) / static_cast<double>(future),
+                std::min(static_cast<double>(update_block_samples) / static_cast<double>(future),
                          1.0);
             double x = 0.0;
             double y = 0.0;
@@ -212,14 +208,14 @@ Status expand_dense64(const std::vector<OamdEvent>& events, std::int64_t total_s
             position[0] = x;
             position[1] = y;
             position[2] = z;
-            elapsed += update_quantum_samples;
+            elapsed += update_block_samples;
             const std::int64_t sample = start + elapsed;
             if (sample >= total_samples) {
                 break;
             }
             append_point(&points, sample, position[0], position[1], position[2],
-                         update_quantum_samples);
-            future -= update_quantum_samples;
+                         update_block_samples);
+            future -= update_block_samples;
         }
         current[0] = event.x;
         current[1] = event.y;
@@ -266,9 +262,9 @@ Status TrajectoryBuilder::build(std::int64_t total_samples, TrajectoryMode mode,
         track.name = "JOC_Object_" + std::to_string(object);
         const Status status =
             (mode == TrajectoryMode::Compact)
-                ? expand_compact(events_[object - 1], total_samples, rate_, quantum_,
+                ? expand_compact(events_[object - 1], total_samples, rate_, block_,
                                  object_delay_, object, &track.blocks)
-                : expand_dense64(events_[object - 1], total_samples, rate_, quantum_,
+                : expand_dense64(events_[object - 1], total_samples, rate_, block_,
                                  object_delay_, object, &track.blocks);
         if (!status.ok()) {
             return status;
