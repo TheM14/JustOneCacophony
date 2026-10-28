@@ -150,7 +150,12 @@ G_{\mathrm{clip}}=
 1+\frac{y}{32}2^{x-4}.
 $$
 
-It is applied to object PCM after inverse QMF and does not apply to LFE.
+It is folded into the analysis-side scalar $S=\frac{1}{16}G_{\mathrm{clip}}$, which multiplies
+every core-bed sample before the QMF analysis; the $\times16$ after the object inverse QMF cancels the
+$1/16$, so the net effect is a multiply by $G_{\mathrm{clip}}$ and the $[-1,1]$ clamp sits **after** the
+gain. The scalar keeps two per-frame slots: the first 256 samples of a frame ramp linearly from the
+previous frame's value to this frame's value and the rest stays constant, and the first frame after a
+reset takes the new value directly. LFE bypasses this scalar.
 
 ## 3. Parameter-band expansion and time interpolation
 
@@ -238,8 +243,9 @@ $$
 \qquad c\in\{L,R,C\}.
 $$
 
-For Ls and Rs the ten-slot delay, the $-j$ rotation for $b>0$ and the band-0 21-tap
-complex FIR are all gated by the **same switch** $\sigma(k)=1\iff k\in\{3,4\}$:
+Ls and Rs take the same delay inside the surround path, whose delay line advances
+regardless; the $-j$ rotation for $b>0$ and the band-0 21-tap complex FIR are gated by
+the **same switch** $\sigma(k)=1\iff k\in\{3,4\}$:
 
 $$
 \widehat X_{c,b,t}=
@@ -251,9 +257,9 @@ X_{c,b,t-10}, & \text{otherwise}.
 $$
 
 For $N=7$ the sixth and seventh core channels (Lb/Rb or Tfl/Tfr) behave like the front
-channels and only take the ten-slot delay: channel identity affects metadata and the ADM
-placement, not the DSP. These delays and filter histories are decoder state and cannot be
-reset independently for every frame.
+channels and only take the ten-slot delay: channel identity affects metadata and rendering,
+not the DSP. These delays and filter histories are decoder state and cannot be reset
+independently for every frame.
 
 ## 6. Object matrix
 

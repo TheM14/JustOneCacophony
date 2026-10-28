@@ -174,10 +174,10 @@ public:
         }
 
         std::memset(output16, 0, sizeof(float) * EJOC_OUTPUT_CHANNELS * EJOC_FRAME_SAMPLES);
-        analysis(bed_planar, phase_new);
+        analysis(bed_planar, phase_new, clipgain);
         render_lfe(lfe, output_scale, output16);
         process_objects(object_mask, n_bands, n_dpoints, slope_idx, offset_ts,
-                        dq, clipgain, output_scale, output16);
+                        dq, output_scale, output16);
         return 0;
     }
 
@@ -378,13 +378,13 @@ private:
         }
     }
 
-    void analysis(const float* bed_planar, const float phase_new) noexcept {
+    void analysis(const float* bed_planar, const float phase_new, const double clipgain) noexcept {
         job_bed_ = bed_planar;
         // Analysis-side scalar = the structural 1/16 times this frame's clipgain.
         // clipgain enters the analysis at this stage and the x16 at the output
         // cancels the 1/16, so the net effect is a multiply by joc_clipgain; the
         // previous frame's scalar is the ramp start.
-        const float scalar = static_cast<float>(phase_new * job_clipgain_);
+        const float scalar = static_cast<float>(phase_new * clipgain);
         job_phase_old_ = analysis_phase_;
         if (job_phase_old_ <= 0.0f && job_phase_old_ != 0.0f) {
             job_phase_old_ = scalar;
@@ -595,7 +595,6 @@ private:
         const uint8_t* slope_idx,
         const uint8_t* offset_ts,
         const double* dq,
-        const double clipgain,
         const float output_scale,
         float* output16) noexcept {
 
@@ -615,7 +614,6 @@ private:
         job_slope_idx_ = slope_idx;
         job_offset_ts_ = offset_ts;
         job_dq_ = dq;
-        job_clipgain_ = clipgain;
         job_output_scale_ = output_scale;
         job_output16_ = output16;
 
@@ -657,7 +655,6 @@ private:
     const uint8_t* job_slope_idx_ = nullptr;
     const uint8_t* job_offset_ts_ = nullptr;
     const double* job_dq_ = nullptr;
-    double job_clipgain_ = 1.0;
     float job_output_scale_ = 1.0f;
     float* job_output16_ = nullptr;
 

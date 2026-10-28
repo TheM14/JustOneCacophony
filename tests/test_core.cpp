@@ -12,6 +12,7 @@
 
 #include "adm/adm_metadata.h"
 #include "eac3_transport/eac3_reader.h"
+#include "eac3joc_core.h"
 #include "foundation/bit_reader.h"
 #include "foundation/fs_utf8.h"
 #include "foundation/geometry.h"
@@ -889,6 +890,157 @@ void test_stream_render_ahead() {
 
 }  // namespace
 
+// The JOC clipgain is the analysis-side scalar's per-frame factor: it scales the
+// frame that carries it, ramps over that frame's first 256 samples, starts from
+// the frame's own value after a reset, and never reaches LFE.
+struct ClipGainInputs {
+    std::vector<float> bed;
+    std::vector<float> lfe;
+    std::vector<std::uint8_t> n_bands;
+    std::vector<std::uint8_t> n_dpoints;
+    std::vector<std::uint8_t> slope;
+    std::vector<std::uint8_t> offsets;
+    std::vector<double> dq;
+
+    ClipGainInputs()
+        : bed(EJOC_CORE_CHANNELS * EJOC_FRAME_SAMPLES, 0.0f),
+          lfe(EJOC_FRAME_SAMPLES, 0.0f),
+          n_bands(EJOC_MAX_OBJECTS, 0),
+          n_dpoints(EJOC_MAX_OBJECTS, 0),
+          slope(EJOC_MAX_OBJECTS, 0),
+          offsets(EJOC_MAX_OBJECTS * EJOC_MAX_DPOINTS, 0),
+          dq(static_cast<std::size_t>(EJOC_MAX_OBJECTS) * EJOC_MAX_DPOINTS *
+                 EJOC_MAX_CORE_CHANNELS * EJOC_MAX_PARAMETER_BANDS,
+             0.0) {
+        const double two_pi = 6.283185307179586476925286766559;
+        for (int sample = 0; sample < EJOC_FRAME_SAMPLES; ++sample) {
+            const double t = static_cast<double>(sample) / 48000.0;
+            bed[sample] = static_cast<float>(0.05 * std::sin(two_pi * 440.0 * t));
+            lfe[sample] = static_cast<float>(0.02 * std::sin(two_pi * 55.0 * t));
+        }
+        // Object 0 passes the first core channel through one parameter band.
+        n_bands[0] = 1;
+        n_dpoints[0] = 1;
+        dq[0] = 1.0;
+    }
+};
+
+bool clipgain_process(ejoc_renderer_handle handle, const ClipGainInputs& in, double clipgain,
+                      std::vector<float>* out) {
+    out->assign(static_cast<std::size_t>(EJOC_OUTPUT_CHANNELS) * EJOC_FRAME_SAMPLES, 0.0f);
+    return ejoc_renderer_process(handle, in.bed.data(), in.lfe.data(), EJOC_CORE_CHANNELS, 0u, 1u,
+                                 in.n_bands.data(), in.n_dpoints.data(), in.slope.data(),
+                                 in.offsets.data(), in.dq.data(), clipgain, 0.0625f, 1.0f,
+                                 out->data()) == 0;
+}
+
+void test_clipgain_first_frame_uses_its_own_gain() {
+    const ClipGainInputs in;
+    std::vector<float> unity;
+    std::vector<float> doubled;
+    auto render = [&in](double clipgain, std::vector<float>* out) {
+        ejoc_renderer_handle handle = ejoc_renderer_create();
+        ejoc_renderer_set_threads(handle, 1);
+        const bool ok = clipgain_process(handle, in, clipgain, out);
+        ejoc_renderer_destroy(handle);
+        return ok;
+    };
+    CHECK(render(1.0, &unity));
+    CHECK(render(2.0, &doubled));
+
+    float peak = 0.0f;
+    bool scaled = true;
+    for (int sample = 0; sample < EJOC_FRAME_SAMPLES; ++sample) {
+        const float value = unity[EJOC_FRAME_SAMPLES + sample];  // object 0 is channel 1
+        peak = std::max(peak, std::fabs(value));
+        if (doubled[EJOC_FRAME_SAMPLES + sample] != 2.0f * value) {
+            scaled = false;
+        }
+    }
+    // A fresh handle takes the current gain with no transition.
+    CHECK(peak > 1.0e-3f);
+    CHECK(scaled);
+    // LFE bypasses the scalar, so its samples are bit-identical.
+    CHECK(std::memcmp(unity.data(), doubled.data(), sizeof(float) * EJOC_FRAME_SAMPLES) == 0);
+}
+
+void test_clipgain_change_applies_to_the_current_frame() {
+    const ClipGainInputs in;
+    std::vector<float> changed;
+    std::vector<float> held;
+    auto run = [&in](double second_gain, std::vector<float>* out) {
+        ejoc_renderer_handle handle = ejoc_renderer_create();
+        ejoc_renderer_set_threads(handle, 1);
+        std::vector<float> first;
+        const bool ok = clipgain_process(handle, in, 1.0, &first) &&
+                        clipgain_process(handle, in, second_gain, out);
+        ejoc_renderer_destroy(handle);
+        return ok;
+    };
+    CHECK(run(2.0, &changed));
+    CHECK(run(1.0, &held));
+
+    // The change has to land in the frame carrying it; a one-frame-late gain
+    // would make these two frames identical.
+    double difference = 0.0;
+    double energy = 0.0;
+    for (int object = 1; object < EJOC_OUTPUT_CHANNELS; ++object) {
+        for (int sample = 0; sample < EJOC_FRAME_SAMPLES; ++sample) {
+            const std::size_t index =
+                static_cast<std::size_t>(object) * EJOC_FRAME_SAMPLES + sample;
+            difference += std::fabs(static_cast<double>(changed[index]) - held[index]);
+            energy += std::fabs(static_cast<double>(held[index]));
+        }
+    }
+    CHECK(difference > 0.05 * energy);
+
+    // The analysis delay lines and the QMF windows hold the new gain back by
+    // about 1400 samples, so the start of the frame still carries the old value
+    // and the end is scaled by the new one.
+    bool head_intact = true;
+    for (int sample = 0; sample < 256; ++sample) {
+        const std::size_t index = static_cast<std::size_t>(EJOC_FRAME_SAMPLES) + sample;
+        if (changed[index] != held[index]) {
+            head_intact = false;
+        }
+    }
+    CHECK(head_intact);
+
+    double tail = 0.0;
+    for (int sample = 1504; sample < EJOC_FRAME_SAMPLES; ++sample) {
+        const std::size_t index = static_cast<std::size_t>(EJOC_FRAME_SAMPLES) + sample;
+        tail = std::max(tail, std::fabs(static_cast<double>(changed[index]) -
+                                       2.0 * static_cast<double>(held[index])));
+    }
+    CHECK(tail < 1.0e-4);
+}
+
+void test_clipgain_reset_clears_the_previous_gain() {
+    const ClipGainInputs in;
+    std::vector<float> scratch;
+    std::vector<float> after_reset;
+    std::vector<float> fresh;
+
+    ejoc_renderer_handle handle = ejoc_renderer_create();
+    ejoc_renderer_set_threads(handle, 1);
+    CHECK(clipgain_process(handle, in, 3.0, &scratch));
+    CHECK(clipgain_process(handle, in, 3.0, &scratch));
+    CHECK(ejoc_renderer_reset(handle) == 0);
+    CHECK(clipgain_process(handle, in, 1.0, &after_reset));
+    ejoc_renderer_destroy(handle);
+
+    ejoc_renderer_handle pristine = ejoc_renderer_create();
+    ejoc_renderer_set_threads(pristine, 1);
+    CHECK(clipgain_process(pristine, in, 1.0, &fresh));
+    ejoc_renderer_destroy(pristine);
+
+    // No gain state may survive the reset: the first frame must match a fresh
+    // renderer instead of ramping down from the previous 3x.
+    CHECK(after_reset.size() == fresh.size());
+    CHECK(std::memcmp(after_reset.data(), fresh.data(),
+                      sizeof(float) * after_reset.size()) == 0);
+}
+
 int main() {
     test_sha256();
     test_crc32_and_inflate();
@@ -912,6 +1064,9 @@ int main() {
     test_hrtf_cache_policy();
     test_rosella_model_errors();
     test_stream_render_ahead();
+    test_clipgain_first_frame_uses_its_own_gain();
+    test_clipgain_change_applies_to_the_current_frame();
+    test_clipgain_reset_clears_the_previous_gain();
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
