@@ -15,8 +15,7 @@ struct FrozenLayout {
 constexpr FrozenLayout kLayouts[kLayoutCount] = {
     {"2.0", 0, 1},
     {"3.1", 3, 7},
-    {"4.0 Surround", 0xFF, 35},
-    {"4.0 Quad", 0xFF, 9},
+    {"4.0", 0xFF, 9},
     {"5.1", 7, 15},
     {"7.1", 11, 31},
     {"5.1.2", 13, 1039},
@@ -25,14 +24,6 @@ constexpr FrozenLayout kLayouts[kLayoutCount] = {
     {"7.1.4", 16, 2591},
     {"9.1.4", 19, 2719},
     {"9.1.6", 20, 3743},
-};
-
-// Spellings accepted in addition to the names above.
-constexpr struct {
-    const char* alias;
-    const char* name;
-} kAliases[] = {
-    {"4.0", "4.0 Surround"},
 };
 
 void fill(const FrozenLayout& source, LayoutInfo* out) {
@@ -60,11 +51,6 @@ bool layout_by_name(const char* name, LayoutInfo* out) {
         if (std::strcmp(name, kLayouts[index].name) == 0) {
             fill(kLayouts[index], out);
             return true;
-        }
-    }
-    for (const auto& alias : kAliases) {
-        if (std::strcmp(name, alias.alias) == 0) {
-            return layout_by_name(alias.name, out);
         }
     }
     return false;

@@ -90,6 +90,33 @@ metadata sidecar（`--metadata-dir`/`--metadata-cache`/`--metadata-backend sidec
 float32 PCM，给出后不调用 ffmpeg 解码）、`--kernels`（滤波器组表路径）、`--work-dir`、
 `--report-json`、`--dry-run`、`--quiet`。
 
+## 扬声器布局与声道顺序
+
+`--speaker-layout` 只接受下表 11 个布局，PCM/WAV 的声道顺序就是表里的顺序：
+
+| 布局 | 声道顺序 |
+|---|---|
+| 2.0 | L, R |
+| 3.1 | L, R, C, LFE |
+| 4.0 | L, R, Lrs, Rrs |
+| 5.1 | L, R, C, LFE, Ls, Rs |
+| 7.1 | L, R, C, LFE, Ls, Rs, Lrs, Rrs |
+| 5.1.2 | L, R, C, LFE, Ls, Rs, Ltm, Rtm |
+| 5.1.4 | L, R, C, LFE, Ls, Rs, Ltf, Rtf, Ltr, Rtr |
+| 7.1.2 | L, R, C, LFE, Ls, Rs, Lrs, Rrs, Ltm, Rtm |
+| 7.1.4 | L, R, C, LFE, Ls, Rs, Lrs, Rrs, Ltf, Rtf, Ltr, Rtr |
+| 9.1.4 | L, R, C, LFE, Ls, Rs, Lrs, Rrs, Lw, Rw, Ltf, Rtf, Ltr, Rtr |
+| 9.1.6 | L, R, C, LFE, Ls, Rs, Lrs, Rrs, Lw, Rw, Ltf, Rtf, Ltm, Rtm, Ltr, Rtr |
+
+`4.0` 是本项目补充的 Quad 布局（传统 Quad 的 `FL FR BL BR`），声道为 `L R Lrs Rrs`，不在杜比
+文档的布局列表里；除它以外的布局及声道顺序均依据杜比相关规范定义。
+
+多声道 WAV 使用 `WAVE_FORMAT_EXTENSIBLE`，`dwChannelMask = 0`：文件不声明 Windows 扬声器位置，
+PCM 声道顺序严格按上表，不按掩码位序重排。播放器、ASIO、DAW 或其他设备需要按声道编号自行完成
+输出映射；本项目保证各 PCM 声道的内容和编号符合上表，不保证下游播放器自动识别杜比扬声器位置。
+
+`--speaker-layout` 只接受上表 11 个名字；其它名字按未知布局报错。
+
 ## 库集成
 
 引擎与文件任务使用 `joc_core.h`：`joc_task_validate` / `joc_task_execute` 跑一个文件任务并

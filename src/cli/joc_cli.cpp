@@ -84,7 +84,7 @@ struct Options {
 };
 
 const char* kLayoutChoices =
-    "2.0 3.1 \"4.0 Surround\" \"4.0 Quad\" 5.1 7.1 5.1.2 5.1.4 7.1.2 7.1.4 9.1.4 9.1.6";
+    "2.0 3.1 4.0 5.1 7.1 5.1.2 5.1.4 7.1.2 7.1.4 9.1.4 9.1.6";
 
 void print_usage() {
     std::printf(

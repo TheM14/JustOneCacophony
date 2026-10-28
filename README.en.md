@@ -102,6 +102,38 @@ with an explanation instead of being ignored. This build adds `--bed` (pre-decod
 6-channel float32 PCM, which skips ffmpeg decoding), `--kernels`, `--work-dir`,
 `--report-json`, `--dry-run` and `--quiet`.
 
+## Speaker layouts and channel order
+
+`--speaker-layout` accepts the eleven layouts below, and the PCM/WAV channel order is the order in
+the table:
+
+| Layout | Channel order |
+|---|---|
+| 2.0 | L, R |
+| 3.1 | L, R, C, LFE |
+| 4.0 | L, R, Lrs, Rrs |
+| 5.1 | L, R, C, LFE, Ls, Rs |
+| 7.1 | L, R, C, LFE, Ls, Rs, Lrs, Rrs |
+| 5.1.2 | L, R, C, LFE, Ls, Rs, Ltm, Rtm |
+| 5.1.4 | L, R, C, LFE, Ls, Rs, Ltf, Rtf, Ltr, Rtr |
+| 7.1.2 | L, R, C, LFE, Ls, Rs, Lrs, Rrs, Ltm, Rtm |
+| 7.1.4 | L, R, C, LFE, Ls, Rs, Lrs, Rrs, Ltf, Rtf, Ltr, Rtr |
+| 9.1.4 | L, R, C, LFE, Ls, Rs, Lrs, Rrs, Lw, Rw, Ltf, Rtf, Ltr, Rtr |
+| 9.1.6 | L, R, C, LFE, Ls, Rs, Lrs, Rrs, Lw, Rw, Ltf, Rtf, Ltm, Rtm, Ltr, Rtr |
+
+`4.0` is the quad layout this project adds (the traditional `FL FR BL BR`, here `L R Lrs Rrs`); it is
+not part of the Dolby layout set. Every other layout and channel order follows the Dolby
+specifications.
+
+Multichannel WAV files use `WAVE_FORMAT_EXTENSIBLE` with `dwChannelMask = 0`: the file declares no
+Windows speaker positions, and the PCM channel order is exactly the table above, never rearranged
+into mask-bit order. Players, ASIO, DAWs and other devices have to map the channel numbers
+themselves; this project guarantees the content and numbering of each PCM channel, not that a
+downstream player recognises Dolby speaker positions on its own.
+
+`--speaker-layout` accepts only the eleven names in the table; anything else fails as an unknown
+layout.
+
 ## Library integration
 
 The engine and the file task are exposed by `joc_core.h`: `joc_task_validate` /
