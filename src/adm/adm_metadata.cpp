@@ -151,6 +151,14 @@ Status build_dbmd(std::uint32_t object_count, BinauralMode mode, std::string* ou
     for (std::size_t i = 5u + 262u; i < segment10.size(); ++i) {
         segment10[i] = static_cast<char>(0x84);
     }
+    // Nine 15-byte configuration trims start at byte 7; the first byte of each
+    // carries the auto-trim flag in bit 0 (1 = automatic, 0 = manual).  The
+    // default is automatic, so a freshly rendered master opens with automatic
+    // trims in the renderer.
+    for (std::size_t layout = 0; layout < 9; ++layout) {
+        const std::size_t flag = 7u + 15u * layout;
+        segment10[flag] = static_cast<char>(static_cast<unsigned char>(segment10[flag]) | 0x01u);
+    }
     const std::size_t object_modes = 4u + 2u + 1u + 9u * 15u + object_count;
     for (std::uint32_t i = 10; i < std::min<std::uint32_t>(object_count, 10u + kObjectCount); ++i) {
         const std::size_t index = object_modes + i;

@@ -291,6 +291,68 @@ void test_oamd_and_adm_helpers() {
     CHECK(x == 1.0 && y == 1.0 && z == 0.0);
 }
 
+// DBMD segment 10: the nine configuration trims must default to automatic (bit 0
+// of each trim's first byte), and every other field of the block must keep the
+// layout the writer has always produced.
+void test_dbmd_auto_trim() {
+    std::string dbmd;
+    CHECK(joc::adm::build_dbmd(25, joc::adm::BinauralMode::Mid, &dbmd).ok());
+
+    std::string segment10;
+    std::size_t offset = 4;
+    while (offset + 2 < dbmd.size() && static_cast<unsigned char>(dbmd[offset]) != 0) {
+        const std::size_t size =
+            static_cast<std::size_t>(static_cast<unsigned char>(dbmd[offset + 1])) |
+            (static_cast<std::size_t>(static_cast<unsigned char>(dbmd[offset + 2])) << 8);
+        const std::size_t start = offset + 3;
+        CHECK(start + size + 1 <= dbmd.size());
+        unsigned sum = static_cast<unsigned>(size);
+        for (std::size_t i = 0; i < size; ++i) {
+            sum += static_cast<unsigned char>(dbmd[start + i]);
+        }
+        sum += static_cast<unsigned char>(dbmd[start + size]);
+        CHECK((sum & 0xFFu) == 0u);
+        if (static_cast<unsigned char>(dbmd[offset]) == 10) {
+            segment10 = dbmd.substr(start, size);
+        }
+        offset = start + size + 1;
+    }
+
+    CHECK(segment10.size() == 292);
+    CHECK(static_cast<unsigned char>(segment10[0]) == 0xBD);
+    CHECK(static_cast<unsigned char>(segment10[1]) == 0x6F);
+    CHECK(static_cast<unsigned char>(segment10[2]) == 0x72);
+    CHECK(static_cast<unsigned char>(segment10[3]) == 0xF8);
+    CHECK(static_cast<unsigned char>(segment10[4]) == 25);
+    CHECK(static_cast<unsigned char>(segment10[5]) == 0);
+    CHECK(static_cast<unsigned char>(segment10[6]) == 0);
+
+    // Nine 15-byte configuration trims: automatic, payload untouched.
+    for (std::size_t layout = 0; layout < 9; ++layout) {
+        const std::size_t flag = 7 + 15 * layout;
+        CHECK(static_cast<unsigned char>(segment10[flag]) == 0x01);
+        for (std::size_t i = 1; i < 15; ++i) {
+            CHECK(static_cast<unsigned char>(segment10[flag + i]) == 0);
+        }
+    }
+    // One trim-bypass byte per track stays clear.
+    for (std::size_t i = 7 + 9 * 15; i < 7 + 9 * 15 + 25; ++i) {
+        CHECK(static_cast<unsigned char>(segment10[i]) == 0);
+    }
+    // Headphone modes: bed tracks clear, the object slots carry the mode value.
+    for (std::size_t i = 0; i < 25; ++i) {
+        const unsigned char expected = i < 10 ? 0x00 : 0x03;
+        CHECK(static_cast<unsigned char>(segment10[7 + 9 * 15 + 25 + i]) == expected);
+    }
+    // Nothing between the mode array and the trailing template fill changed.
+    for (std::size_t i = 7 + 9 * 15 + 2 * 25; i < 5 + 262; ++i) {
+        CHECK(static_cast<unsigned char>(segment10[i]) == 0);
+    }
+    for (std::size_t i = 5 + 262; i < segment10.size(); ++i) {
+        CHECK(static_cast<unsigned char>(segment10[i]) == 0x84);
+    }
+}
+
 void test_int24_packing() {
     // Interleaved (L,R) for two frames: 0.0, +1.0, -1.0, +2.0 (clips).
     const float values[4] = {0.0f, 1.0f, -1.0f, 2.0f};
@@ -1052,6 +1114,7 @@ int main() {
     test_task_result_json();
     test_npy();
     test_oamd_and_adm_helpers();
+    test_dbmd_auto_trim();
     test_int24_packing();
     test_utf8_paths();
     test_process_runner();
