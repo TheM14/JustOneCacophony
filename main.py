@@ -826,6 +826,7 @@ def main(argv=None):
                     timings, "create_binaural_renderer",
                     RosellaBinauralRenderer,
                     hrtf_source["path"],
+                    bed_channels=getattr(index, "bed_channels", ()),
                     mode=binaural_render_mode,
                     object_delay_samples=args.object_delay_samples,
                     tail_seconds=args.binaural_tail_seconds,
