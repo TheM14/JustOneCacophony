@@ -41,6 +41,7 @@
 #include "io/process.h"
 #include "io/wav_writer.h"
 #include "joc_bitstream/joc_parser.h"
+#include "joc_bitstream/bed_layout_map.h"
 #include "joc_core/objects16.h"
 #include "oamd/oamd_parser.h"
 #include "speaker/speaker_step.h"
@@ -1322,6 +1323,7 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
     }
 
     ::joc::speaker::SpeakerStep speaker;
+    bool bed_positions_ready = false;
     const bool speaker_enabled = cfg.operation == JOC_OP_SPEAKER;
     if (speaker_enabled) {
         if (!::joc::speaker::layout_by_name(cfg.layout.c_str(), &speaker.layout)) {
@@ -1745,6 +1747,58 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                         job.outer_offset = static_cast<std::int64_t>(payload->sample_offset);
                         const Status bed_ok = ::joc::oamd::parse_id11_bed_assignments(
                             bytes.data(), bytes.size(), &group_bed_assignments);
+                        if (bed_ok.ok() && !bed_positions_ready &&
+                            !group_bed_assignments.empty()) {
+                            const ::joc::joc::BedLayout bed_layout =
+                                ::joc::joc::resolve_bed_layout(
+                                    group_bed_assignments,
+                                    job.update.content_bed && !job.update.content_isf &&
+                                        !job.update.content_dynamic);
+                            if (bed_layout.present) {
+                                bed_positions_ready = true;
+                                bus.emit(JOC_EV_RENDERER_INITIALIZED, JOC_STAGE_RENDER,
+                                         JOC_LOG_INFO,
+                                         fmt("bed layout: %s (%u bed channels)",
+                                             bed_layout.name[0] != '\0'
+                                                 ? bed_layout.name : "custom",
+                                             static_cast<unsigned>(
+                                                 bed_layout.channels.size())));
+                                if (bed_layout.bed_only) {
+                                    // bed 声道是固定通道：OAMD 不给位置，方位由声明的 bed 布局给出。
+                                    for (std::size_t slot = 0;
+                                         slot < bed_layout.channels.size() &&
+                                         slot < static_cast<std::size_t>(::joc::oamd::kObjects);
+                                         ++slot) {
+                                        const ::joc::joc::BedChannel channel =
+                                            bed_layout.channels[slot];
+                                        double xyz[3] = {0.0, 0.0, 0.0};
+                                        if (::joc::joc::bed_channel_adm_position(channel, xyz)) {
+                                            trajectory.set_fixed_position(
+                                                static_cast<int>(slot) + 1, xyz[0], xyz[1],
+                                                xyz[2]);
+                                            if (binaural_enabled) {
+                                                binaural.set_fixed_position(
+                                                    static_cast<int>(slot) + 1, xyz);
+                                            }
+                                        }
+                                        if (!speaker_enabled) {
+                                            continue;
+                                        }
+                                        // 目标布局有同名扬声器时直连该声道，否则按标准方位声像。
+                                        std::uint16_t q15[3] = {0, 0, 0};
+                                        if (!::joc::joc::layout_bed_anchor(
+                                                speaker.layout.out_ch_config, channel, q15) &&
+                                            !::joc::joc::bed_channel_q15(channel, q15)) {
+                                            continue;
+                                        }
+                                        speaker.bed_override[slot] = true;
+                                        for (int axis = 0; axis < ::joc::oamd::kAxes; ++axis) {
+                                            speaker.bed_positions[slot][axis] = q15[axis];
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         if (!bed_ok.ok()) {
                             failures.record(produced, StageRank::kJoc, bed_ok.code(),
                                             bed_ok.stage(), bed_ok.message());
@@ -2038,11 +2092,6 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
         bus.warning(std::to_string(chanmap_pair_mismatch_frames) +
                     " audio frame(s): the chanmap declares a different extra pair than "
                     "joc_dmx_config_idx; the bed mapping follows the chanmap");
-    }
-    if (bed_mask_mismatch_frames != 0u) {
-        bus.warning(std::to_string(bed_mask_mismatch_frames) +
-                    " audio frame(s): the OAMD bed mask declares a different extra pair than "
-                    "joc_dmx_config_idx; the bed mask only affects metadata");
     }
     StageFailure recorded;
     if (failures.earliest(&recorded)) {

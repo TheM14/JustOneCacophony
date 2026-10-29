@@ -118,6 +118,7 @@ set(JOC_INTERNAL_SOURCES
     src/io/process.cpp
     src/io/wav_writer.cpp
     src/io/zip_reader.cpp
+    src/joc_bitstream/bed_layout_map.cpp
     src/joc_bitstream/joc_parser.cpp
     src/joc_core/objects16.cpp
     src/oamd/oamd_parser.cpp

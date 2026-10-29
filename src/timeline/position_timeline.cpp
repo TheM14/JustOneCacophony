@@ -114,6 +114,10 @@ Status OamdPositionTimeline::submit_update(const oamd::OamdUpdate& update,
 
     double targets[kTimelineObjects][3] = {};
     for (int index = 0; index < kTimelineObjects; ++index) {
+        if (fixed_[index]) {
+            std::memcpy(targets[index], fixed_xyz_[index], sizeof(targets[index]));
+            continue;
+        }
         geometry::q_to_adm_xyz(state_.q(index + 1, 0), state_.q(index + 1, 1),
                                state_.q(index + 1, 2), &targets[index][0], &targets[index][1],
                                &targets[index][2]);

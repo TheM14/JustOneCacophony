@@ -72,6 +72,11 @@ public:
     std::size_t staged_samples() const { return staged_; }
     const timeline::OamdPositionTimeline& timeline() const { return timeline_; }
 
+    // bed 声道是固定通道：OAMD 不给位置，方位由声明的 bed 布局给出。
+    void set_fixed_position(int object_index, const double position[3]) {
+        timeline_.set_fixed_position(object_index, position);
+    }
+
     // finish_output_capacity as the reference computes it (plan 21.4).
     std::uint32_t finish_capacity(double tail_seconds) const;
 

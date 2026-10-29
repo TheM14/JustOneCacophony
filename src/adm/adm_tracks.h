@@ -38,6 +38,18 @@ public:
 
     Status build(std::int64_t total_samples, TrajectoryMode mode, std::vector<Track>* out) const;
 
+    // bed 声道是固定通道：OAMD 不给位置，整片静止在声明的 bed 方位。
+    void set_fixed_position(int object_index, double x, double y, double z) {
+        if (object_index < 1 || object_index > kObjectCount) {
+            return;
+        }
+        const int slot = object_index - 1;
+        fixed_[slot] = true;
+        fixed_xyz_[slot][0] = x;
+        fixed_xyz_[slot][1] = y;
+        fixed_xyz_[slot][2] = z;
+    }
+
     const std::vector<OamdEvent>& events(int object_index) const { return events_[object_index]; }
     std::uint32_t rate() const { return rate_; }
     std::int64_t object_delay_samples() const { return object_delay_; }
@@ -50,6 +62,8 @@ private:
     std::vector<OamdEvent> events_[kObjectCount];
     bool has_previous_[kObjectCount] = {};
     double previous_[kObjectCount][3] = {};
+    bool fixed_[kObjectCount] = {};
+    double fixed_xyz_[kObjectCount][3] = {};
 };
 
 Status expand_compact(const std::vector<OamdEvent>& events, std::int64_t total_samples, std::uint32_t rate,

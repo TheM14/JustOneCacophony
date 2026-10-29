@@ -183,7 +183,8 @@ ffmpeg 侧只在 $N=5$ 档位传 `-ac 6`；$N=7$ 档位不传 `-ac`，保留解�
 **跨层一致性校验**（§11.2）：子流声明的全频段通道数必须等于 $N$，$joc\_ext\_config\_idx$ 非零
 时报未映射变体，对象数超过 15 时截断到 15 并记入 diagnostics——这几项会改变 DSP 输入，不一致就
 拒绝。额外那一对的**身份**只进元数据、不进 DSP（§10.1）：依赖子流 `chanmap` 与 $k$ 不一致、或
-OAMD 标准 bed 掩码与 $k$ 不一致时，只记 diagnostics 并照常解码，床映射按 `chanmap` 的通道码走。
+OAMD 声明的 bed 布局可以比核心子流实际编码的声道多（例如 9.1.6 bed 只编 5.1 核心），只有核心
+声道在 bed 布局里找不到位置才记 diagnostics 并照常解码，床映射按 `chanmap` 的通道码走。
 同一音频帧里出现多个含 ID11/ID14 的 EMDF 容器时，按规格 §8.2 + Table 56 的关联规则打分：
 OAMD 与 JOC 载荷 groupid 相同且 ID14 能完整解析的优先，其次只看 ID14 能否解析；唯一最高分才用，
 其余记入 diagnostics（`emdf/extra_container_ignored`）。额外那一对在 10 槽 ADM 骨架上的落位

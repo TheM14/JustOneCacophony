@@ -49,6 +49,17 @@ public:
     // positions[15][3]; queries must be monotonically increasing.
     Status positions_at(std::int64_t sample, double positions[kTimelineObjects][3]);
 
+    // bed 声道是固定通道：OAMD 不给位置，方位由声明的 bed 布局给出。
+    void set_fixed_position(int object_index, const double position[3]) {
+        if (object_index < 1 || object_index > kTimelineObjects) {
+            return;
+        }
+        fixed_[object_index - 1] = true;
+        fixed_xyz_[object_index - 1][0] = position[0];
+        fixed_xyz_[object_index - 1][1] = position[1];
+        fixed_xyz_[object_index - 1][2] = position[2];
+    }
+
     std::uint64_t payload_count() const { return payload_count_; }
     std::uint64_t transition_count() const { return transition_count_; }
     bool initialized() const { return initialized_; }
@@ -62,6 +73,8 @@ private:
     bool initialized_ = false;
     double previous_targets_[kTimelineObjects][3] = {};
     bool has_previous_[kTimelineObjects] = {};
+    bool fixed_[kTimelineObjects] = {};
+    double fixed_xyz_[kTimelineObjects][3] = {};
     std::uint64_t payload_count_ = 0;
     std::uint64_t transition_count_ = 0;
     std::int64_t last_coded_event_sample_ = -1;

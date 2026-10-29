@@ -35,6 +35,10 @@ struct OamdUpdate {
     std::uint32_t num_bed_objects = 0;
     std::uint32_t num_isf_objects = 0;
     std::int32_t num_dynamic_objects = -1;
+    // program_assignment() 的 content_description：bed / ISF / 动态对象三类内容。
+    bool content_bed = false;
+    bool content_isf = false;
+    bool content_dynamic = false;
 };
 
 class OamdState {

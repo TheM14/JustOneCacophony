@@ -64,6 +64,9 @@ bool variable_bits_max(bits::BitReader& reader, unsigned width, unsigned max_gro
 struct ProgramInfo {
     bool dynamic_object_only = false;
     bool lfe_present = false;
+    bool content_bed = false;
+    bool content_isf = false;
+    bool content_dynamic = false;
     std::uint32_t num_bed_objects = 0;
     std::uint32_t num_isf_objects = 0;
     std::int32_t num_dynamic_objects = -1;
@@ -88,6 +91,9 @@ Status parse_program_assignment(bits::BitReader& reader, ProgramInfo* program) {
     if (reader.failed()) {
         return syntax("program_assignment truncated");
     }
+    program->content_bed = (mask & 0x1u) != 0u;
+    program->content_isf = (mask & 0x2u) != 0u;
+    program->content_dynamic = (mask & 0x4u) != 0u;
     if ((mask & 0x1u) != 0u) {
         reader.read(1);
         const std::uint32_t multi = reader.read(1);
@@ -520,6 +526,9 @@ Status parse_id11_verbose(const std::uint8_t* payload, std::size_t payload_size,
     out->num_bed_objects = program.num_bed_objects;
     out->num_isf_objects = program.num_isf_objects;
     out->num_dynamic_objects = program.num_dynamic_objects;
+    out->content_bed = program.content_bed;
+    out->content_isf = program.content_isf;
+    out->content_dynamic = program.content_dynamic;
 
     if (trace != nullptr) {
         trace->bed_assignments = program.bed_assignments;

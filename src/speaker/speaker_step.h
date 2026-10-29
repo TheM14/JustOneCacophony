@@ -23,6 +23,10 @@ struct SpeakerStep {
     std::uint32_t last_ramp_duration = 0;
     std::uint32_t last_object_count = 0;
     bool last_had_payload = false;
+    // bed 声道是固定通道：OAMD 不给位置，方位由声明的 bed 布局给出。这里存
+    // 对象槽 → Q15 方位；bed_override 为 false 的槽仍按 OAMD 坐标声像。
+    std::uint16_t bed_positions[oamd::kObjects][oamd::kAxes] = {};
+    bool bed_override[oamd::kObjects] = {};
 };
 
 Status step(SpeakerStep* context, const std::vector<float>& objects16_planar,

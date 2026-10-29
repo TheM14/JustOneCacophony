@@ -1,5 +1,7 @@
 #include "joc_bitstream/joc_parser.h"
 
+#include "joc_bitstream/bed_layout_map.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -545,6 +547,26 @@ std::string position_name(Position position) {
     }
 }
 
+// 核心声道位置 → bed 布局声道；返回 kCount 表示本标准表没有对应身份。
+BedChannel bed_channel_for_position(Position position) {
+    switch (position) {
+        case Position::kLeft: return BedChannel::kLeft;
+        case Position::kRight: return BedChannel::kRight;
+        case Position::kCenter: return BedChannel::kCenter;
+        case Position::kLfe: return BedChannel::kLfe;
+        case Position::kLfe2: return BedChannel::kLfe2;
+        case Position::kLeftSurround: return BedChannel::kLeftSurround;
+        case Position::kRightSurround: return BedChannel::kRightSurround;
+        case Position::kLeftRearSurround: return BedChannel::kLeftRearSurround;
+        case Position::kRightRearSurround: return BedChannel::kRightRearSurround;
+        case Position::kVerticalHeightLeft: return BedChannel::kTopFrontLeft;
+        case Position::kVerticalHeightRight: return BedChannel::kTopFrontRight;
+        case Position::kTopSurroundLeft: return BedChannel::kTopSideLeft;
+        case Position::kTopSurroundRight: return BedChannel::kTopSideRight;
+        default: return BedChannel::kCount;
+    }
+}
+
 std::string position_list(const std::vector<Position>& positions) {
     std::string text = "[";
     for (std::size_t index = 0; index < positions.size(); ++index) {
@@ -917,25 +939,24 @@ Status check_cross_layer(const joc_frame_params& params, const eac3::Frame* core
                              error);
     }
 
-    if (bed_assignments != nullptr) {
-        static constexpr std::uint32_t kBedBitLeftRear = 1u << 4;   // RC_LB/RC_RB
-        static constexpr std::uint32_t kBedBitTopFront = 1u << 5;   // RC_TFL/RC_TFR
-        std::vector<Position> declared_pair;
-        for (const oamd::BedAssignment& assignment : *bed_assignments) {
-            if (!assignment.standard || assignment.mask == 0u) {
-                continue;
+    if (bed_assignments != nullptr && !bed_assignments->empty()) {
+        // OAMD 的 bed 掩码描述的是内容的 bed 布局，可以比核心子流实际编码的声道多
+        // （例如 9.1.6 bed 只编 5.1 核心）。只有核心声道在 bed 布局里找不到位置才是
+        // 真正的不一致；多出来的 bed 声道是布局的一部分。
+        const BedLayout bed = resolve_bed_layout(*bed_assignments, true);
+        if (bed.present && bed.complete) {
+            bool covered = true;
+            for (const Position position : core_positions) {
+                const BedChannel channel = bed_channel_for_position(position);
+                if (channel == BedChannel::kCount) {
+                    continue;
+                }
+                if (!bed_layout_has(bed, channel)) {
+                    covered = false;
+                    break;
+                }
             }
-            if ((assignment.mask & kBedBitLeftRear) != 0u) {
-                push_unique(&declared_pair, Position::kLeftRearSurround);
-                push_unique(&declared_pair, Position::kRightRearSurround);
-            }
-            if ((assignment.mask & kBedBitTopFront) != 0u) {
-                push_unique(&declared_pair, Position::kVerticalHeightLeft);
-                push_unique(&declared_pair, Position::kVerticalHeightRight);
-            }
-        }
-        if (!declared_pair.empty() && declared_pair != wanted) {
-            if (notes != nullptr) {
+            if (!covered && notes != nullptr) {
                 notes->bed_mask_mismatch = true;
             }
         }

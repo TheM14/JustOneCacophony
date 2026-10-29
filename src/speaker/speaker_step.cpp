@@ -37,6 +37,14 @@ Status step(SpeakerStep* context, const std::vector<float>& objects16_planar,
 
     std::uint16_t positions[oamd::kObjects][3] = {};
     context->state.object_positions_q15(positions);
+    for (int object = 0; object < oamd::kObjects; ++object) {
+        if (!context->bed_override[object]) {
+            continue;
+        }
+        for (int axis = 0; axis < oamd::kAxes; ++axis) {
+            positions[object][axis] = context->bed_positions[object][axis];
+        }
+    }
     // A frame without OAMD must not touch the gains at all (no event), otherwise a
     // pending ramp would snap - matching the reference exactly.
     const std::uint32_t event_count = context->last_had_payload ? 1u : 0u;

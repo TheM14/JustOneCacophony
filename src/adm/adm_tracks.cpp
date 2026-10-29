@@ -236,6 +236,9 @@ void TrajectoryBuilder::submit_frame(std::int64_t frame_index, const oamd::OamdU
         ramp_samples = static_cast<std::int64_t>(update->ramp_duration_samples);
     }
     for (int object = 1; object <= kObjectCount; ++object) {
+        if (fixed_[object - 1]) {
+            continue;  // 固定 bed 声道：位置由布局给出，不跟 OAMD 更新
+        }
         double x = 0.0;
         double y = 0.0;
         double z = 0.0;
@@ -260,6 +263,18 @@ Status TrajectoryBuilder::build(std::int64_t total_samples, TrajectoryMode mode,
     for (int object = 1; object <= kObjectCount; ++object) {
         Track track;
         track.name = "JOC_Object_" + std::to_string(object);
+        if (fixed_[object - 1]) {
+            Keyframe block;
+            block.rtime_samples = 0;
+            block.x = fixed_xyz_[object - 1][0];
+            block.y = fixed_xyz_[object - 1][1];
+            block.z = fixed_xyz_[object - 1][2];
+            block.duration_samples = total_samples;
+            block.interpolation_samples = 0;
+            track.blocks.push_back(block);
+            out->push_back(std::move(track));
+            continue;
+        }
         const Status status =
             (mode == TrajectoryMode::Compact)
                 ? expand_compact(events_[object - 1], total_samples, rate_, block_,

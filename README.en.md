@@ -212,9 +212,11 @@ ffmpeg gets `-ac 6` only for the $N=5$ configurations; $N=7$ keeps the decoder's
 a non-zero $joc\_ext\_config\_idx$ is an unmapped variant, and a declared object count above 15 is
 clamped to 15 and recorded as a diagnostic - those change the DSP input, so a mismatch is refused.
 The extra pair's **identity** never reaches the DSP (section 10.1): when the dependent-substream
-`chanmap` disagrees with $k$, or an OAMD standard bed mask does, the mismatch is recorded as a
-diagnostic and the frame still renders, with the bed mapping following the channel codes the
-`chanmap` declares. When one audio frame holds several EMDF containers carrying ID11/ID14, they
+`chanmap` disagrees with $k$, the mismatch is recorded as a diagnostic and the frame still
+renders, with the bed mapping following the channel codes the `chanmap` declares. The bed
+layout the OAMD declares may hold more channels than the core substream codes (a 9.1.6 bed
+with a 5.1 core, for example): only a core channel missing from that layout counts as a
+mismatch. When one audio frame holds several EMDF containers carrying ID11/ID14, they
 are scored by the association rule of section 8.2 and its Table 56: a container whose OAMD and JOC
 payloads share a group id and whose ID14 parses completely wins, then one whose ID14 merely parses;
 only a unique best score is used and the others are recorded as a diagnostic
