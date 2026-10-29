@@ -6,21 +6,15 @@ import json
 from pathlib import Path
 
 from adm_atmos import q_to_adm_xyz
-from bed_layout import EXTRA_PAIR_BY_CONFIG, extra_pair
+from bed_layout import (BED_CHANNEL_NAMES, EXTRA_PAIR_BY_CONFIG, bed_layout,
+                        declared_bed_channels, extra_pair)
 from evo_unpack import unpack_evolution
 from emdf import (ACMOD_LOCATIONS, EmdfError, audio_frame_groups, expand_chanmap,
                   find_joc_emdf, iter_syncframes, parse_container)
 from joc_decode import parse_joc, parse_joc_header
-from oamd_bits import JocFieldState, frame_update_values, program_bed_channels
+from oamd_bits import (JocFieldState, frame_update_values, program_bed_channels,
+                       program_bed_summary)
 from variant_error import UnsupportedVariantError, bytes_descriptor
-
-
-# 规格 §11.2 校验 2：OAMD 标准 bed 掩码（Table 12）里的额外对标签。
-_BED_PAIR_GROUPS = (
-    (frozenset(("RC_LB", "RC_RB")), ("Lrs", "Rrs")),
-    (frozenset(("RC_TFL", "RC_TFR")), ("Vhl", "Vhr")),
-    (frozenset(("RC_TBL", "RC_TBR")), ("Lts", "Rts")),
-)
 
 
 def _joc_pair_score(container):
@@ -80,17 +74,19 @@ def _transport_record(group):
     }
 
 
-def _declared_bed_pairs(bed_channels):
-    """标准 bed 掩码里声明的"额外那一对"，按 Table 12 的标签判断。"""
-    labels = {name for instance in bed_channels for name in instance}
-    pairs = []
-    for members, pair in _BED_PAIR_GROUPS:
-        if members.issubset(labels):
-            pairs.append(pair)
-    return pairs
+def _bed_covers_core(bed_channels, core_positions):
+    """声明的 bed 布局是否覆盖核心子流携带的全频段声道。
+
+    OAMD 的 bed 掩码描述的是**内容**的 bed 布局，可以比 E-AC-3 核心实际编码的声道多
+    （例如 9.1.6 bed 只编 5.1 核心）。因此只有"核心声道在 bed 布局里找不到位置"才是
+    真正的不一致；多出来的 bed 声道是布局的一部分，不算冲突。
+    """
+    names = {BED_CHANNEL_NAMES.get(label, label)
+             for instance in bed_channels for label in instance}
+    return all(position in names for position in core_positions)
 
 
-def check_cross_layer(parsed, *, frame, transport=None, bed_channels=None,
+def check_cross_layer(parsed, *, frame, transport=None, bed_channels=None, bed_layout_info=None,
                       diagnostics=None):
     """规格 §11.2 的跨层一致性校验。
 
@@ -168,21 +164,24 @@ def check_cross_layer(parsed, *, frame, transport=None, bed_channels=None,
                 frame=frame, details=details)
 
     if bed_channels is not None:
-        declared_pairs = _declared_bed_pairs(bed_channels)
-        if declared_pairs and (expected_pair is None or
-                               any(pair != expected_pair for pair in declared_pairs)):
+        core_positions = []
+        if transport is not None:
+            core_positions = list(transport["core_locations"])
+            if transport["chanmap"] is not None:
+                core_positions += expand_chanmap(transport["chanmap"])
+        if not _bed_covers_core(bed_channels, core_positions):
             if diagnostics is not None:
                 diagnostics.append({
                     "stage": "oamd",
                     "variant": "bed_mask_cfg_mismatch",
                     "frame": frame,
-                    "message": "OAMD 标准 bed 掩码声明的额外对与 joc_dmx_config_idx 不一致，"
-                               "只影响 bed 槽位记录，音频不受影响",
+                    "message": "OAMD bed 布局没有覆盖核心子流的全频段声道，只影响 bed 槽位记录，"
+                               "音频不受影响",
                     "details": {
                         "config_idx": config_idx,
                         "bed_channels": [list(instance) for instance in bed_channels],
-                        "declared_pairs": [list(pair) for pair in declared_pairs],
-                        "expected_pair": list(expected_pair or ()),
+                        "bed_layout": (bed_layout_info or {}).get("name"),
+                        "core_positions": core_positions,
                     },
                 })
 
@@ -199,7 +198,8 @@ class DirectPayloadIndex:
     """
 
     def __init__(self, rows, subpayloads, sample_offsets, directory=None,
-                 transports=None, diagnostics=None, config_idx=None, n_channels=None):
+                 transports=None, diagnostics=None, config_idx=None, n_channels=None,
+                 bed_assignments=None, bed_only=False):
         self.rows = rows
         self._subpayloads = subpayloads
         self._sample_offsets = sample_offsets
@@ -208,6 +208,22 @@ class DirectPayloadIndex:
         self.diagnostics = diagnostics if diagnostics is not None else []
         self.config_idx = config_idx
         self.n_channels = n_channels
+        # OAMD bed 声明（内容声床布局）：bed 对象没有位置字段，位置由布局决定。
+        self.bed_assignments = bed_assignments if bed_assignments is not None else []
+        self.bed_layout = bed_layout(self.bed_assignments)
+        self.bed_only = bool(bed_only)
+
+    @property
+    def bed_channels(self):
+        """bed 声道标签（JOC 对象槽顺序）；非 bed-only 内容返回空。
+
+        bed 声道是固定通道，只有整个 program 都由 bed 组成时 15 路 JOC 对象才逐槽
+        对应 bed 声道。含动态对象的内容仍按 OAMD 坐标渲染。
+        """
+        if not self.bed_only:
+            return ()
+        layout = self.bed_layout or {}
+        return tuple(layout.get("channels") or ())
 
     def transport(self, row):
         return self.transports[int(row["frame"])] if self.transports else None
@@ -235,6 +251,9 @@ class DirectPayloadIndex:
         config_idx = None
         n_channels = None
         missing_joc_frames = 0
+        bed_assignments = []
+        bed_only = False
+        bed_layout_info = None
         groups = audio_frame_groups(iter_syncframes(data))
         for frame_number, group in enumerate(groups):
             if max_frames is not None and frame_number >= max_frames:
@@ -279,10 +298,15 @@ class DirectPayloadIndex:
             if 14 in container.payloads:
                 parsed = parse_joc_header(container.payloads[14])
                 parsed["payload"] = container.payloads[14]
+                frame_bed = (program_bed_summary(container.payloads[11])
+                             if 11 in container.payloads else None)
+                if frame_bed and not bed_assignments and frame_bed["channels"]:
+                    bed_assignments = [list(instance) for instance in frame_bed["channels"]]
+                    bed_only = bool(frame_bed["bed_only"])
+                    bed_layout_info = bed_layout(bed_assignments)
                 check_cross_layer(parsed, frame=frame_number, transport=transport,
-                                  bed_channels=(
-                                      program_bed_channels(container.payloads[11])
-                                      if 11 in container.payloads else None),
+                                  bed_channels=(frame_bed["channels"] if frame_bed else None),
+                                  bed_layout_info=bed_layout_info,
                                   diagnostics=diagnostics)
                 if config_idx is None:
                     config_idx = parsed["dmx_config_idx"]
@@ -327,7 +351,7 @@ class DirectPayloadIndex:
                 writer.writeheader()
                 writer.writerows(rows)
         return cls(rows, payloads, offsets, cache_dir, transports, diagnostics,
-                   config_idx, n_channels)
+                   config_idx, n_channels, bed_assignments, bed_only)
 
     def __len__(self):
         return len(self.rows)
@@ -526,6 +550,10 @@ def inspect(index, limit=None, print_frames=False):
         "frame_samples": 1536,
         "sample_rate": 48000,
         "duration_sec": len(rows) * 1536 / 48000,
+        "bed_layout": (getattr(index, "bed_layout", None) or {}).get("name"),
+        "bed_channels": [
+            BED_CHANNEL_NAMES.get(label, label)
+            for label in getattr(index, "bed_channels", ())],
         "configurations": [
             {"downmix_config": k[0], "extension_config": k[1], "core_channels": k[2],
              "objects": k[3], "frames": count}

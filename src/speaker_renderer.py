@@ -19,6 +19,79 @@ Q15_SCALE = 32768.0
 Q15_MAX = 32767.0 / Q15_SCALE
 GAIN_SNAP_THRESHOLD = 1.0e-4
 
+# 每个布局 region 0 控制点 → 该点上唯一响应的声道。床声道用这个锚点直接落到目标
+# 布局的同名扬声器上（床声道是一路固定通道，不是需要声像的对象）。
+_ANCHOR_CACHE: dict[str, dict[str, tuple[float, float, float]]] = {}
+
+
+def layout_channel_anchors(layout: SpeakerLayout) -> dict[str, tuple[float, float, float]]:
+    """返回 ``{声道名: (u, v, w)}``：把点对象放在这里时该声道增益为 1。
+
+    坐标取自布局自己的 region 0 控制点，因此锚点与布局的声像模型一致；目标布局没
+    有的声道不会出现在结果里。
+    """
+    cached = _ANCHOR_CACHE.get(layout.name)
+    if cached is not None:
+        return cached
+    anchors: dict[str, tuple[float, float, float]] = {}
+    region = layout.regions[0]
+    for coordinates in region.coordinates_q15:
+        u, v, w = (coordinate / 32767.0 for coordinate in coordinates)
+        gains = render_point_gains(layout, u, v, w, standard_order=True)
+        best = int(np.argmax(gains))
+        dominant = float(gains[best])
+        if dominant < 0.99:
+            continue
+        others = np.delete(gains, best)
+        if others.size and float(np.max(np.abs(others))) > 1.0e-3:
+            continue
+        anchors.setdefault(layout.channels[best], (u, v, w))
+    _ANCHOR_CACHE[layout.name] = anchors
+    return anchors
+
+
+def bed_object_anchors(layout: SpeakerLayout, bed_channels) -> dict[int, tuple[float, float, float]]:
+    """JOC 对象槽 → 固定方位 ``(u, v, w)``；只包含 bed 声道。
+
+    目标布局有同名扬声器时用该扬声器的锚点（床声道直连同名声道）；目标布局没有这
+    个声道时退回 bed 布局给出的标准方位，由声像模型摆位。
+    """
+    from bed_layout import BED_CHANNEL_ADM_POSITION, BED_CHANNEL_NAMES
+
+    anchors = layout_channel_anchors(layout)
+    result: dict[int, tuple[float, float, float]] = {}
+    for object_index, label in enumerate(bed_channels or (), 1):
+        if object_index > 15:
+            break
+        name = BED_CHANNEL_NAMES.get(label)
+        if name is None or name == "LFE":
+            continue
+        if name in anchors:
+            result[object_index] = anchors[name]
+            continue
+        position = BED_CHANNEL_ADM_POSITION.get(label)
+        if position is not None:
+            x, y, z = position
+            result[object_index] = ((x + 1.0) * 0.5, (1.0 - y) * 0.5, z)
+    return result
+
+
+def _all_object_targets(layout: SpeakerLayout, state: JocFieldState,
+                        bed_targets=None) -> np.ndarray:
+    bed_targets = bed_targets or {}
+    result = np.zeros((15, layout.channel_count), dtype=np.float64)
+    for object_index in range(1, 16):
+        fixed = bed_targets.get(object_index)
+        if fixed is not None:
+            u, v, w = fixed
+        else:
+            u = state.q[(object_index, "q1")] / Q15_SCALE
+            v = state.q[(object_index, "q2")] / Q15_SCALE
+            w = state.q[(object_index, "q3")] / Q15_SCALE
+        result[object_index - 1] = render_point_gains(
+            layout, u, v, w, standard_order=False)
+    return result
+
 
 def expand_speaker_bitfield(compact_mask: int, center_height: bool = False) -> int:
     """Expand the compact target-layout bitfield into individual speakers."""
@@ -176,27 +249,16 @@ def ramp_block_count(duration_samples: int, block_size: int = 32,
     return (int(duration_samples) * int(rate_scale) + block_size // 2 - 1) // block_size
 
 
-def _all_object_targets(layout: SpeakerLayout, state: JocFieldState) -> np.ndarray:
-    result = np.zeros((15, layout.channel_count), dtype=np.float64)
-    for object_index in range(1, 16):
-        result[object_index - 1] = render_point_gains(
-            layout,
-            state.q[(object_index, "q1")] / Q15_SCALE,
-            state.q[(object_index, "q2")] / Q15_SCALE,
-            state.q[(object_index, "q3")] / Q15_SCALE,
-            standard_order=False,
-        )
-    return result
-
-
 class PythonSpeakerRenderer:
     """Stateful float64 speaker renderer."""
 
-    def __init__(self, layout: str | SpeakerLayout, block_size: int = 32):
+    def __init__(self, layout: str | SpeakerLayout, block_size: int = 32,
+                 bed_channels=None):
         self.layout = get_speaker_layout(layout) if isinstance(layout, str) else layout
         self.block_size = int(block_size)
         if self.block_size <= 0:
             raise ValueError("block_size must be positive")
+        self.bed_targets = bed_object_anchors(self.layout, bed_channels)
         self.reset()
 
     def reset(self):
@@ -211,7 +273,7 @@ class PythonSpeakerRenderer:
     def _apply_payload(self, payload):
         update = frame_update(payload)
         self._state.apply(update["values"])
-        new_target = _all_object_targets(self.layout, self._state)
+        new_target = _all_object_targets(self.layout, self._state, self.bed_targets)
         blocks = ramp_block_count(update["ramp_duration_samples"], self.block_size)
         difference = new_target - self._current
         significant = np.abs(difference) >= GAIN_SNAP_THRESHOLD

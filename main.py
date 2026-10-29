@@ -23,8 +23,8 @@ import numpy as np
 import adm_assemble
 import adm_atmos
 from adm_validate import validate
-from bed_layout import (BED_EXTRA_SLOTS_BY_CONFIG, bed_order, extra_pair,
-                        joc_input_indices)
+from bed_layout import (BED_CHANNEL_NAMES, BED_EXTRA_SLOTS_BY_CONFIG, bed_order,
+                        extra_pair, joc_input_indices)
 from emdf import expand_chanmap
 from metadata import DirectPayloadIndex, PayloadIndex, write_summary
 import oamd_tracks
@@ -738,11 +738,14 @@ def main(argv=None):
                   + json.dumps(entry, ensure_ascii=False, separators=(",", ":")),
                   file=sys.stderr, flush=True)
         core_channels = getattr(index, "n_channels", None)
+        bed_layout_info = getattr(index, "bed_layout", None) or {}
         if core_channels is not None:
             print(f"[joc] downmix_config_idx={index.config_idx}  "
                   f"core_channels={core_channels}  "
                   f"bed_channels={bed_channel_count(index)}  "
-                  f"extra_pair_slots={bed_layout_plan(index)['extra_pair_slots']}",
+                  f"extra_pair_slots={bed_layout_plan(index)['extra_pair_slots']}  "
+                  f"bed_layout={bed_layout_info.get('name') or '-'}  "
+                  f"bed_object_channels={len(index.bed_channels)}",
                   flush=True)
         bed_path = timed_call(
             timings, "decode_core", decode_core,
@@ -765,7 +768,8 @@ def main(argv=None):
             timings["create_binaural_renderer"] = 0.0
             layout = get_speaker_layout(args.speaker_layout)
             speaker_name = speaker_layout_display_name(layout)
-            speaker_decoder, speaker_backend_info = create_speaker_renderer(layout)
+            speaker_decoder, speaker_backend_info = create_speaker_renderer(
+                layout, bed_channels=getattr(index, "bed_channels", ()))
             print(f"[speaker] layout={speaker_name} backend={speaker_backend_info['name']} "
                   f"channels={layout.channel_count}", flush=True)
             spool = SpeakerPcmSpool(
@@ -806,6 +810,7 @@ def main(argv=None):
                 "tail_seconds": args.binaural_tail_seconds,
                 "output_gain": gain_float64,
                 "chunk_frames": args.binaural_chunk_frames,
+                "bed_channels": getattr(index, "bed_channels", ()),
             }
             if hrtf_source["kind"] == "sofa":
                 binaural_decoder = timed_call(
@@ -948,6 +953,10 @@ def main(argv=None):
         "joc_downmix_config_idx": getattr(index, "config_idx", None),
         "joc_core_channels": getattr(index, "n_channels", None),
         "joc_extra_pair_slots": bed_layout_plan(index)["extra_pair_slots"],
+        "joc_bed_layout": (getattr(index, "bed_layout", None) or {}).get("name"),
+        "joc_bed_channels": [
+            BED_CHANNEL_NAMES.get(label, label)
+            for label in getattr(index, "bed_channels", ())],
         "diagnostics": getattr(index, "diagnostics", None),
         "metadata_cache": str(metadata_cache_dir) if metadata_cache_dir is not None else None,
         "frames": frame_count,

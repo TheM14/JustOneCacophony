@@ -458,11 +458,12 @@ def _parse_elements(reader, alternate_present, object_count, program, raw_payloa
     return object_element, elements
 
 
-def program_bed_channels(bits_one):
-    """只走 OAMD 头与 program_assignment()，返回声明为 bed 的声道标签列表。
+def program_bed_summary(bits_one):
+    """只走 OAMD 头与 program_assignment()，返回 bed 声明与内容类型。
 
-    跨层一致性校验（规格 §11.2 校验 2）只需要这一段；完整帧解析见
-    :func:`frame_update`，它还要继续解析全部对象 element。
+    ``channels`` 是按 bed_assignment() 展开的声道标签；``bed_only`` 表示这个 program
+    只由 bed 组成（没有 ISF、没有动态对象）——此时 15 路 JOC 对象就是 bed 声道，
+    位置由 bed 布局决定。跨层校验与完整帧解析之外的调用都只读这一段。
     """
     bits, raw_payload = _payload_bits(bits_one)
     try:
@@ -487,8 +488,26 @@ def program_bed_channels(bits_one):
         raise _syntax_error(
             "header_truncated", "OAMD header 字段越界或不完整",
             raw_payload, exc, payload_bits=len(bits)) from exc
-    return [list(assignment["channels"])
-            for assignment in program["bed_assignments"]]
+    assignments = program["bed_assignments"]
+    content = program.get("content_description") or {}
+    return {
+        "channels": [list(assignment["channels"]) for assignment in assignments],
+        "assignments": assignments,
+        "bed_only": bool(content.get("bed")) and not content.get("isf")
+                    and not content.get("dynamic"),
+        "num_bed_objects": program["num_bed_objects"],
+        "num_isf_objects": program["num_isf_objects"],
+        "num_dynamic_objects": program["num_dynamic_objects"],
+    }
+
+
+def program_bed_channels(bits_one):
+    """只走 OAMD 头与 program_assignment()，返回声明为 bed 的声道标签列表。
+
+    跨层一致性校验（规格 §11.2 校验 2）只需要这一段；完整帧解析见
+    :func:`frame_update`，它还要继续解析全部对象 element。
+    """
+    return program_bed_summary(bits_one)["channels"]
 
 
 def frame_update(bits_one):

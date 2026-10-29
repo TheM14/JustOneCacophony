@@ -2,6 +2,7 @@
 import math
 
 from adm_atmos import q_to_adm_xyz
+from bed_layout import bed_object_positions
 from oamd_bits import JocFieldState, frame_update
 from variant_error import UnsupportedVariantError
 
@@ -232,10 +233,19 @@ def build_adm_tracks(index, frames=None, rate=48000, frame_samples=1536,
                 previous[obj - 1] = xyz
 
     total_samples = len(frames) * frame_samples
-    return [
-        (f"JOC_Object_{obj}",
-         _expand_events(events[obj - 1], total_samples, rate,
-                        update_block_samples, object_delay_samples, obj,
-                        trajectory_mode))
-        for obj in range(1, 16)
-    ]
+    # bed 对象在 OAMD 里没有位置字段：位置由声明的 bed 布局决定，整片静止在该方位。
+    bed_positions = bed_object_positions(getattr(index, "bed_channels", ()))
+    tracks = []
+    for obj in range(1, 16):
+        fixed = bed_positions.get(obj)
+        if fixed is not None:
+            tracks.append((f"JOC_Object_{obj}",
+                           [(0.0, fixed[0], fixed[1], fixed[2],
+                             total_samples / float(rate), 0.0)]))
+            continue
+        tracks.append(
+            (f"JOC_Object_{obj}",
+             _expand_events(events[obj - 1], total_samples, rate,
+                            update_block_samples, object_delay_samples, obj,
+                            trajectory_mode)))
+    return tracks

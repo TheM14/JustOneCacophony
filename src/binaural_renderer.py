@@ -60,7 +60,8 @@ class SofaBinauralRenderer:
             mode: str = "mid",
             object_delay_samples: int = 1473,
             tail_seconds: float = 5.0,
-            chunk_frames: int = 64):
+            chunk_frames: int = 64,
+            bed_channels=None):
         required_interface = (
             "source_count", "default_profile", "set_source", "process",
             "finish", "finish_output_capacity", "info")
@@ -87,7 +88,10 @@ class SofaBinauralRenderer:
         self.chunk_frames = int(chunk_frames)
         self.chunk_samples = self.chunk_frames * FRAME_SAMPLES
         self.dsp_backend = getattr(backend, "dsp_backend", "python-sofa")
-        self.timeline = OamdPositionTimeline(15)
+        from bed_layout import bed_object_positions
+
+        self.timeline = OamdPositionTimeline(
+            15, bed_positions=bed_object_positions(bed_channels or ()))
 
         self._input_buffer = np.empty(
             (self.chunk_samples, SOURCE_CHANNELS), dtype=np.float64)
@@ -110,7 +114,8 @@ class SofaBinauralRenderer:
             object_delay_samples: int = 1473,
             tail_seconds: float = 5.0,
             output_gain: float = 1.0,
-            chunk_frames: int = 64) -> "SofaBinauralRenderer":
+            chunk_frames: int = 64,
+            bed_channels=None) -> "SofaBinauralRenderer":
         source = resolve_sofa_hrtf(sofa)
         backend = SofaBinauralBackend.from_sofa(
             source,
@@ -127,7 +132,8 @@ class SofaBinauralRenderer:
             mode=mode,
             object_delay_samples=object_delay_samples,
             tail_seconds=tail_seconds,
-            chunk_frames=chunk_frames)
+            chunk_frames=chunk_frames,
+            bed_channels=bed_channels)
 
     @classmethod
     def from_compiled_cache(
@@ -136,7 +142,8 @@ class SofaBinauralRenderer:
             object_delay_samples: int = 1473,
             tail_seconds: float = 5.0,
             output_gain: float = 1.0,
-            chunk_frames: int = 64) -> "SofaBinauralRenderer":
+            chunk_frames: int = 64,
+            bed_channels=None) -> "SofaBinauralRenderer":
         source = resolve_compiled_hrtf_cache(cache)
         backend = SofaBinauralBackend.from_compiled_cache(
             source,
@@ -148,7 +155,8 @@ class SofaBinauralRenderer:
             mode=mode,
             object_delay_samples=object_delay_samples,
             tail_seconds=tail_seconds,
-            chunk_frames=chunk_frames)
+            chunk_frames=chunk_frames,
+            bed_channels=bed_channels)
 
     @property
     def finish_capacity_samples(self) -> int:

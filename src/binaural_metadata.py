@@ -89,10 +89,12 @@ class _ObjectPositionTrack:
 class OamdPositionTimeline:
     """Convert OAMD state updates into a sample-timed Cartesian trajectory."""
 
-    def __init__(self, object_count: int = 15):
+    def __init__(self, object_count: int = 15, bed_positions=None):
         if object_count != 15:
             raise ValueError("JOC OAMD currently requires 15 object slots")
         self.object_count = int(object_count)
+        # bed 声道是固定通道：OAMD 不给位置，方位由声明的 bed 布局给出。
+        self.bed_positions = dict(bed_positions or {})
         self.state = JocFieldState()
         self.tracks = [_ObjectPositionTrack() for _ in range(self.object_count)]
         self.initialized = False
@@ -104,14 +106,18 @@ class OamdPositionTimeline:
 
     def _targets(self) -> list[tuple[float, float, float]]:
         q = self.state.q
-        return [
-            q_to_adm_xyz(
+        targets = []
+        for object_index in range(1, self.object_count + 1):
+            fixed = self.bed_positions.get(object_index)
+            if fixed is not None:
+                targets.append((float(fixed[0]), float(fixed[1]), float(fixed[2])))
+                continue
+            targets.append(q_to_adm_xyz(
                 q[(object_index, "q1")],
                 q[(object_index, "q2")],
                 q[(object_index, "q3")],
-            )
-            for object_index in range(1, self.object_count + 1)
-        ]
+            ))
+        return targets
 
     def submit_update(self, update: dict, *, frame_start_sample: int,
                       outer_sample_offset: int = 0,

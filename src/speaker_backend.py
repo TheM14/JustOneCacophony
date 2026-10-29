@@ -11,12 +11,14 @@ from speaker_renderer import PythonSpeakerRenderer, payload_events_from_index, r
 FRAME_SAMPLES = 1536
 
 
-def create_speaker_renderer(layout: str | SpeakerLayout):
+def create_speaker_renderer(layout: str | SpeakerLayout, bed_channels=None):
     """Create a stateful speaker renderer and return ``(renderer, info)``."""
     target = get_speaker_layout(layout) if isinstance(layout, str) else layout
-    return PythonSpeakerRenderer(target), {
+    renderer = PythonSpeakerRenderer(target, bed_channels=bed_channels)
+    return renderer, {
         "name": "python",
         "layout": target.name,
+        "bed_objects": len(getattr(renderer, "bed_targets", {}) or {}),
     }
 
 
@@ -33,7 +35,8 @@ def render_speaker_layout(objects16, index, layout: str | SpeakerLayout, *,
     if frames > len(index.rows):
         raise ValueError(f"metadata has {len(index.rows)} frames, PCM needs {frames}")
 
-    renderer, info = create_speaker_renderer(target)
+    renderer, info = create_speaker_renderer(
+        target, bed_channels=getattr(index, "bed_channels", ()))
     output = np.empty((len(source), target.channel_count), dtype=np.float64)
     started = time.perf_counter()
     try:
