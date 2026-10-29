@@ -128,6 +128,9 @@ private:
         return rosella_ready_ ? (rosella_pending_.size() - rosella_read_offset_) / 2u : 0u;
     }
     void reset_state();
+    // 声明的 bed 布局只在首帧解析一次：bed 声道在 OAMD 里没有位置字段，方位由布局
+    // 给出；流式路径和文件任务走同一套 SpeakerStep/双耳运行时，所以这里也要下发。
+    void apply_bed_positions(const FrameMetadata& entry);
     // Drops the bed samples that have already been rendered, keeping the rest.
     void compact_bed_pending();
     // Closes the audio frame currently being assembled and queues it.
@@ -173,6 +176,7 @@ private:
     bool speaker_enabled_ = false;
     bool binaural_enabled_ = false;
     bool binaural_ready_ = false;
+    bool bed_positions_ready_ = false;
     bool rosella_ready_ = false;
     float gain_ = 1.0f;
 };

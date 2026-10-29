@@ -9,6 +9,7 @@
 #include "hrtf/jochrtf.h"
 #include "hrtf/rosella_model.h"
 #include "hrtf/sofa_cache.h"
+#include "joc_bitstream/bed_layout_map.h"
 #include "joc_bitstream/joc_parser.h"
 #include "joc_core/objects16.h"
 
@@ -186,12 +187,52 @@ Status Stream::create(const Config& config) {
     return Status::success();
 }
 
+void Stream::apply_bed_positions(const FrameMetadata& entry) {
+    if (bed_positions_ready_ || entry.bed_assignments.empty()) {
+        return;
+    }
+    const bool bed_only = entry.has_update && entry.update.content_bed &&
+                          !entry.update.content_isf && !entry.update.content_dynamic;
+    const ::joc::joc::BedLayout bed = ::joc::joc::resolve_bed_layout(entry.bed_assignments, bed_only);
+    if (!bed.present) {
+        return;
+    }
+    bed_positions_ready_ = true;
+    if (!bed.bed_only) {
+        return;
+    }
+    for (std::size_t slot = 0; slot < bed.channels.size() &&
+                               slot < static_cast<std::size_t>(oamd::kObjects);
+         ++slot) {
+        const ::joc::joc::BedChannel channel = bed.channels[slot];
+        double xyz[3] = {0.0, 0.0, 0.0};
+        if (binaural_ready_ && ::joc::joc::bed_channel_adm_position(channel, xyz)) {
+            binaural_.set_fixed_position(static_cast<int>(slot) + 1, xyz);
+        }
+        if (!speaker_enabled_) {
+            continue;
+        }
+        std::uint16_t q15[3] = {0, 0, 0};
+        if (!::joc::joc::layout_bed_anchor(speaker_.layout.out_ch_config, channel, q15) &&
+            !::joc::joc::bed_channel_q15(channel, q15)) {
+            continue;
+        }
+        speaker_.bed_override[slot] = true;
+        for (int axis = 0; axis < oamd::kAxes; ++axis) {
+            speaker_.bed_positions[slot][axis] = q15[axis];
+        }
+    }
+}
+
 Status Stream::flush_pending_frame() {
     if (pending_frame_.streams.empty()) {
         return Status::success();
     }
     FrameMetadata entry = pending_frame_;
     pending_frame_ = FrameMetadata();
+    if (entry.has_joc) {
+        apply_bed_positions(entry);
+    }
     if (entry.has_joc) {
         std::string error;
         joc::CrossLayerNotes notes;
