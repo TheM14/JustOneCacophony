@@ -206,8 +206,13 @@ void Stream::apply_bed_positions(const FrameMetadata& entry) {
          ++slot) {
         const ::joc::joc::BedChannel channel = bed.channels[slot];
         double xyz[3] = {0.0, 0.0, 0.0};
-        if (binaural_ready_ && ::joc::joc::bed_channel_adm_position(channel, xyz)) {
-            binaural_.set_fixed_position(static_cast<int>(slot) + 1, xyz);
+        if (::joc::joc::bed_channel_adm_position(channel, xyz)) {
+            if (binaural_ready_) {
+                binaural_.set_fixed_position(static_cast<int>(slot) + 1, xyz);
+            }
+            if (rosella_ready_) {
+                rosella_.set_fixed_position(static_cast<int>(slot) + 1, xyz);
+            }
         }
         if (!speaker_enabled_) {
             continue;

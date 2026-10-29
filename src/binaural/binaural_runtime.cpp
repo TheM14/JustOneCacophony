@@ -205,7 +205,7 @@ Status SofaBinauralRuntime::reset() {
     if (ejoc_sofa_binaural_reset(handle_) != 0) {
         return Status::fail(JOC_ERR_RENDER_FAILED, stage::kRender, "sofa reset failed");
     }
-    timeline_ = timeline::OamdPositionTimeline();
+    timeline_.reset();
     output_.clear();
     staged_ = 0;
     input_samples_ = 0;

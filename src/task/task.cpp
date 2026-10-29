@@ -1780,6 +1780,10 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                                                 binaural.set_fixed_position(
                                                     static_cast<int>(slot) + 1, xyz);
                                             }
+                                            if (rosella_enabled) {
+                                                rosella.set_fixed_position(
+                                                    static_cast<int>(slot) + 1, xyz);
+                                            }
                                         }
                                         if (!speaker_enabled) {
                                             continue;

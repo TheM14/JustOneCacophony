@@ -60,6 +60,23 @@ public:
         fixed_xyz_[object_index - 1][2] = position[2];
     }
 
+    // Drops the OAMD state and every transition but keeps the fixed bed positions:
+    // they describe the content, not the playback position.
+    void reset() {
+        state_.reset();
+        for (int index = 0; index < kTimelineObjects; ++index) {
+            tracks_[index] = ObjectPositionTrack();
+            has_previous_[index] = false;
+            for (int axis = 0; axis < 3; ++axis) {
+                previous_targets_[index][axis] = 0.0;
+            }
+        }
+        initialized_ = false;
+        payload_count_ = 0;
+        transition_count_ = 0;
+        last_coded_event_sample_ = -1;
+    }
+
     std::uint64_t payload_count() const { return payload_count_; }
     std::uint64_t transition_count() const { return transition_count_; }
     bool initialized() const { return initialized_; }

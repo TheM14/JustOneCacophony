@@ -1329,7 +1329,7 @@ Status RosellaRuntime::reset() {
     impl_->raw_output_samples = 0u;
     impl_->metadata_block_updates = 0u;
     impl_->finished = false;
-    impl_->timeline = timeline::OamdPositionTimeline(timeline::kTimelineObjects);
+    impl_->timeline.reset();
     return Status::success();
 }
 
@@ -1354,5 +1354,9 @@ std::uint64_t RosellaRuntime::metadata_block_updates() const {
     return impl_->metadata_block_updates;
 }
 const timeline::OamdPositionTimeline& RosellaRuntime::timeline() const { return impl_->timeline; }
+
+void RosellaRuntime::set_fixed_position(int object_index, const double position[3]) {
+    impl_->timeline.set_fixed_position(object_index, position);
+}
 
 }  // namespace joc::hrtf

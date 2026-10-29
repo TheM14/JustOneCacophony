@@ -56,6 +56,9 @@ public:
     std::uint64_t metadata_block_updates() const;
     const timeline::OamdPositionTimeline& timeline() const;
 
+    // bed 声道是固定通道：OAMD 不给位置，方位由声明的 bed 布局给出。
+    void set_fixed_position(int object_index, const double position[3]);
+
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
