@@ -112,7 +112,7 @@ No path may add a second ear delay or phase-group delay.
 
 ## Public filterbank and directional field
 
-The runtime is fixed at:
+The SOFA and `.jochrtf` runtime is fixed at:
 
 - 48 kHz;
 - a 64-sample QMF hop;
@@ -120,6 +120,10 @@ The runtime is fixed at:
 - 961 samples of analysis/synthesis latency;
 - fifth order, 36 terms, ACN/N3D real spherical harmonics;
 - float64 PCM, delay, SH, and room state; complex128 band transfers and spectra.
+
+The `.personalized_headphone` path uses a separate Rosella filterbank with
+448 samples of latency. See [Rosella filterbank](rosella_filterbank.en.md) for
+its parameters and validation results. The SOFA bank described here is unchanged.
 
 Real and imaginary unit gains for every hybrid band pass through the same
 analysis/synthesis chain to form a 154-real-parameter impulse dictionary. The
