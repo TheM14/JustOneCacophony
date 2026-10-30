@@ -104,6 +104,7 @@ set(JOC_INTERNAL_SOURCES
     src/foundation/status.cpp
     src/hrtf/jochrtf.cpp
     src/hrtf/public_filterbank.cpp
+    src/hrtf/rosella_filterbank.cpp
     src/hrtf/rosella_model.cpp
     src/hrtf/rosella_renderer.cpp
     src/hrtf/kernel_tables.cpp
@@ -287,6 +288,10 @@ if(JOC_BUILD_TESTS)
     target_link_libraries(joc_tests PRIVATE joc_core_impl joc_core)
     target_include_directories(joc_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     add_test(NAME core COMMAND joc_tests)
+    add_executable(joc_rosella_filterbank_tests tests/test_rosella_filterbank.cpp)
+    target_link_libraries(joc_rosella_filterbank_tests PRIVATE joc_core_impl)
+    target_include_directories(joc_rosella_filterbank_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    add_test(NAME rosella_filterbank COMMAND joc_rosella_filterbank_tests)
     # The public headers must stay valid C and C++: these targets exist to prove it.
     add_library(joc_headers_c OBJECT tests/test_headers.c)
     target_include_directories(joc_headers_c PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -323,7 +328,7 @@ if(JOC_BUILD_TESTS OR JOC_BUILD_DEVTOOLS)
     list(APPEND JOC_MSVC_TARGETS joc_core_impl)
 endif()
 if(JOC_BUILD_TESTS)
-    list(APPEND JOC_MSVC_TARGETS joc_tests joc_headers_c joc_headers_cpp)
+    list(APPEND JOC_MSVC_TARGETS joc_tests joc_rosella_filterbank_tests joc_headers_c joc_headers_cpp)
 endif()
 if(JOC_BUILD_DEVTOOLS)
     list(APPEND JOC_MSVC_TARGETS joc_rosella_probe joc_dump joc_stream_probe joc_sofa_probe joc_sofa_field_probe joc_dictionary_probe)

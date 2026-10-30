@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "foundation/fft.h"
-#include "hrtf/public_filterbank.h"
+#include "hrtf/rosella_filterbank.h"
 
 namespace joc::hrtf {
 
@@ -1003,8 +1003,8 @@ struct RosellaRuntime::Impl {
     std::vector<double> field_left;
     std::vector<double> field_right;
     Core core;
-    std::unique_ptr<PublicFilterbank> analysis_bank;
-    std::unique_ptr<PublicFilterbank> synthesis_bank;
+    std::unique_ptr<RosellaFilterbank> analysis_bank;
+    std::unique_ptr<RosellaFilterbank> synthesis_bank;
     timeline::OamdPositionTimeline timeline{timeline::kTimelineObjects};
 
     std::vector<double> buffer;  // [chunk_samples][16]
@@ -1051,9 +1051,7 @@ struct RosellaRuntime::Impl {
         analysis_bank->analyze_qmf(hops_, slots, &qmf_);
         analysis_bank->analyze_hybrid(qmf_, slots, &hybrid_);
 
-        if (rendered_.size() < slots * 2u * kHybridBands) {
-            rendered_.resize(slots * 2u * kHybridBands);
-        }
+        rendered_.resize(slots * 2u * kHybridBands);
         if (room_sends_buffer_.size() != slots * kHybridBands) {
             room_sends_buffer_.resize(slots * kHybridBands);
         }
@@ -1141,10 +1139,8 @@ struct RosellaRuntime::Impl {
         return Status::success();
     }
 
-    // The reference drops the first 961 samples of the raw stream (the filterbank's
-    // latency) and returns everything after that.
     void append_output(const double* stereo, std::size_t count) {
-        const std::int64_t remaining = static_cast<std::int64_t>(kLatencySamples) -
+        const std::int64_t remaining = static_cast<std::int64_t>(RosellaFilterbank::kLatencySamples) -
                                        static_cast<std::int64_t>(raw_output_samples);
         const std::size_t skip = static_cast<std::size_t>(
             std::max<std::int64_t>(0, std::min<std::int64_t>(static_cast<std::int64_t>(count),
@@ -1203,8 +1199,8 @@ Status RosellaRuntime::open(const RosellaModel& model, const RosellaRenderOption
         return status;
     }
     // The analysis bank runs sixteen sources, the synthesis bank two output ears.
-    impl_->analysis_bank = std::make_unique<PublicFilterbank>(builtin_kernels(), kSourceChannels);
-    impl_->synthesis_bank = std::make_unique<PublicFilterbank>(builtin_kernels(), kOutputChannels);
+    impl_->analysis_bank = std::make_unique<RosellaFilterbank>(kSourceChannels);
+    impl_->synthesis_bank = std::make_unique<RosellaFilterbank>(kOutputChannels);
     impl_->buffer.assign(impl_->chunk_samples() * kSourceChannels, 0.0);
     impl_->room_sends_buffer_.assign(
         (impl_->chunk_samples() / kQmfHop) * kHybridBands, Complex(0.0, 0.0));
@@ -1309,7 +1305,8 @@ Status RosellaRuntime::finish(std::uint32_t flush_samples, std::vector<double>* 
 }
 
 std::uint32_t RosellaRuntime::finish_capacity(double tail_seconds) const {
-    const double samples = tail_seconds * 48000.0 + static_cast<double>(kLatencySamples) +
+    const double samples = tail_seconds * 48000.0 +
+                           static_cast<double>(RosellaFilterbank::kLatencySamples) +
                            static_cast<double>(kBlockSamples);
     const double blocks = std::ceil(samples / static_cast<double>(kBlockSamples));
     return static_cast<std::uint32_t>(blocks) * kBlockSamples;

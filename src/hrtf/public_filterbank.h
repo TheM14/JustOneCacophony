@@ -7,10 +7,6 @@
 
 #include "hrtf/jochrtf.h"
 
-// Public 64-QMF / 77-hybrid filterbank, shared by the SOFA field compiler and the
-// Rosella renderer (upstream public_filterbank.py and rosella_filterbank.py are
-// the same bank).  Everything is float64/complex128, as the reference computes it,
-// and the stateful half-steps are exposed because Rosella drives them directly.
 namespace joc::hrtf {
 
 inline constexpr int kQmfBands = 64;
