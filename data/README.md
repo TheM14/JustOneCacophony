@@ -64,6 +64,23 @@ $$Y_p = \sum_{q\in C_p}\Bigl(\operatorname{Re}X_q + j\,s_q\,\operatorname{Im}X_q
 
 相同数值可在 FFmpeg（`aacps_tablegen.h`、`aacsbrdata.h`）等公开实现中查到。
 
+### Rosella 捕获版滤波器组
+
+`rosella_captured_kernels.npz` 保存参考头戴渲染器实际运行的那套滤波器组
+（`--rosella-filterbank 2`）：
+
+```text
+format_version                  little-endian int32[1]
+qmf_prototype                   float32[64,10]
+rotation                        complex64[64]
+hybrid                          complex64[22]
+```
+
+表值载入后提升为 float64/complex128；全链 latency 为 448 samples（公开版为 961）。
+这些数值来自参考渲染器的运行时缓冲捕获，不是上述公开标准的推导值；C++ 内核以
+`src/hrtf/rosella_filterbank_tables.h` 的形式内置同一组数据。文件同样不含个性化
+HRTF 或 room 调参。
+
 标准可公开获取不等于获准实施相关专利。
 
 `.sofa` 是用户可见的 source of truth；`.jochrtf` 是可删除、可从 SOFA 重建的

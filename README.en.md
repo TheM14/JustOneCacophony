@@ -22,7 +22,7 @@ This is research code, not a complete, standards-compliant, or production-grade 
   or `9.1.6` (`4.0` is the quad layout, a front and a back pair; see
   [Speaker layouts and channel order](#speaker-layouts-and-channel-order)).
 - Run public SOFA binaural rendering directly from `pcm16 + ID11/OAMD`, without a temporary ADM BWF.
-- Keep the binaural DSP in float64/complex128, including 961-sample latency compensation, cross-frame state, and the room tail.
+- Keep the binaural DSP in float64/complex128, including the selected filterbank's latency compensation (961 or 448 samples), cross-frame state, and the room tail.
 - Use a shared float32/PCM24 WAV writer and explicit PCM24 clipping policy for direct outputs.
 - Implement everything in pure Python on NumPy;
 - Read or write metadata sidecars and produce metadata, timing, and output reports.
@@ -105,6 +105,8 @@ python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
   --binaural-mode near
 python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
   --hrtf-cache-policy disk
+python main.py input.m4a --binaural --personalized-headphone `
+  --rosella-filterbank 2
 python main.py input.m4a --binaural --binaural-output output.binaural.wav
 ```
 
@@ -223,7 +225,21 @@ sample.
 
 ### Binaural calculation
 
-See [Binaural Rendering Mathematics](docs/binaural.en.md) for QMF, hybrid processing, direction fields, distance, ITD, room processing, the 512-sample parameter updates above, and 961-sample latency compensation.
+See [Binaural Rendering Mathematics](docs/binaural.en.md) for QMF, hybrid processing, direction fields, distance, ITD, room processing, the 512-sample parameter updates above, and the selected filterbank's latency compensation (961 by default, 448 with `--rosella-filterbank 2`).
+
+### Rosella filterbank
+
+`--rosella-filterbank 1|2` selects the filterbank of the `.personalized_headphone`
+path:
+
+- `1` (default): the public bank, 13-tap hybrid / 6-slot high-band delay,
+  961 samples of latency;
+- `2`: the Rosella bank captured from the reference renderer, 11-tap hybrid /
+  3-slot high-band delay, 448 samples of latency.
+
+The option only applies to the Rosella model; the SOFA and `.jochrtf` paths
+reject it. See [Rosella filterbank](docs/rosella_filterbank.en.md) for the
+parameters, buffers, latency and validation of both banks.
 
 For all options:
 
@@ -321,3 +337,4 @@ See the [mathematical notes](docs/math.en.md) for the equations used by the deco
 
 - [Mathematical notes](docs/math.en.md) · [中文](docs/math.md)
 - [Binaural rendering](docs/binaural.en.md) · [中文](docs/binaural.md)
+- [Rosella filterbank](docs/rosella_filterbank.en.md) · [中文](docs/rosella_filterbank.md)

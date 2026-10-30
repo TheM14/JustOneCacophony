@@ -38,10 +38,10 @@ from binaural_renderer import (
 from rosella_binaural_renderer import (
     DEFAULT_PERSONALIZED_HEADPHONE,
     ROSSELLA_BLOCK_SAMPLES,
-    ROSSELLA_LATENCY_SAMPLES,
     RosellaBinauralRenderer,
     resolve_personalized_headphone,
 )
+from rosella_bank import DEFAULT_FILTERBANK, FILTERBANK_CHOICES, FILTERBANK_NAMES
 from sofa_hrtf_field import DEFAULT_HRTF_CACHE_DIR
 from speaker_backend import create_speaker_renderer
 from speaker_layouts import (SPEAKER_LAYOUT_CHOICES, get_speaker_layout,
@@ -567,6 +567,10 @@ def build_parser():
         help="Rosella .personalized_headphone 模型；不带路径时默认 "
              "HRTF/binaural.personalized_headphone")
     parser.add_argument(
+        "--rosella-filterbank", type=int, choices=FILTERBANK_CHOICES, default=None,
+        help="Rosella 模型的滤波器组：1=13 taps/6 slots（默认），"
+             "2=11 taps/3 slots；仅作用于个性化模型")
+    parser.add_argument(
         "--hrtf-cache-policy", choices=("none", "memory", "disk"), default=None,
         help="SOFA 编译缓存；默认 memory，disk 写入可删除的 .jochrtf")
     parser.add_argument(
@@ -653,6 +657,10 @@ def main(argv=None):
     ))
     if hrtf_options_used and not binaural_mode:
         raise ValueError("SOFA/HRTF 选项仅与 --binaural 一起使用")
+    if args.rosella_filterbank is not None and not binaural_mode:
+        raise ValueError("--rosella-filterbank 仅与 --binaural 一起使用")
+    rosella_filterbank = (DEFAULT_FILTERBANK if args.rosella_filterbank is None
+                          else args.rosella_filterbank)
     if (not math.isfinite(args.binaural_tail_seconds)
             or args.binaural_tail_seconds < 0):
         raise ValueError("binaural-tail-seconds 必须是非负有限值")
@@ -686,6 +694,11 @@ def main(argv=None):
         raise ValueError("eac3-target-level 必须在 -31..0 之间")
     binaural_hrtf_input = resolve_binaural_hrtf_input(
         args, required=binaural_mode and not args.metadata_only)
+    if (args.rosella_filterbank is not None and binaural_hrtf_input is not None
+            and binaural_hrtf_input["kind"] != "rosella"):
+        raise ValueError(
+            "--rosella-filterbank 只作用于 Rosella .personalized_headphone 输入；"
+            "当前 SOFA/.jochrtf 路径不使用该滤波器组")
     ffmpeg = executable(args.ffmpeg, "FFmpeg")
     decode_options = ()
     decode_option_info = None
@@ -828,6 +841,7 @@ def main(argv=None):
                     hrtf_source["path"],
                     bed_channels=getattr(index, "bed_channels", ()),
                     mode=binaural_render_mode,
+                    filterbank=rosella_filterbank,
                     object_delay_samples=args.object_delay_samples,
                     tail_seconds=args.binaural_tail_seconds,
                     output_gain=gain_float64,
@@ -844,9 +858,12 @@ def main(argv=None):
                 f"precision=float64/complex128 "
                 f"hrtf={hrtf_source['kind']}:{hrtf_source['path']}", flush=True)
             if hrtf_source["kind"] == "rosella":
+                print(
+                    f"[binaural] filterbank={FILTERBANK_NAMES[binaural_decoder.filterbank]}"
+                    f" latency={binaural_decoder.latency_samples}", flush=True)
                 flush_samples = math.ceil(
                     (args.binaural_tail_seconds * RATE
-                     + ROSSELLA_LATENCY_SAMPLES + ROSSELLA_BLOCK_SAMPLES)
+                     + binaural_decoder.latency_samples + ROSSELLA_BLOCK_SAMPLES)
                     / ROSSELLA_BLOCK_SAMPLES) * ROSSELLA_BLOCK_SAMPLES
                 spool_capacity = frame_count * FRAME_SAMPLES + flush_samples
             else:

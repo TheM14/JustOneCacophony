@@ -20,7 +20,7 @@
 - 直接渲染 `2.0`、`3.1`、`4.0`、`5.1`、`7.1`、`5.1.2`、`5.1.4`、`7.1.2`、`7.1.4`、`9.1.4`、
   `9.1.6`（`4.0` 是 Quad 布局，前后各一对；声道排列见[扬声器布局与声道顺序](#扬声器布局与声道顺序)）；
 - 从 `pcm16 + ID11/OAMD` 直接运行公开 SOFA 双耳渲染，不生成临时 ADM BWF；
-- 双耳 DSP 全程使用 float64/complex128，并保留 961-sample latency compensation、跨帧状态和 room 尾声；
+- 双耳 DSP 全程使用 float64/complex128，并保留所选滤波器组的延迟补偿（公开版 961、捕获版 448 samples）、跨帧状态和 room 尾声；
 - 直接输出统一支持 float32 或 PCM24 WAV，并在 PCM24 削波前提供明确处理策略；
 - 全程使用 NumPy 的纯 Python 实现；
 - 读取或写入 metadata sidecar，并生成元数据、运行时间和输出摘要。
@@ -103,6 +103,8 @@ python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
   --binaural-mode near
 python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
   --hrtf-cache-policy disk
+python main.py input.m4a --binaural --personalized-headphone `
+  --rosella-filterbank 2
 python main.py input.m4a --binaural --binaural-output output.binaural.wav
 ```
 
@@ -192,7 +194,18 @@ outer subpayload offset 与 block offset 落到绝对 sample timeline，再加�
 
 ### 双耳计算
 
-双耳路径的 QMF、hybrid、方向场、距离、ITD、room、上述 512-sample 参数更新和 961-sample 延迟补偿见[双耳渲染数学](docs/binaural.md)。
+双耳路径的 QMF、hybrid、方向场、距离、ITD、room、上述 512-sample 参数更新和所选滤波器组的延迟补偿（默认 961，`--rosella-filterbank 2` 为 448 samples）见[双耳渲染数学](docs/binaural.md)。
+
+### Rosella 滤波器组
+
+`--rosella-filterbank 1|2` 选择 `.personalized_headphone` 路径使用的滤波器组：
+
+- `1`（默认）：公开滤波器组，13-tap hybrid / 6-slot 高频延迟，961 samples 延迟；
+- `2`：从参考渲染器捕获的 Rosella 滤波器组，11-tap hybrid / 3-slot 高频延迟，
+  448 samples 延迟。
+
+该选项只作用于 Rosella 模型；SOFA 与 `.jochrtf` 路径给出时报错。两套实现的参数、
+缓冲、延迟与验证见 [Rosella 滤波器组](docs/rosella_filterbank.md)。
 
 更多参数可查看：
 
@@ -283,3 +296,4 @@ JustOneCacophony/
 
 - [数学说明](docs/math.md) · [English](docs/math.en.md)
 - [双耳渲染](docs/binaural.md) · [English](docs/binaural.en.md)
+- [Rosella 滤波器组](docs/rosella_filterbank.md) · [English](docs/rosella_filterbank.en.md)

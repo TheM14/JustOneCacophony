@@ -16,22 +16,16 @@ import numpy as np
 
 from bed_layout import bed_object_positions
 from binaural_metadata import OamdPositionTimeline
+from rosella_bank import (DEFAULT_FILTERBANK, FILTERBANK_CHOICES, FILTERBANK_NAMES,
+                          RosellaBank)
 from rosella_core import RosellaRenderer
 from rosella_direct import BINAURAL_PROFILE_NAMES
-from rosella_filterbank import (
-    DEFAULT_KERNEL_DATA,
-    HybridAnalysis,
-    HybridSynthesis,
-    QmfAnalysis,
-    QmfSynthesis,
-)
 from rosella_model import RosellaModel, load_personalized_headphone
 
 SAMPLE_RATE = 48000
 FRAME_SAMPLES = 1536
 ROSSELLA_BLOCK_SAMPLES = 512
 QMF_HOP_SAMPLES = 64
-ROSSELLA_LATENCY_SAMPLES = 961
 SOURCE_CHANNELS = 16
 OUTPUT_CHANNELS = 2
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -67,7 +61,8 @@ class RosellaBinauralRenderer:
             personalized_headphone: str | Path | RosellaModel,
             *,
             mode: str = "mid",
-            kernel_data: str | Path = DEFAULT_KERNEL_DATA,
+            filterbank: int = DEFAULT_FILTERBANK,
+            kernel_data: str | Path | None = None,
             object_delay_samples: int = 1473,
             tail_seconds: float = 5.0,
             output_gain: float = 1.0,
@@ -76,6 +71,9 @@ class RosellaBinauralRenderer:
             bed_channels=None):
         if mode not in BINAURAL_PROFILE_NAMES:
             raise ValueError("binaural mode must be near, mid, or far")
+        if filterbank not in FILTERBANK_CHOICES:
+            raise ValueError(
+                f"Rosella filterbank must be 1 (public) or 2 (captured), got {filterbank!r}")
         if int(object_delay_samples) < 0:
             raise ValueError("object_delay_samples must be non-negative")
         if float(tail_seconds) < 0.0:
@@ -97,8 +95,6 @@ class RosellaBinauralRenderer:
 
         self.mode = mode
         self.profile_index = BINAURAL_PROFILE_NAMES[mode]
-        self.kernel_data = Path(kernel_data).expanduser().resolve()
-        self.kernel_data_sha256 = _sha256_file(self.kernel_data)
         self.object_delay_samples = int(object_delay_samples)
         self.tail_seconds = float(tail_seconds)
         self.output_gain = np.float64(output_gain)
@@ -106,13 +102,21 @@ class RosellaBinauralRenderer:
         self.chunk_samples = self.chunk_frames * FRAME_SAMPLES
 
         self.dsp_backend = "python"
-        self.qmf_analysis = QmfAnalysis(SOURCE_CHANNELS, self.kernel_data)
-        self.hybrid_analysis = HybridAnalysis(SOURCE_CHANNELS, self.kernel_data)
+        self.bank = RosellaBank(
+            filterbank, source_channels=SOURCE_CHANNELS,
+            output_channels=OUTPUT_CHANNELS, kernel_data=kernel_data)
+        self.filterbank = self.bank.filterbank
+        self.filterbank_name = FILTERBANK_NAMES[self.filterbank]
+        self.latency_samples = self.bank.latency_samples
+        self.kernel_data = self.bank.table_path
+        self.kernel_data_sha256 = _sha256_file(self.kernel_data)
+        self.qmf_analysis = self.bank.qmf_analysis
+        self.hybrid_analysis = self.bank.hybrid_analysis
         self.core = RosellaRenderer(
             self.model, SOURCE_CHANNELS,
             room_impulse_slots=room_impulse_slots)
-        self.hybrid_synthesis = HybridSynthesis(OUTPUT_CHANNELS, self.kernel_data)
-        self.qmf_synthesis = QmfSynthesis(OUTPUT_CHANNELS, self.kernel_data)
+        self.hybrid_synthesis = self.bank.hybrid_synthesis
+        self.qmf_synthesis = self.bank.qmf_synthesis
         self.timeline = OamdPositionTimeline(
             15, bed_positions=bed_object_positions(bed_channels or ()))
 
@@ -213,7 +217,7 @@ class RosellaBinauralRenderer:
         stereo *= self.output_gain
 
         skip = max(0, min(
-            len(stereo), ROSSELLA_LATENCY_SAMPLES - self.raw_output_samples))
+            len(stereo), self.latency_samples - self.raw_output_samples))
         self.raw_output_samples += len(stereo)
         self.processed_input_samples += len(values)
         output = stereo[skip:]
@@ -231,7 +235,7 @@ class RosellaBinauralRenderer:
             self._buffer_used = 0
         flush_samples = math.ceil(
             (self.tail_seconds * SAMPLE_RATE
-             + ROSSELLA_LATENCY_SAMPLES + ROSSELLA_BLOCK_SAMPLES)
+             + self.latency_samples + ROSSELLA_BLOCK_SAMPLES)
             / ROSSELLA_BLOCK_SAMPLES) * ROSSELLA_BLOCK_SAMPLES
         while flush_samples:
             count = min(flush_samples, self.chunk_samples)
@@ -259,7 +263,9 @@ class RosellaBinauralRenderer:
             "kernel_data": str(self.kernel_data),
             "kernel_data_sha256": self.kernel_data_sha256,
             "mode": self.mode,
-            "latency_compensated_samples": ROSSELLA_LATENCY_SAMPLES,
+            "filterbank": self.filterbank,
+            "filterbank_name": self.filterbank_name,
+            "latency_compensated_samples": self.latency_samples,
             "object_delay_samples": self.object_delay_samples,
             "tail_seconds": self.tail_seconds,
             "metadata_payloads": self.timeline.payload_count,

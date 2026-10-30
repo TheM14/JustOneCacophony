@@ -72,6 +72,25 @@ $$Y_p = \sum_{q\in C_p}\Bigl(\operatorname{Re}X_q + j\,s_q\,\operatorname{Im}X_q
 The same values also appear in other public implementations of these standards
 (for example FFmpeg's `aacps_tablegen.h` and `aacsbrdata.h`).
 
+### Captured Rosella filterbank
+
+`rosella_captured_kernels.npz` holds the bank the reference headphone renderer
+actually runs (`--rosella-filterbank 2`):
+
+```text
+format_version                  little-endian int32[1]
+qmf_prototype                   float32[64,10]
+rotation                        complex64[64]
+hybrid                          complex64[22]
+```
+
+The table values are promoted to float64/complex128 on load. The full
+analysis/synthesis latency is 448 samples (961 for the public bank). These
+values come from runtime buffer captures of the reference renderer, not from the
+public standards above; the C++ core compiles the same data in as
+`src/hrtf/rosella_filterbank_tables.h`. This file also contains no personalized
+HRTF or room tuning.
+
 Public availability of a standard does not by itself grant permission to
 practice related patent claims.
 

@@ -139,6 +139,12 @@ convention adapter，不能只通过 reshape 进入核心 importer。
 - 五阶、36 项、ACN/N3D real spherical harmonics；
 - PCM、delay、SH、room state 为 float64；频带传递和频域状态为 complex128。
 
+上面是 SOFA / `.jochrtf` 路径与公开滤波器组的固定参数。Rosella
+`.personalized_headphone` 路径的滤波器组可选：默认仍是这一套公开滤波器组（961
+samples），`--rosella-filterbank 2` 换成从参考渲染器捕获的版本（11 taps / 3 slots、
+448 samples）。两套实现的参数、缓冲、延迟与验证见
+[Rosella 滤波器组](rosella_filterbank.md)。
+
 每个 hybrid band 的 real/imaginary 单位增益都通过同一套 analysis/synthesis 链生成
 脉冲字典，共 154 个实参数；编译不是直接读取 77 个 FFT bin。默认 projection
 ridge 为 `1e-3`，SH ridge 为 `1e-5`。同方向 measurement 先合并，再用球面 Voronoi

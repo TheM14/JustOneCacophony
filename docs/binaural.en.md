@@ -153,6 +153,13 @@ The runtime is fixed at:
 - fifth order, 36 terms, ACN/N3D real spherical harmonics;
 - float64 PCM, delay, SH, and room state; complex128 band transfers and spectra.
 
+Those are the SOFA / `.jochrtf` path and the public filterbank. The Rosella
+`.personalized_headphone` path selects its bank: the public bank above is the
+default (961 samples), and `--rosella-filterbank 2` switches to the bank captured
+from the reference renderer (11 taps / 3 slots, 448 samples). Parameters,
+buffers, latency and validation of both are in
+[Rosella filterbank](rosella_filterbank.en.md).
+
 Real and imaginary unit gains for every hybrid band pass through the same
 analysis/synthesis chain to form a 154-real-parameter impulse dictionary. The
 compiler does not sample 77 FFT bins. Defaults are `1e-3` projection ridge and
