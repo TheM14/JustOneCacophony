@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "foundation/fft.h"
-#include "hrtf/rosella_filterbank.h"
+#include "hrtf/rosella_bank.h"
 
 namespace joc::hrtf {
 
@@ -1003,8 +1003,8 @@ struct RosellaRuntime::Impl {
     std::vector<double> field_left;
     std::vector<double> field_right;
     Core core;
-    std::unique_ptr<RosellaFilterbank> analysis_bank;
-    std::unique_ptr<RosellaFilterbank> synthesis_bank;
+    std::unique_ptr<RosellaBank> analysis_bank;
+    std::unique_ptr<RosellaBank> synthesis_bank;
     timeline::OamdPositionTimeline timeline{timeline::kTimelineObjects};
 
     std::vector<double> buffer;  // [chunk_samples][16]
@@ -1139,9 +1139,13 @@ struct RosellaRuntime::Impl {
         return Status::success();
     }
 
+    // The reference drops the first `latency` samples of the raw stream (the
+    // filterbank's own delay) and returns everything after that; the latency is
+    // the selected bank's, so the two banks start at different sample offsets.
     void append_output(const double* stereo, std::size_t count) {
-        const std::int64_t remaining = static_cast<std::int64_t>(RosellaFilterbank::kLatencySamples) -
-                                       static_cast<std::int64_t>(raw_output_samples);
+        const std::int64_t remaining =
+            static_cast<std::int64_t>(rosella_bank_latency(options.bank)) -
+            static_cast<std::int64_t>(raw_output_samples);
         const std::size_t skip = static_cast<std::size_t>(
             std::max<std::int64_t>(0, std::min<std::int64_t>(static_cast<std::int64_t>(count),
                                                              remaining)));
@@ -1187,6 +1191,9 @@ Status RosellaRuntime::open(const RosellaModel& model, const RosellaRenderOption
     if (options.object_delay_samples < 0) {
         return render_fail(JOC_ERR_INVALID_ARGUMENT, "object_delay_samples must be non-negative");
     }
+    if (options.bank != RosellaBankKind::Public && options.bank != RosellaBankKind::Captured) {
+        return render_fail(JOC_ERR_INVALID_ARGUMENT, "unknown Rosella filterbank");
+    }
     impl_->model = model;
     impl_->options = options;
     logical_field(impl_->model.field_left_padded, &impl_->field_left);
@@ -1199,8 +1206,8 @@ Status RosellaRuntime::open(const RosellaModel& model, const RosellaRenderOption
         return status;
     }
     // The analysis bank runs sixteen sources, the synthesis bank two output ears.
-    impl_->analysis_bank = std::make_unique<RosellaFilterbank>(kSourceChannels);
-    impl_->synthesis_bank = std::make_unique<RosellaFilterbank>(kOutputChannels);
+    impl_->analysis_bank = RosellaBank::create(options.bank, kSourceChannels);
+    impl_->synthesis_bank = RosellaBank::create(options.bank, kOutputChannels);
     impl_->buffer.assign(impl_->chunk_samples() * kSourceChannels, 0.0);
     impl_->room_sends_buffer_.assign(
         (impl_->chunk_samples() / kQmfHop) * kHybridBands, Complex(0.0, 0.0));
@@ -1306,7 +1313,7 @@ Status RosellaRuntime::finish(std::uint32_t flush_samples, std::vector<double>* 
 
 std::uint32_t RosellaRuntime::finish_capacity(double tail_seconds) const {
     const double samples = tail_seconds * 48000.0 +
-                           static_cast<double>(RosellaFilterbank::kLatencySamples) +
+                           static_cast<double>(rosella_bank_latency(impl_->options.bank)) +
                            static_cast<double>(kBlockSamples);
     const double blocks = std::ceil(samples / static_cast<double>(kBlockSamples));
     return static_cast<std::uint32_t>(blocks) * kBlockSamples;

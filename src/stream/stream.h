@@ -37,6 +37,8 @@ struct Config {
     std::string hrtf_cache_dir;
     std::uint32_t hrtf_cache_policy = JOC_HRTF_CACHE_MEMORY;
     double hrtf_radius_m = 1.0;
+    // Filterbank of the Rosella path; the other binaural inputs ignore it.
+    std::uint32_t rosella_filterbank = JOC_ROSELLA_FILTERBANK_PUBLIC;
 };
 
 struct Info {

@@ -177,6 +177,22 @@ key。writer 使用同目录临时文件、`fsync`、进程持有的 OS 文件�
 私有 cache，不随程序或构建产物发布。`source_sha256` 只用于内容一致性校验，不是许可
 或来源证明。
 
+## Rosella 个性化模型
+
+`.personalized_headphone` 走独立的 Rosella 渲染器，滤波器组可以二选一，
+由 `--rosella-filterbank 1|2`（库接口为 `joc_task_config::rosella_filterbank` /
+`joc_stream_config::rosella_filterbank`，`0` 表示默认）选择：
+
+| 取值 | 滤波器组 | 低频 hybrid | 高频 slot delay | 延迟 |
+| --- | --- | --- | --- | ---: |
+| `1`（默认） | `PublicFilterbank`（与 SOFA 路径共用） | 13 taps | 6 slots | 961 samples |
+| `2` | `RosellaFilterbank`（从参考渲染器捕获） | 11 taps | 3 slots | 448 samples |
+
+两套实现通过同一组四个有状态 half-step 调用，因此切换时系数、高频 delay、历史缓冲
+布局、起始延迟跳过量和 flush 容量一起改变，分析与合成两级互不共享状态。其它取值直接
+报错；非 Rosella 输入给出该选项也报错，不会静默忽略。详见
+[Rosella filterbank](rosella_filterbank.en.md)。
+
 ## JOC 对象与房间
 
 生产适配器继续使用现有 JOC 调度：

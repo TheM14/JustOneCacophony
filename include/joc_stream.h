@@ -63,7 +63,7 @@ typedef struct joc_stream_config {
     uint32_t object_delay_samples;    /* default 1473 */
     double gain_db;                   /* default 0 */
     uint32_t native_threads;
-    uint32_t reserved;
+    uint32_t rosella_filterbank;      /* joc_rosella_filterbank; Rosella input, 0 = PUBLIC */
     /* Binaural HRTF input, the same three shapes joc_task_config accepts: when
      * hrtf_sofa_path is set the library compiles it with hrtf_cache_policy /
      * hrtf_cache_dir / hrtf_radius_m and hrtf_path is unused; when

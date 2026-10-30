@@ -82,6 +82,7 @@ joc_cli input.m4a --binaural
 joc_cli input.m4a --binaural --sofa-hrtf HRTF/other.sofa   # another SOFA
 joc_cli input.m4a --binaural --personalized-headphone      # Rosella personalisation
 #   -> output/<name>.binaural.wav
+joc_cli input.m4a --binaural --personalized-headphone --rosella-filterbank 2   # captured bank
 
 # Other common switches
 joc_cli input.m4a --duration 30 --gain-db -3 --trajectory-mode dense64
@@ -95,12 +96,19 @@ pass `continue`, `float32` or `abort`). `--duration` is in **seconds**, and
 `--binaural-tail-threshold` (1e-8, the binaural tail trim) keep the reference
 defaults. A run always writes `<output>.report.json` (`--report-json` overrides it).
 
-**Differences from the reference:** `--sofa-hrtf`, `--personalized-headphone`,
-`--backend python` and the metadata sidecars (`--metadata-dir`, `--metadata-cache`,
-`--metadata-backend sidecar`) are unavailable in this build and fail immediately
-with an explanation instead of being ignored. This build adds `--bed` (pre-decoded
+`--rosella-filterbank 1|2` picks the filterbank of the Rosella `.personalized_headphone`
+path: `1` (default) is the public 13-tap / 6-slot bank, `2` is the captured 11-tap /
+3-slot bank. Their latencies are 961 and 448 samples, and each keeps its own
+coefficients, history and flush capacity. The option only applies to the Rosella
+model; the SOFA and `.jochrtf` paths reject it. See
+[Rosella filterbank](docs/rosella_filterbank.en.md).
+
+**Differences from the reference:** `--backend python` and the metadata sidecars
+(`--metadata-dir`, `--metadata-cache`, `--metadata-backend sidecar`) are unavailable
+in this build and fail immediately with an explanation instead of being ignored.
+This build adds `--bed` (pre-decoded
 6-channel float32 PCM, which skips ffmpeg decoding), `--kernels`, `--work-dir`,
-`--report-json`, `--dry-run` and `--quiet`.
+`--report-json`, `--dry-run`, `--quiet` and `--rosella-filterbank`.
 
 ## Speaker layouts and channel order
 

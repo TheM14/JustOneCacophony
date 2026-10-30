@@ -72,6 +72,7 @@ joc_cli input.m4a --binaural
 joc_cli input.m4a --binaural --sofa-hrtf HRTF/other.sofa   # 换一个 SOFA
 joc_cli input.m4a --binaural --personalized-headphone      # Rosella 个性化模型
 #   -> output/<名称>.binaural.wav
+joc_cli input.m4a --binaural --personalized-headphone --rosella-filterbank 2   # 新版 Rosella 滤波器组
 
 # 其它常用开关
 joc_cli input.m4a --duration 30 --gain-db -3 --trajectory-mode dense64
@@ -84,11 +85,16 @@ joc_cli input.eac3 --metadata-only --print-metadata summary   # 只解析并打�
 `--binaural-tail-threshold`（默认 1e-8，双耳尾音裁切阈值）等默认值与上游一致。命令总是写出
 `<输出>.report.json`（`--report-json` 可改路径）。
 
-**与上游参数的差异**：`--sofa-hrtf`、`--personalized-headphone`、`--backend python` 以及
-metadata sidecar（`--metadata-dir`/`--metadata-cache`/`--metadata-backend sidecar`）在本构建中
-不可用，给出时立刻报错并说明原因，而不是静默忽略。本构建额外提供 `--bed`（已解码的 6 通道
-float32 PCM，给出后不调用 ffmpeg 解码）、`--kernels`（滤波器组表路径）、`--work-dir`、
-`--report-json`、`--dry-run`、`--quiet`。
+`--rosella-filterbank 1|2` 选择 Rosella 个性化模型使用的滤波器组：`1`（默认）是 13 taps /
+6 slots 的公开滤波器组，`2` 是 11 taps / 3 slots 的捕获版。两者延迟分别为 961 / 448 samples，
+系数、历史缓冲与 flush 容量各自独立；该选项只作用于 `.personalized_headphone`，SOFA 与
+`.jochrtf` 路径给出时直接报错。详见 [Rosella 滤波器组](docs/rosella_filterbank.en.md)。
+
+**与上游参数的差异**：`--backend python` 与 metadata sidecar（`--metadata-dir`/
+`--metadata-cache`/`--metadata-backend sidecar`）在本构建中不可用，给出时立刻报错并说明原因，
+而不是静默忽略。本构建额外提供 `--bed`（已解码的 6 通道 float32 PCM，给出后不调用 ffmpeg
+解码）、`--kernels`（滤波器组表路径）、`--work-dir`、`--report-json`、`--dry-run`、
+`--quiet`、`--rosella-filterbank`。
 
 ## 扬声器布局与声道顺序
 

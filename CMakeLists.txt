@@ -104,6 +104,7 @@ set(JOC_INTERNAL_SOURCES
     src/foundation/status.cpp
     src/hrtf/jochrtf.cpp
     src/hrtf/public_filterbank.cpp
+    src/hrtf/rosella_bank.cpp
     src/hrtf/rosella_filterbank.cpp
     src/hrtf/rosella_model.cpp
     src/hrtf/rosella_renderer.cpp

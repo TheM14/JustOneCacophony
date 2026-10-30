@@ -46,6 +46,10 @@ joc::stream::Config to_config(const joc_stream_config& config) {
     if (config.hrtf_cache_dir != nullptr) { out.hrtf_cache_dir = config.hrtf_cache_dir; }
     out.hrtf_cache_policy = config.hrtf_cache_policy;
     if (config.hrtf_radius_m > 0.0) { out.hrtf_radius_m = config.hrtf_radius_m; }
+    // 0 is "unset" here as well: the Rosella path defaults to the public bank.
+    if (config.rosella_filterbank != 0u) {
+        out.rosella_filterbank = config.rosella_filterbank;
+    }
     return out;
 }
 

@@ -44,6 +44,8 @@ struct Options {
     std::string compiled_hrtf_cache;
     std::string personalized_headphone;
     bool personalized_headphone_used = false;
+    int rosella_filterbank = 1;
+    bool rosella_filterbank_set = false;
     std::string hrtf_cache_policy;
     std::string hrtf_cache_dir;
     double hrtf_radius_m = 1.0;
@@ -118,6 +120,8 @@ void print_usage() {
         "  --sofa-hrtf PATH      SOFA SimpleFreeFieldHRIR 输入；.jochrtf 由本工具内部编译\n"
         "  --personalized-headphone [PATH]  Rosella 个性化模型，默认 "
         "HRTF/binaural.personalized_headphone\n"
+        "  --rosella-filterbank N  Rosella 模型滤波器组：1=13 taps/6 slots（默认），\n"
+        "                        2=11 taps/3 slots；仅作用于个性化模型\n"
         "  --compiled-hrtf-cache PATH   直接读取 .jochrtf（高级用法，跳过 SOFA 编译）\n"
         "  --hrtf-cache-policy P SOFA 编译缓存策略 none|memory|disk，默认 memory\n"
         "  --hrtf-cache-dir DIR  disk cache 目录，默认 <exe>/output/hrtf-cache\n"
@@ -237,6 +241,11 @@ void parse_args(const std::vector<std::string>& arguments, Options* options) {
                 arguments[static_cast<std::size_t>(index) + 1u][0] != '-') {
                 options->personalized_headphone = require_value(arguments, &index);
             }
+        }
+        else if (arg == "--rosella-filterbank") {
+            options->rosella_filterbank = static_cast<int>(
+                to_int(require_value(arguments, &index), "--rosella-filterbank"));
+            options->rosella_filterbank_set = true;
         }
         else if (arg == "--hrtf-cache-policy") { options->hrtf_cache_policy = require_value(arguments, &index); }
         else if (arg == "--hrtf-cache-dir") { options->hrtf_cache_dir = require_value(arguments, &index); }
@@ -562,6 +571,10 @@ int main(int argc, char** argv) {
             check_choice(options.hrtf_cache_policy, "--hrtf-cache-policy",
                          {"none", "memory", "disk"});
         }
+        if (options.rosella_filterbank != 1 && options.rosella_filterbank != 2) {
+            fail("--rosella-filterbank: invalid choice: " +
+                 std::to_string(options.rosella_filterbank) + " (choose from 1, 2)");
+        }
 
         const bool speaker_mode = !options.speaker_layout.empty();
         const bool binaural_mode = options.binaural;
@@ -595,6 +608,9 @@ int main(int argc, char** argv) {
             !options.hrtf_cache_dir.empty() || options.hrtf_radius_m != 1.0;
         if (hrtf_options_used && !binaural_mode) {
             fail("SOFA/HRTF 选项仅与 --binaural 一起使用");
+        }
+        if (options.rosella_filterbank_set && !binaural_mode) {
+            fail("--rosella-filterbank 仅与 --binaural 一起使用");
         }
         if (!std::isfinite(options.binaural_tail_seconds) ||
             options.binaural_tail_seconds < 0.0) {
@@ -670,6 +686,7 @@ int main(int argc, char** argv) {
     config.speaker_metadata_offset = static_cast<std::uint32_t>(options.speaker_metadata_offset);
     config.binaural_mode = binaural_mode_value(options.binaural_mode);
     config.adm_binaural_mode = binaural_mode_value(options.binaural_mode);
+    config.rosella_filterbank = static_cast<std::uint32_t>(options.rosella_filterbank);
     config.binaural_tail_seconds = options.binaural_tail_seconds;
     config.binaural_tail_threshold = options.binaural_tail_threshold;
     config.binaural_chunk_frames = static_cast<std::uint32_t>(options.binaural_chunk_frames);
@@ -710,6 +727,10 @@ int main(int argc, char** argv) {
             personalized_path = input.personalized_path;
             kernels_path = find_kernels(options, arguments.empty() ? std::string()
                                                                    : arguments.front());
+            if (options.rosella_filterbank_set && personalized_path.empty()) {
+                fail("--rosella-filterbank 只作用于 Rosella .personalized_headphone 输入；"
+                     "当前 SOFA/.jochrtf 路径不使用该滤波器组");
+            }
         } catch (const std::exception& error) {
             std::fprintf(stderr, "joc_cli: error: %s\n", error.what());
             return 2;

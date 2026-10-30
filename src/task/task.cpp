@@ -34,6 +34,7 @@
 #include "foundation/mini_json.h"
 #include "foundation/sha256.h"
 #include "hrtf/jochrtf.h"
+#include "hrtf/rosella_bank.h"
 #include "hrtf/rosella_model.h"
 #include "hrtf/rosella_renderer.h"
 #include "hrtf/sofa_cache.h"
@@ -98,6 +99,7 @@ struct Settings {
     std::string hrtf_cache_dir;
     std::uint32_t hrtf_cache_policy = JOC_HRTF_CACHE_MEMORY;
     double hrtf_radius_m = 1.0;
+    std::uint32_t rosella_filterbank = JOC_ROSELLA_FILTERBANK_PUBLIC;
     std::uint32_t operation = JOC_OP_ADM_BWF;
     std::uint32_t output_format = JOC_FORMAT_FLOAT32;
     std::uint32_t adm_binaural_mode = JOC_BINAURAL_MID;
@@ -149,6 +151,9 @@ Settings normalise(const joc_task_config& raw) {
     if (raw.hrtf_cache_dir != nullptr) { cfg.hrtf_cache_dir = raw.hrtf_cache_dir; }
     cfg.hrtf_cache_policy = raw.hrtf_cache_policy;
     cfg.hrtf_radius_m = raw.hrtf_radius_m;
+    // Kept verbatim so validate() can reject an out-of-range value; 0 is the
+    // documented "unset" spelling of the public bank.
+    cfg.rosella_filterbank = raw.rosella_filterbank;
     if (raw.kernels_path != nullptr) { cfg.kernels_path = raw.kernels_path; }
     cfg.operation = raw.operation;
     cfg.output_format = raw.output_format;
@@ -1108,6 +1113,14 @@ Status validate(const joc_task_config& raw, std::vector<joc_validation_issue>* i
             fail(JOC_ERR_INVALID_CONFIG, "binaural_mode",
                  "binaural_mode off is only meaningful for ADM output");
         }
+        if (cfg.rosella_filterbank > JOC_ROSELLA_FILTERBANK_CAPTURED) {
+            fail(JOC_ERR_INVALID_CONFIG, "rosella_filterbank",
+                 "rosella_filterbank must be 1 (public) or 2 (captured)");
+        } else if (cfg.rosella_filterbank == JOC_ROSELLA_FILTERBANK_CAPTURED &&
+                   cfg.personalized_headphone_path.empty()) {
+            fail(JOC_ERR_INVALID_CONFIG, "rosella_filterbank",
+                 "rosella_filterbank 2 only applies to a Rosella .personalized_headphone input");
+        }
     }
     if (cfg.operation == JOC_OP_ADM_BWF) {
         if (cfg.adm_binaural_mode > 4u) {
@@ -1358,14 +1371,22 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
             }
             render_options.object_delay_samples = cfg.object_delay_samples;
             render_options.tail_seconds = cfg.tail_seconds;
+            render_options.bank =
+                cfg.rosella_filterbank == JOC_ROSELLA_FILTERBANK_CAPTURED
+                    ? ::joc::hrtf::RosellaBankKind::Captured
+                    : ::joc::hrtf::RosellaBankKind::Public;
             if (status.ok()) {
                 status = rosella.open(model, render_options);
             }
             if (status.ok()) {
                 bus.emit(JOC_EV_HRTF_LOADED, JOC_STAGE_RENDER, JOC_LOG_INFO, model.summary());
                 bus.emit(JOC_EV_RENDERER_INITIALIZED, JOC_STAGE_RENDER, JOC_LOG_INFO,
-                         "Rosella binaural runtime ready (the first 961 samples are the "
-                         "filterbank latency)");
+                         fmt("Rosella binaural runtime ready (%s filterbank, the first %u "
+                             "samples are the filterbank latency)",
+                             render_options.bank == ::joc::hrtf::RosellaBankKind::Captured
+                                 ? "captured"
+                                 : "public",
+                             ::joc::hrtf::rosella_bank_latency(render_options.bank)));
             }
             if (!status.ok()) {
                 return finalize_with_error(status.code(), "render",

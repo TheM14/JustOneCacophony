@@ -121,9 +121,13 @@ The SOFA and `.jochrtf` runtime is fixed at:
 - fifth order, 36 terms, ACN/N3D real spherical harmonics;
 - float64 PCM, delay, SH, and room state; complex128 band transfers and spectra.
 
-The `.personalized_headphone` path uses a separate Rosella filterbank with
-448 samples of latency. See [Rosella filterbank](rosella_filterbank.en.md) for
-its parameters and validation results. The SOFA bank described here is unchanged.
+The `.personalized_headphone` path selects its bank rather than fixing it. The
+default is the shared public bank described here (961 samples of latency); bank
+2 is the captured Rosella bank (448 samples). Both keep their own coefficients,
+history and high-band delay, and the runtime skips the selected bank's latency
+and sizes the flush with it. See [Rosella filterbank](rosella_filterbank.en.md)
+for the parameters, the CLI switch and the validation results. The SOFA and
+`.jochrtf` banks described here are unchanged and never use the selector.
 
 Real and imaginary unit gains for every hybrid band pass through the same
 analysis/synthesis chain to form a 154-real-parameter impulse dictionary. The

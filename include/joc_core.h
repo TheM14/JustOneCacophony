@@ -39,7 +39,7 @@
 #define JOC_ABI_VERSION 5u
 #define JOC_FRAME_PARAMS_VERSION 1u
 #define JOC_EMDF_INFO_VERSION 1u
-#define JOC_TASK_CONFIG_VERSION 3u
+#define JOC_TASK_CONFIG_VERSION 4u
 #define JOC_TASK_RESULT_VERSION 2u
 #define JOC_EVENT_VERSION 1u
 
@@ -82,7 +82,7 @@ enum {
     JOC_BINAURAL_QMF_BANDS = 64,
     JOC_BINAURAL_HYBRID_BANDS = 77,
     JOC_QMF_HOP_SAMPLES = 64,
-    JOC_BINAURAL_LATENCY_SAMPLES = 961,
+    JOC_BINAURAL_LATENCY_SAMPLES = 961, /* SOFA/.jochrtf and Rosella bank 1 */
     JOC_LFE_DELAY_SAMPLES = 1217
 };
 
@@ -366,6 +366,15 @@ typedef enum joc_hrtf_cache_policy {
     JOC_HRTF_CACHE_DISK = 2    /* compile, reuse and write <cache_dir>/<name>.jochrtf */
 } joc_hrtf_cache_policy;
 
+/* Which 64-QMF / 77-hybrid filterbank the Rosella .personalized_headphone path
+ * renders through.  The two banks differ in coefficients, hybrid tap count,
+ * high-band slot delay and total latency, so they are not interchangeable; the
+ * SOFA and .jochrtf paths always use JOC_ROSELLA_FILTERBANK_PUBLIC. */
+typedef enum joc_rosella_filterbank {
+    JOC_ROSELLA_FILTERBANK_PUBLIC = 1,  /* 13-tap hybrid, 6-slot delay, 961 samples */
+    JOC_ROSELLA_FILTERBANK_CAPTURED = 2 /* 11-tap hybrid, 3-slot delay, 448 samples */
+} joc_rosella_filterbank;
+
 enum { JOC_TASK_F_SKIP_SHA256 = 1u, JOC_TASK_F_KEEP_INTERMEDIATE = 2u,
        JOC_TASK_F_QUIET = 4u, JOC_TASK_F_METADATA_ONLY = 8u };
 
@@ -423,7 +432,7 @@ typedef struct joc_task_config {
     const char* personalized_headphone_path; /* Rosella .personalized_headphone input */
     const char* hrtf_cache_dir;         /* disk policy directory */
     uint32_t hrtf_cache_policy;         /* joc_hrtf_cache_policy */
-    uint32_t reserved0;
+    uint32_t rosella_filterbank;        /* joc_rosella_filterbank; 0 = PUBLIC */
     double hrtf_radius_m;               /* SOFA measurement-radius shell */
 } joc_task_config;
 

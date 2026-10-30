@@ -127,6 +127,9 @@ Status Stream::create(const Config& config) {
             }
             render_options.object_delay_samples = config_.object_delay_samples;
             render_options.tail_seconds = config_.tail_seconds;
+            render_options.bank = config_.rosella_filterbank == JOC_ROSELLA_FILTERBANK_CAPTURED
+                                      ? hrtf::RosellaBankKind::Captured
+                                      : hrtf::RosellaBankKind::Public;
             if (status.ok()) {
                 status = rosella_.open(model, render_options);
             }

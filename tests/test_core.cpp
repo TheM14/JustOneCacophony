@@ -927,6 +927,36 @@ std::vector<float> drive_objects16_stream(const std::vector<float>& block, std::
     return rendered;
 }
 
+void test_rosella_filterbank_config() {
+    // validate() reports a selector it cannot honour instead of ignoring it: the
+    // captured bank needs the Rosella model, and any other value is out of range.
+    const auto reported = [](std::uint32_t selector, const char* personalized) {
+        joc_task_config config{};
+        config.struct_size = sizeof(config);
+        config.struct_version = JOC_TASK_CONFIG_VERSION;
+        config.input_path = "input.eac3";
+        config.output_path = "output.wav";
+        config.operation = JOC_OP_BINAURAL;
+        config.binaural_mode = JOC_BINAURAL_MID;
+        config.personalized_headphone_path = personalized;
+        config.hrtf_path = personalized == nullptr ? "cache.jochrtf" : nullptr;
+        config.rosella_filterbank = selector;
+        std::vector<joc_validation_issue> issues;
+        std::uint32_t errors = 0;
+        joc::task::validate(config, &issues, &errors);
+        for (const joc_validation_issue& issue : issues) {
+            if (std::string(issue.field) == "rosella_filterbank") {
+                return true;
+            }
+        }
+        return false;
+    };
+    CHECK(!reported(JOC_ROSELLA_FILTERBANK_PUBLIC, "model.personalized_headphone"));
+    CHECK(!reported(JOC_ROSELLA_FILTERBANK_CAPTURED, "model.personalized_headphone"));
+    CHECK(reported(3u, "model.personalized_headphone"));
+    CHECK(reported(JOC_ROSELLA_FILTERBANK_CAPTURED, nullptr));
+}
+
 // A push renders every frame it makes ready, so the stream bounds how far ahead of
 // the caller it renders.  A batch pushed at once must therefore leave a bounded
 // backlog, and it must render the same samples as pushing one frame at a time.
@@ -1126,6 +1156,7 @@ int main() {
     test_sofa_reader_errors();
     test_hrtf_cache_policy();
     test_rosella_model_errors();
+    test_rosella_filterbank_config();
     test_stream_render_ahead();
     test_clipgain_first_frame_uses_its_own_gain();
     test_clipgain_change_applies_to_the_current_frame();

@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "foundation/status.h"
+#include "hrtf/rosella_bank.h"
 #include "hrtf/rosella_model.h"
 #include "oamd/oamd_parser.h"
 #include "timeline/position_timeline.h"
@@ -21,6 +22,9 @@ enum class RosellaProfile : std::int32_t { Near = 1, Far = 2, Mid = 3 };
 
 struct RosellaRenderOptions {
     RosellaProfile profile = RosellaProfile::Mid;
+    // The analysis and synthesis banks both come from this one choice, so the
+    // latency skip, the flush capacity and the state histories stay consistent.
+    RosellaBankKind bank = RosellaBankKind::Public;
     std::int64_t object_delay_samples = 1473;
     double tail_seconds = 5.0;
     double output_gain = 1.0;

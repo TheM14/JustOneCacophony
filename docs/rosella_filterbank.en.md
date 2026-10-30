@@ -1,7 +1,28 @@
 # Rosella filterbank
 
-The Rosella renderer uses a separate 64-band QMF and 77-band hybrid filterbank.
-The SOFA compiler and renderer continue to use `PublicFilterbank`.
+The Rosella renderer runs one of two 64-band QMF / 77-band hybrid filterbanks.
+The shared public bank is the default; the captured Rosella bank reproduces the
+reference headphone renderer. The SOFA compiler and renderer always use
+`PublicFilterbank`.
+
+## Which bank runs
+
+`--rosella-filterbank 1|2` selects the bank for the `.personalized_headphone`
+path; `joc_task_config::rosella_filterbank` and
+`joc_stream_config::rosella_filterbank` carry the same value, with `0` meaning
+the default.
+
+| Value | Bank | Low-band hybrid | High-band delay | Latency |
+| --- | --- | --- | --- | ---: |
+| `1` (default) | `PublicFilterbank` | 13 taps | 6 slots | 961 samples |
+| `2` | `RosellaFilterbank` | 11 taps | 3 slots | 448 samples |
+
+Both banks are driven through the same four stateful half-steps, so the choice
+switches the coefficients, the high-band delay, the history layout, the startup
+skip and the flush capacity together; the analysis and synthesis banks never
+share state. Any other value is rejected, and the option is an error when the
+binaural input is not a Rosella model: the SOFA and `.jochrtf` paths do not use
+it and must not silently ignore it.
 
 ## Why the banks differ
 
@@ -33,9 +54,9 @@ each channel. QMF data uses `[slot, channel, 64]` order. Hybrid data uses
 and hybrid coefficients as hexadecimal literals. Processing uses double
 precision. The tables do not contain the personalized HRTF or room tuning.
 
-The runtime removes 448 startup samples and uses the same latency when it
-calculates flush capacity. Its rendered buffer is resized to the current block
-length, including a short final block.
+The runtime removes the selected bank's startup samples and uses the same
+latency when it calculates flush capacity. Its rendered buffer is resized to the
+current block length, including a short final block.
 
 ## Validation
 
@@ -49,8 +70,11 @@ ctest --test-dir build --output-on-failure
 
 `rosella_filterbank` checks deterministic analysis, hybrid, folding, and synthesis
 vectors from an independent NumPy implementation. It also checks empty and
-unequal chunks, reset, channel isolation, and impulse latency. The tests need no
-reference binary, audio fixture, or personalized headphone file.
+unequal chunks, reset, channel isolation, and impulse latency. A second group
+checks the bank selector: each kind reproduces exactly what its own class
+computes, the two produce different hybrid data, chunking and reset are
+invariant for both, and each reports its own latency (961 or 448 samples). The
+tests need no reference binary, audio fixture, or personalized headphone file.
 
 Before integration with the upstream bed-layout changes, four captured-input
 tests gave the following room PCM residuals. No gain fitting was used for this
