@@ -57,12 +57,8 @@ const char* bed_channel_short_name(BedChannel channel);
 const char* bed_channel_label(BedChannel channel);
 
 // 固定方位：ADM 笛卡尔坐标（x 右、y 前、z 上）与渲染器使用的 Q15 方位。
+// 位置只由声道标签决定（ETSI TS 103 420 Table B.10），与目标输出布局无关。
 bool bed_channel_adm_position(BedChannel channel, double xyz[3]);
 bool bed_channel_q15(BedChannel channel, std::uint16_t q15[3]);
-
-// 目标布局里同名扬声器的 Q15 方位：bed 声道直连到该扬声器，而不是参与声像。
-// 目标布局没有这个声道时返回 false。
-bool layout_bed_anchor(std::uint32_t out_ch_config, BedChannel channel,
-                       std::uint16_t q15[3]);
 
 }  // namespace joc::joc

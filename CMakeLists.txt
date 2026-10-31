@@ -92,7 +92,9 @@ set(JOC_REUSED_SOURCES
 set(JOC_INTERNAL_SOURCES
     src/adm/adm_metadata.cpp
     src/adm/adm_tracks.cpp
+    src/binaural/binaural_reference.cpp
     src/binaural/binaural_runtime.cpp
+    src/binaural/sofa_reference_runtime.cpp
     src/binaural/sofa_binaural_renderer.cpp
     src/eac3_transport/eac3_reader.cpp
     src/emdf/emdf_parser.cpp
@@ -108,10 +110,14 @@ set(JOC_INTERNAL_SOURCES
     src/hrtf/rosella_filterbank.cpp
     src/hrtf/rosella_model.cpp
     src/hrtf/rosella_renderer.cpp
+    src/hrtf/rosella_reference.cpp
     src/hrtf/kernel_tables.cpp
+    src/hrtf/full_hrir_field.cpp
+    src/hrtf/partitioned_convolution.cpp
     src/hrtf/sofa.cpp
     src/hrtf/sofa_cache.cpp
     src/hrtf/sofa_field.cpp
+    src/hrtf/spherical_mesh.cpp
     src/io/adm_writer.cpp
     src/io/hdf5.cpp
     src/io/inflate.cpp

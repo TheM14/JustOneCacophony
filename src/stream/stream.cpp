@@ -221,8 +221,8 @@ void Stream::apply_bed_positions(const FrameMetadata& entry) {
             continue;
         }
         std::uint16_t q15[3] = {0, 0, 0};
-        if (!::joc::joc::layout_bed_anchor(speaker_.layout.out_ch_config, channel, q15) &&
-            !::joc::joc::bed_channel_q15(channel, q15)) {
+        // bed 声道是固定位置的源：方位由声道标签决定，与目标布局无关。
+        if (!::joc::joc::bed_channel_q15(channel, q15)) {
             continue;
         }
         speaker_.bed_override[slot] = true;

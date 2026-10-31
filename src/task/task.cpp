@@ -29,6 +29,7 @@
 #include "adm/adm_metadata.h"
 #include "adm/adm_tracks.h"
 #include "binaural/binaural_runtime.h"
+#include "binaural/sofa_reference_runtime.h"
 #include "eac3_transport/eac3_reader.h"
 #include "emdf/emdf_parser.h"
 #include "foundation/mini_json.h"
@@ -95,6 +96,9 @@ struct Settings {
     std::string hrtf_path;
     std::string kernels_path;
     std::string hrtf_sofa_path;
+    std::string reference_config_path;
+    std::uint32_t sofa_interpolation = JOC_SOFA_INTERPOLATION_LOGMAG_PHASE;
+    bool hrtf_compile = false;
     std::string personalized_headphone_path;
     std::string hrtf_cache_dir;
     std::uint32_t hrtf_cache_policy = JOC_HRTF_CACHE_MEMORY;
@@ -145,6 +149,11 @@ Settings normalise(const joc_task_config& raw) {
     if (raw.speaker_layout_name != nullptr) { cfg.layout = raw.speaker_layout_name; }
     if (raw.hrtf_path != nullptr) { cfg.hrtf_path = raw.hrtf_path; }
     if (raw.hrtf_sofa_path != nullptr) { cfg.hrtf_sofa_path = raw.hrtf_sofa_path; }
+    if (raw.reference_config_path != nullptr) {
+        cfg.reference_config_path = raw.reference_config_path;
+    }
+    cfg.sofa_interpolation = raw.sofa_interpolation;
+    cfg.hrtf_compile = raw.hrtf_compile != 0u;
     if (raw.personalized_headphone_path != nullptr) {
         cfg.personalized_headphone_path = raw.personalized_headphone_path;
     }
@@ -1099,9 +1108,9 @@ Status validate(const joc_task_config& raw, std::vector<joc_validation_issue>* i
                 fail(JOC_ERR_INVALID_CONFIG, "hrtf_cache_dir",
                      "the disk cache policy needs a cache directory");
             }
-            if (!std::isfinite(cfg.hrtf_radius_m) || cfg.hrtf_radius_m <= 0.0) {
+            if (!std::isfinite(cfg.hrtf_radius_m) || cfg.hrtf_radius_m < 0.0) {
                 fail(JOC_ERR_INVALID_CONFIG, "hrtf_radius_m",
-                     "hrtf_radius_m must be positive and finite");
+                     "hrtf_radius_m must be finite and not negative");
             }
         }
         // The filterbank tables are compiled in; a path is only a verification override.
@@ -1355,6 +1364,8 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
     }
 
     ::joc::binaural::SofaBinauralRuntime binaural;
+    ::joc::binaural::SofaReferenceRuntime binaural_reference;
+    bool use_reference = false;
     ::joc::hrtf::RosellaRuntime rosella;
     const bool binaural_enabled = cfg.operation == JOC_OP_BINAURAL;
     const bool rosella_enabled = !cfg.personalized_headphone_path.empty();
@@ -1398,50 +1409,85 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
         ::joc::hrtf::Kernels kernels;
         ::joc::binaural::Profile profile = ::joc::binaural::Profile::Mid;
         Status status = Status::success();
-        if (!cfg.hrtf_sofa_path.empty()) {
-            // The .jochrtf is an internal cache: the SOFA is the user-facing input.
-            ::joc::hrtf::SofaFieldRequest request;
-            request.sofa_path = cfg.hrtf_sofa_path;
-            request.options.shell_radius_m = cfg.hrtf_radius_m;
-            request.cache_dir = cfg.hrtf_cache_dir;
-            switch (cfg.hrtf_cache_policy) {
-                case JOC_HRTF_CACHE_NONE: request.policy = ::joc::hrtf::CachePolicy::None; break;
-                case JOC_HRTF_CACHE_DISK: request.policy = ::joc::hrtf::CachePolicy::Disk; break;
-                default: request.policy = ::joc::hrtf::CachePolicy::Memory; break;
-            }
-            std::string cache_path;
-            status = ::joc::hrtf::load_or_compile_sofa_field(request, &field, &cache_path);
+        if (!cfg.hrtf_sofa_path.empty() && !cfg.hrtf_compile) {
+            // The SOFA keeps its full HRIRs: the direct path renders through the
+            // reference environment, and a .jochrtf stays an explicit input below.
+            ::joc::binaural::SofaReferenceOptions options;
+            options.mode_specified = cfg.binaural_mode != JOC_BINAURAL_MID;
+            options.mode_index = cfg.binaural_mode == JOC_BINAURAL_NEAR
+                                     ? ::joc::binaural::kProfileNear
+                                     : (cfg.binaural_mode == JOC_BINAURAL_FAR
+                                            ? ::joc::binaural::kProfileFar
+                                            : ::joc::binaural::kProfileMid);
+            options.reference_config = cfg.reference_config_path;
+            options.interpolation =
+                cfg.sofa_interpolation == JOC_SOFA_INTERPOLATION_MCA_ZERO
+                    ? ::joc::hrtf::HrirInterpolation::kMcaZero
+                    : ::joc::hrtf::HrirInterpolation::kLogMagnitudePhase;
+            options.has_shell_radius = cfg.hrtf_radius_m > 0.0;
+            options.shell_radius_m = cfg.hrtf_radius_m;
+            options.object_delay_samples = cfg.object_delay_samples;
+            options.tail_seconds = cfg.tail_seconds;
+            status = binaural_reference.open(cfg.hrtf_sofa_path, options);
+            use_reference = status.ok();
             if (status.ok()) {
                 bus.emit(JOC_EV_HRTF_LOADED, JOC_STAGE_RENDER, JOC_LOG_INFO,
-                         "SOFA HRTF compiled: " + field.source_sha256.substr(0, 16) +
-                             (cache_path.empty() ? std::string() : " -> " + cache_path));
+                         fmt("SOFA full-HRIR field: %zu bins, %zu directions, %zu triangles, "
+                             "latency %d samples",
+                             binaural_reference.field().fft_size(),
+                             binaural_reference.field().direction_count(),
+                             binaural_reference.field().triangle_count(),
+                             binaural_reference.latency_samples()));
             }
         } else {
+            if (!cfg.hrtf_sofa_path.empty()) {
+                // Explicit legacy compile: the SOFA becomes a .jochrtf cache.
+                ::joc::hrtf::SofaFieldRequest request;
+                request.sofa_path = cfg.hrtf_sofa_path;
+                request.options.shell_radius_m =
+                    cfg.hrtf_radius_m > 0.0 ? cfg.hrtf_radius_m : 1.0;
+                request.cache_dir = cfg.hrtf_cache_dir;
+                switch (cfg.hrtf_cache_policy) {
+                    case JOC_HRTF_CACHE_NONE: request.policy = ::joc::hrtf::CachePolicy::None; break;
+                    case JOC_HRTF_CACHE_DISK: request.policy = ::joc::hrtf::CachePolicy::Disk; break;
+                    default: request.policy = ::joc::hrtf::CachePolicy::Memory; break;
+                }
+                std::string cache_path;
+                status = ::joc::hrtf::load_or_compile_sofa_field(request, &field, &cache_path);
+                if (status.ok()) {
+                    bus.emit(JOC_EV_HRTF_LOADED, JOC_STAGE_RENDER, JOC_LOG_INFO,
+                             "SOFA HRTF compiled: " + field.source_sha256.substr(0, 16) +
+                                 (cache_path.empty() ? std::string() : " -> " + cache_path));
+                }
+            } else {
             status = ::joc::hrtf::load_jochrtf(cfg.hrtf_path, &field);
             if (status.ok()) {
                 bus.emit(JOC_EV_HRTF_LOADED, JOC_STAGE_RENDER, JOC_LOG_INFO,
                          "compiled HRTF: " + field.source_sha256.substr(0, 16));
             }
-        }
-        if (status.ok()) {
-            status = cfg.kernels_path.empty()
-                         ? (kernels = ::joc::hrtf::builtin_kernels(), Status::success())
-                         : ::joc::hrtf::load_kernels(cfg.kernels_path, &kernels);
-        }
-        if (status.ok() && cfg.binaural_mode == JOC_BINAURAL_NEAR) {
-            profile = ::joc::binaural::Profile::Near;
-        } else if (status.ok() && cfg.binaural_mode == JOC_BINAURAL_FAR) {
-            profile = ::joc::binaural::Profile::Far;
-        }
-        if (status.ok()) {
-            status = binaural.open(field, kernels, profile);
+            }
+            if (status.ok()) {
+                status = cfg.kernels_path.empty()
+                             ? (kernels = ::joc::hrtf::builtin_kernels(), Status::success())
+                             : ::joc::hrtf::load_kernels(cfg.kernels_path, &kernels);
+            }
+            if (status.ok() && cfg.binaural_mode == JOC_BINAURAL_NEAR) {
+                profile = ::joc::binaural::Profile::Near;
+            } else if (status.ok() && cfg.binaural_mode == JOC_BINAURAL_FAR) {
+                profile = ::joc::binaural::Profile::Far;
+            }
+            if (status.ok()) {
+                status = binaural.open(field, kernels, profile);
+            }
         }
         if (!status.ok()) {
             return finalize_with_error(status.code(), "render",
                                        "binaural setup failed: " + status.message());
         }
         bus.emit(JOC_EV_RENDERER_INITIALIZED, JOC_STAGE_RENDER, JOC_LOG_INFO,
-                 "binaural runtime ready (the first 961 samples are the kernel latency)");
+                 use_reference
+                     ? "binaural runtime ready (full-HRIR SOFA reference path)"
+                     : "binaural runtime ready (the first 961 samples are the kernel latency)");
         }
     }
 
@@ -1798,8 +1844,13 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                                                 static_cast<int>(slot) + 1, xyz[0], xyz[1],
                                                 xyz[2]);
                                             if (binaural_enabled) {
-                                                binaural.set_fixed_position(
-                                                    static_cast<int>(slot) + 1, xyz);
+                                                if (use_reference) {
+                                                    binaural_reference.set_fixed_position(
+                                                        static_cast<int>(slot) + 1, xyz);
+                                                } else {
+                                                    binaural.set_fixed_position(
+                                                        static_cast<int>(slot) + 1, xyz);
+                                                }
                                             }
                                             if (rosella_enabled) {
                                                 rosella.set_fixed_position(
@@ -1809,11 +1860,10 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                                         if (!speaker_enabled) {
                                             continue;
                                         }
-                                        // 目标布局有同名扬声器时直连该声道，否则按标准方位声像。
+                                        // bed 声道是固定位置的源：方位由声道标签决定，
+                                        // 与目标布局无关，按对象路径声像。
                                         std::uint16_t q15[3] = {0, 0, 0};
-                                        if (!::joc::joc::layout_bed_anchor(
-                                                speaker.layout.out_ch_config, channel, q15) &&
-                                            !::joc::joc::bed_channel_q15(channel, q15)) {
+                                        if (!::joc::joc::bed_channel_q15(channel, q15)) {
                                             continue;
                                         }
                                         speaker.bed_override[slot] = true;
@@ -1977,19 +2027,26 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                     failed = true;
                 }
             } else {
-                const Status submitted =
-                    rosella_enabled
-                        ? rosella.submit_frame(frame.objects16.data(),
-                                               frame.has_update ? &frame.update : nullptr,
-                                               static_cast<std::int64_t>(frame.index),
-                                               frame.outer_offset,
-                                               static_cast<std::int64_t>(cfg.object_delay_samples))
-                        : binaural.submit_frame(frame.objects16.data(),
-                                                frame.has_update ? &frame.update : nullptr,
-                                                static_cast<std::int64_t>(frame.index),
-                                                frame.outer_offset,
-                                                static_cast<std::int64_t>(
-                                                    cfg.object_delay_samples));
+                Status submitted = Status::success();
+                if (rosella_enabled) {
+                    submitted = rosella.submit_frame(
+                        frame.objects16.data(),
+                        frame.has_update ? &frame.update : nullptr,
+                        static_cast<std::int64_t>(frame.index), frame.outer_offset,
+                        static_cast<std::int64_t>(cfg.object_delay_samples));
+                } else if (use_reference) {
+                    submitted = binaural_reference.submit_frame(
+                        frame.objects16.data(),
+                        frame.has_update ? &frame.update : nullptr,
+                        static_cast<std::int64_t>(frame.index), frame.outer_offset,
+                        static_cast<std::int64_t>(cfg.object_delay_samples));
+                } else {
+                    submitted = binaural.submit_frame(
+                        frame.objects16.data(),
+                        frame.has_update ? &frame.update : nullptr,
+                        static_cast<std::int64_t>(frame.index), frame.outer_offset,
+                        static_cast<std::int64_t>(cfg.object_delay_samples));
+                }
                 if (!submitted.ok()) {
                     failures.record(frame.index, StageRank::kDsp, submitted.code(), "render",
                                     "frame " + std::to_string(frame.index) + ": " +
@@ -2031,6 +2088,8 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
             } else {
                 if (rosella_enabled) {
                     rosella.take_output(&pending.dsp);
+                } else if (use_reference) {
+                    binaural_reference.take_output(&pending.dsp);
                 } else {
                     binaural.take_output(&pending.dsp);
                 }
@@ -2069,13 +2128,18 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                          static_cast<double>(written_samples) / 48000.0);
             bus.emit(JOC_EV_OAMD_STATS, JOC_STAGE_METADATA, JOC_LOG_DEBUG,
                      fmt("oamd payloads=%llu transitions=%llu",
-                         static_cast<unsigned long long>(binaural_enabled
-                                                             ? binaural.timeline().payload_count()
-                                                             : 0ull),
-                         static_cast<unsigned long long>(binaural_enabled
-                                                             ? binaural.timeline()
-                                                                   .transition_count()
-                                                             : 0ull)));
+                         static_cast<unsigned long long>(
+                             !binaural_enabled
+                                 ? 0ull
+                                 : (use_reference
+                                        ? binaural_reference.timeline().payload_count()
+                                        : binaural.timeline().payload_count())),
+                         static_cast<unsigned long long>(
+                             !binaural_enabled
+                                 ? 0ull
+                                 : (use_reference
+                                        ? binaural_reference.timeline().transition_count()
+                                        : binaural.timeline().transition_count()))));
         }
     }
 
@@ -2181,10 +2245,17 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
         const std::uint64_t program_samples = written_samples;
         if (binaural_enabled) {
             std::vector<double> tail;
-            const Status drained_tail =
-                rosella_enabled
-                    ? rosella.finish(rosella.finish_capacity(cfg.tail_seconds), &tail)
-                    : binaural.finish(binaural.finish_capacity(cfg.tail_seconds), &tail);
+            Status drained_tail = Status::success();
+            if (rosella_enabled) {
+                drained_tail =
+                    rosella.finish(rosella.finish_capacity(cfg.tail_seconds), &tail);
+            } else if (use_reference) {
+                drained_tail = binaural_reference.finish(
+                    binaural_reference.finish_capacity(cfg.tail_seconds), &tail);
+            } else {
+                drained_tail =
+                    binaural.finish(binaural.finish_capacity(cfg.tail_seconds), &tail);
+            }
             if (!drained_tail.ok()) {
                 return finalize_with_error(drained_tail.code(), "output",
                                            drained_tail.message());
@@ -2291,9 +2362,16 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
         out->output_over_unity_values = over_unity;
         out->output_file_bytes = file_bytes;
         std::snprintf(out->output_sha256, sizeof(out->output_sha256), "%s", digest.c_str());
-        out->oamd_payloads = binaural_enabled ? binaural.timeline().payload_count() : out->oamd_payloads;
+        out->oamd_payloads =
+            !binaural_enabled
+                ? out->oamd_payloads
+                : (use_reference ? binaural_reference.timeline().payload_count()
+                                 : binaural.timeline().payload_count());
         out->oamd_transitions =
-            binaural_enabled ? binaural.timeline().transition_count() : out->oamd_transitions;
+            !binaural_enabled
+                ? out->oamd_transitions
+                : (use_reference ? binaural_reference.timeline().transition_count()
+                                 : binaural.timeline().transition_count());
         out->t_decode_bed = t_decode;
         out->t_render = t_render;
         out->t_write = write_seconds;

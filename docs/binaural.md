@@ -4,25 +4,60 @@
 
 JustOneCacophony 的双耳后端支持三种 HRTF 来源：`SimpleFreeFieldHRIR` SOFA、
 杜比官方软件个性化扫描导出的 Rosella `.personalized_headphone`（JSON 解析由本项目
-自行实现，不调用杜比软件），以及从 SOFA 编译出的 `.jochrtf` 缓存。SOFA 在模型加载
-时编译成内存方向场；`.jochrtf` 只是可删除、可重建的 JOC compiled HRTF cache，
-不是交换格式，也不是使用 SOFA 的前置步骤。
+自行实现，不调用杜比软件），以及 `.jochrtf`（JOC compiled HRTF cache）。
+
+SOFA 默认保留完整 HRIR，按“参考环境”直连渲染，不再编译成方向场：
 
 ```text
-SOFA FIR
-  -> CanonicalHrtf
-  -> 48 kHz / 单 radius shell / delay-phase policy
-  -> 64-QMF / 77-hybrid projection
-  -> 五阶 ACN/N3D 实球谐场
-  -> 逐对象 direct + early reflections
-  -> shared unitary-FDN late room
-  -> stereo float64
+SOFA 完整 HRIR [M,2,N]
+  -> CanonicalHrtf（48 kHz / 单 radius shell）
+  -> 延迟对齐的复数频谱（200-1500 Hz 相位拟合，含 Data.Delay）
+  -> 球面三角形重心插值（lf_logmag_phase 或 lf_mca_zero）
+  -> 刚性球径向修正（按参考环境距离）
+  -> 逐对象 partitioned convolution（block 128，FFT = max(2048, ≥2×support)）
+  -> 参考环境的递归房间模型
+  -> stereo float64（统一扣除 latency）
 ```
+
+`.jochrtf` 仍是显式输入（`--compiled-hrtf-cache`），走球谐方向场渲染；显式给出
+`--hrtf-cache-policy` / `--hrtf-cache-dir` 会回到旧的“SOFA → `.jochrtf`”编译路径。
+
+## 参考环境
+
+SOFA 直连渲染需要一个参考环境配置（`--reference-config`，默认
+`<exe>/local/binaural_reference.json`）。配置给出 Rosella `.personalized_headphone`
+模型的路径与 SHA-256、`profile_index`（2=far、3=mid，作为 level 校准锚点）、
+`room_impulse_slots`（默认 4096）与 `level_calibration_directions`（默认 128）。
+
+渲染时每个 SOFA 方向先经该模型的 distance profile 映射成参考环境中的位置：
+
+```text
+ADM position -> int16 metadata grid -> distance profile
+             -> direction（单位向量）+ 距离 scale
+             -> direct gain a = 1/sqrt(1+coupling·(h0·d)^2)（near 恒为 1）
+             -> room send = h0·d·a（near 恒为 0）
+             -> 近中心正则化：ear distance 取 max(d, minimum_distance)
+```
+
+`near|mid|far` 选择该模型的三个 distance profile 之一（`--binaural-mode`），level 校准
+始终用配置里的 `profile_index` 作为锚点，因此三种模式共享同一个 level。
+
+指向同一声道的直达声是延迟对齐后的完整 HRIR 插值结果，房间 send 只进参考环境的
+房间模型（LFE 声道不进房间）。两者的 latency 由 field（FFT/2 与 recording origin）
+和 bank（961）中的较大者决定，输出前统一扣除。
 
 ## 输入接口
 
-双耳后端消费一个已编译的方向场（JOC compiled HRTF cache，`.jochrtf`）与共享滤波器组表；
-两者都是只读输入，本库不做任何测量数据格式的解析或转换：
+SOFA 输入直接按完整 HRIR 渲染，只需要 SOFA 与参考环境配置：
+
+```powershell
+joc_cli input.m4a --binaural `
+    --sofa-hrtf HRTF\subject.sofa `
+    --reference-config local\binaural_reference.json `
+    --binaural-mode mid --sofa-interpolation lf_logmag_phase
+```
+
+`.jochrtf` 输入（以及 `.personalized_headphone`）需要共享滤波器组表，两者都是只读输入：
 
 ```powershell
 joc_cli input.m4a --binaural `
@@ -31,8 +66,13 @@ joc_cli input.m4a --binaural `
     --binaural-mode mid --binaural-tail-seconds 5.0
 ```
 
+多球壳 SOFA 必须用 `--hrtf-radius-m` 指定球壳（单球壳自动选择）；`--hrtf-radius-m`
+对已编译的 `.jochrtf` 不再生效。`--sofa-interpolation` 选择完整 HRIR 的局部插值：
+`lf_logmag_phase`（默认，对数幅度 + 相位）或 `lf_mca_zero`（听觉带幅度修正）。
+
 库接口使用同一组字段：文件任务用 `joc_task_config`，流式用 `joc_stream_config`，
-其中 `hrtf_path`、`kernels_path`、`binaural_mode`、`binaural_tail_seconds` 决定双耳通路。
+其中 `hrtf_sofa_path`（或 `hrtf_path`）、`reference_config_path`、`sofa_interpolation`、
+`hrtf_compile`、`kernels_path`、`binaural_mode`、`binaural_tail_seconds` 决定双耳通路。
 
 `.jochrtf` 是**输入**而不是本库的产物：从 SOFA 或测量数据编译该缓存属于工具链的职责，
 与本仓库解耦。缓存加载时会校验成员集合、dtype 与形状、C 连续性、CRC-32 以及按成员重算的
@@ -95,6 +135,9 @@ convention adapter，不能只通过 reshape 进入核心 importer。
    phase 直接进入五阶场。
 
 任何路径都不能再叠加第二套 ear delay 或 phase-group delay。
+
+SOFA 直连路径不走这套编译期语义：它保留完整 IR，用 200-1500 Hz 相位拟合估计到达时间，
+`Data.Delay` 与拟合出的延迟各应用一次（先去掉 `Data.Delay`，再用插值后的延迟复原）。
 
 ## 公开 filterbank 与方向场
 

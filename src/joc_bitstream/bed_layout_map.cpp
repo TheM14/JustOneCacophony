@@ -3,8 +3,6 @@
 
 #include <cstring>
 
-#include "speaker/speaker_layouts.h"
-
 namespace joc::joc {
 namespace {
 
@@ -31,16 +29,16 @@ constexpr StandardBit kStandardBits[10] = {
     {BedChannel::kLfe2, BedChannel::kCount},
 };
 
-// Table 13 的 17 bit 非标准掩码（LSB 在前）。
+// Table 13 的 17 bit 非标准掩码，按 channel order 排列：RC_L 是最先的声道
+// （array position 16），落在 LSB；RC_LFE2 最后（array position 0）。
 constexpr BedChannel kNonStandardBits[17] = {
-    BedChannel::kLfe2, BedChannel::kRightWide, BedChannel::kLeftWide,
-    BedChannel::kTopBackRight, BedChannel::kTopBackLeft,
-    BedChannel::kTopSideRight, BedChannel::kTopSideLeft,
-    BedChannel::kTopFrontRight, BedChannel::kTopFrontLeft,
-    BedChannel::kRightRearSurround, BedChannel::kLeftRearSurround,
-    BedChannel::kRightSurround, BedChannel::kLeftSurround,
-    BedChannel::kLfe, BedChannel::kCenter, BedChannel::kRight,
-    BedChannel::kLeft,
+    BedChannel::kLeft, BedChannel::kRight, BedChannel::kCenter,
+    BedChannel::kLfe, BedChannel::kLeftSurround, BedChannel::kRightSurround,
+    BedChannel::kLeftRearSurround, BedChannel::kRightRearSurround,
+    BedChannel::kTopFrontLeft, BedChannel::kTopFrontRight,
+    BedChannel::kTopSideLeft, BedChannel::kTopSideRight,
+    BedChannel::kTopBackLeft, BedChannel::kTopBackRight,
+    BedChannel::kLeftWide, BedChannel::kRightWide, BedChannel::kLfe2,
 };
 
 struct ChannelSpec {
@@ -50,24 +48,27 @@ struct ChannelSpec {
     double xyz[3];
 };
 
+// 固定方位：ETSI TS 103 420 V1.2.1 clause B.2.1.4 Table B.10 的 ADM 笛卡尔坐标
+// （x 右、y 前、z 上）。bed 声道的位置只由声道标签决定，与目标输出布局无关。
+// Table B.10 把 Lw/Rw 的 Y 记作 0,677419，即 ADM 62 级网格上的 42/62 = 21/31。
 constexpr ChannelSpec kChannels[] = {
     {BedChannel::kLeft, "L", "RC_L", {-1.0, 1.0, 0.0}},
     {BedChannel::kRight, "R", "RC_R", {1.0, 1.0, 0.0}},
     {BedChannel::kCenter, "C", "RC_C", {0.0, 1.0, 0.0}},
-    {BedChannel::kLfe, "LFE", "RC_LFE", {0.0, 0.0, 0.0}},
+    {BedChannel::kLfe, "LFE", "RC_LFE", {-1.0, 1.0, -1.0}},
     {BedChannel::kLeftSurround, "Ls", "RC_LS", {-1.0, 0.0, 0.0}},
     {BedChannel::kRightSurround, "Rs", "RC_RS", {1.0, 0.0, 0.0}},
     {BedChannel::kLeftRearSurround, "Lrs", "RC_LB", {-1.0, -1.0, 0.0}},
     {BedChannel::kRightRearSurround, "Rrs", "RC_RB", {1.0, -1.0, 0.0}},
-    {BedChannel::kTopFrontLeft, "Ltf", "RC_TFL", {-0.5, 0.5, 1.0}},
-    {BedChannel::kTopFrontRight, "Rtf", "RC_TFR", {0.5, 0.5, 1.0}},
+    {BedChannel::kTopFrontLeft, "Ltf", "RC_TFL", {-1.0, 1.0, 1.0}},
+    {BedChannel::kTopFrontRight, "Rtf", "RC_TFR", {1.0, 1.0, 1.0}},
     {BedChannel::kTopSideLeft, "Ltm", "RC_TSL", {-1.0, 0.0, 1.0}},
     {BedChannel::kTopSideRight, "Rtm", "RC_TSR", {1.0, 0.0, 1.0}},
-    {BedChannel::kTopBackLeft, "Ltr", "RC_TBL", {-0.5, -0.5, 1.0}},
-    {BedChannel::kTopBackRight, "Rtr", "RC_TBR", {0.5, -0.5, 1.0}},
-    {BedChannel::kLeftWide, "Lw", "RC_LW", {-1.0, 0.5, 0.0}},
-    {BedChannel::kRightWide, "Rw", "RC_RW", {1.0, 0.5, 0.0}},
-    {BedChannel::kLfe2, "LFE2", "RC_LFE2", {0.0, 0.0, 0.0}},
+    {BedChannel::kTopBackLeft, "Ltr", "RC_TBL", {-1.0, -1.0, 1.0}},
+    {BedChannel::kTopBackRight, "Rtr", "RC_TBR", {1.0, -1.0, 1.0}},
+    {BedChannel::kLeftWide, "Lw", "RC_LW", {-1.0, 21.0 / 31.0, 0.0}},
+    {BedChannel::kRightWide, "Rw", "RC_RW", {1.0, 21.0 / 31.0, 0.0}},
+    {BedChannel::kLfe2, "LFE2", "RC_LFE2", {1.0, 1.0, -1.0}},
 };
 
 const ChannelSpec* spec_of(BedChannel channel) {
@@ -168,38 +169,6 @@ const char* layout_name_for(std::uint32_t mask) {
     return "";
 }
 
-// 每个扬声器布局的标准声道名（按该布局的标准声道顺序排列）。
-struct LayoutChannels {
-    std::uint32_t out_ch_config;
-    std::uint32_t count;
-    const char* names[16];
-};
-
-constexpr LayoutChannels kLayoutChannels[] = {
-    {0, 2, {"L", "R"}},
-    {3, 4, {"L", "R", "C", "LFE"}},
-    {255, 4, {"L", "R", "Lrs", "Rrs"}},
-    {7, 6, {"L", "R", "C", "LFE", "Ls", "Rs"}},
-    {11, 8, {"L", "R", "C", "LFE", "Ls", "Rs", "Lrs", "Rrs"}},
-    {13, 8, {"L", "R", "C", "LFE", "Ls", "Rs", "Ltm", "Rtm"}},
-    {14, 10, {"L", "R", "C", "LFE", "Ls", "Rs", "Ltf", "Rtf", "Ltr", "Rtr"}},
-    {15, 10, {"L", "R", "C", "LFE", "Ls", "Rs", "Lrs", "Rrs", "Ltm", "Rtm"}},
-    {16, 12, {"L", "R", "C", "LFE", "Ls", "Rs", "Lrs", "Rrs", "Ltf", "Rtf", "Ltr", "Rtr"}},
-    {19, 14, {"L", "R", "C", "LFE", "Ls", "Rs", "Lrs", "Rrs", "Lw", "Rw",
-              "Ltf", "Rtf", "Ltr", "Rtr"}},
-    {20, 16, {"L", "R", "C", "LFE", "Ls", "Rs", "Lrs", "Rrs", "Lw", "Rw",
-              "Ltf", "Rtf", "Ltm", "Rtm", "Ltr", "Rtr"}},
-};
-
-const ejoc::speaker_tables::LayoutGeometry* geometry_for(std::uint32_t out_ch_config) {
-    for (const ejoc::speaker_tables::LayoutGeometry& layout : ejoc::speaker_tables::kLayouts) {
-        if (layout.out_ch_config == out_ch_config) {
-            return &layout;
-        }
-    }
-    return nullptr;
-}
-
 }  // namespace
 
 BedLayout resolve_bed_layout(const std::vector<oamd::BedAssignment>& assignments,
@@ -282,50 +251,6 @@ bool bed_channel_q15(BedChannel channel, std::uint16_t q15[3]) {
     q15[1] = static_cast<std::uint16_t>(q2 < 0.0 ? 0.0 : (q2 > 32767.0 ? 32767.0 : q2));
     q15[2] = static_cast<std::uint16_t>(q3 < 0.0 ? 0.0 : (q3 > 32767.0 ? 32767.0 : q3));
     return true;
-}
-
-bool layout_bed_anchor(std::uint32_t out_ch_config, BedChannel channel,
-                       std::uint16_t q15[3]) {
-    if (q15 == nullptr) {
-        return false;
-    }
-    const char* name = bed_channel_short_name(channel);
-    if (name == nullptr || name[0] == '\0' || std::strcmp(name, "LFE") == 0) {
-        return false;
-    }
-    const LayoutChannels* table = nullptr;
-    for (const LayoutChannels& entry : kLayoutChannels) {
-        if (entry.out_ch_config == out_ch_config) {
-            table = &entry;
-            break;
-        }
-    }
-    const ejoc::speaker_tables::LayoutGeometry* geometry = geometry_for(out_ch_config);
-    if (table == nullptr || geometry == nullptr) {
-        return false;
-    }
-    int standard_index = -1;
-    for (std::uint32_t index = 0; index < table->count; ++index) {
-        if (std::strcmp(table->names[index], name) == 0) {
-            standard_index = static_cast<int>(index);
-            break;
-        }
-    }
-    if (standard_index < 0) {
-        return false;
-    }
-    const std::uint8_t internal = geometry->standard_from_internal[standard_index];
-    const ejoc::speaker_tables::RegionGeometry& region = geometry->regions[0];
-    for (std::uint32_t point = 0; point < region.point_count; ++point) {
-        if (region.points[point].speaker_id != internal) {
-            continue;
-        }
-        for (int axis = 0; axis < 3; ++axis) {
-            q15[axis] = region.points[point].coordinate_q15[axis];
-        }
-        return true;
-    }
-    return false;
 }
 
 }  // namespace joc::joc

@@ -55,6 +55,9 @@ struct CanonicalHrtf {
     std::vector<double> measurement_radius_m;         // [M]
     std::vector<double> hrir;                         // [M,2,N] canonical L/R
     std::vector<double> delay_samples;                // [M,2], not applied
+    // ReceiverPosition in listener-local metres, left then right (the SOFA
+    // variable is one constant pair for the whole file).
+    std::vector<double> receiver_position_cartesian_m;  // [2,3]
 };
 
 // Port of load_simple_free_field_hrir(): strict SimpleFreeFieldHRIR import.

@@ -1447,6 +1447,14 @@ Status canonicalize_sofa(const SofaHrir& sofa, CanonicalHrtf* out) {
     canonical.taps = static_cast<std::uint32_t>(taps);
     canonical.left_receiver_index = left_index;
     canonical.right_receiver_index = right_index;
+    canonical.receiver_position_cartesian_m.assign(6u, 0.0);
+    for (int ear = 0; ear < 2; ++ear) {
+        const int receiver = ear == 0 ? left_index : right_index;
+        for (int axis = 0; axis < 3; ++axis) {
+            canonical.receiver_position_cartesian_m[static_cast<std::size_t>(ear * 3 + axis)] =
+                receiver_cartesian[static_cast<std::size_t>(receiver * 3 + axis)];
+        }
+    }
     canonical.source_position_cartesian_m = source_local;
     canonical.unit_directions.resize(measurements * 3u, 0.0);
     for (std::size_t row = 0u; row < measurements; ++row) {

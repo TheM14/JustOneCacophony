@@ -358,8 +358,14 @@ typedef enum joc_clip_action {
     JOC_CLIP_ABORT = 3     /* fail the task */
 } joc_clip_action;
 
-/* Compiled-HRTF cache policy for a SOFA input; the .jochrtf itself is an
- * internal artifact of the compile step. */
+/* Local interpolation of the full-HRIR SOFA field (config version 3). */
+typedef enum joc_sofa_interpolation {
+    JOC_SOFA_INTERPOLATION_LOGMAG_PHASE = 0, /* delay-aligned log-magnitude/phase */
+    JOC_SOFA_INTERPOLATION_MCA_ZERO = 1      /* auditory-band magnitude correction */
+} joc_sofa_interpolation;
+
+/* Compiled-HRTF cache policy for the legacy SOFA compile step; the .jochrtf
+ * itself stays an explicit input (hrtf_path). */
 typedef enum joc_hrtf_cache_policy {
     JOC_HRTF_CACHE_NONE = 0,   /* compile and discard */
     JOC_HRTF_CACHE_MEMORY = 1, /* compile and keep in this process (default) */
@@ -424,16 +430,22 @@ typedef struct joc_task_config {
 
     joc_cancel_token* cancel;           /* optional */
 
-    /* Binaural HRTF input (config version 2): when hrtf_sofa_path is set the
-     * library compiles it with hrtf_cache_policy / hrtf_cache_dir / hrtf_radius_m
+    /* Binaural HRTF input: when hrtf_sofa_path is set the SOFA renders directly
+     * from its full HRIRs through the reference environment (config version 3)
      * and hrtf_path is unused.  hrtf_path stays the advanced override that reads
-     * a .jochrtf directly. */
+     * a .jochrtf directly with the compiled-field renderer. */
     const char* hrtf_sofa_path;         /* SOFA SimpleFreeFieldHRIR input */
     const char* personalized_headphone_path; /* Rosella .personalized_headphone input */
     const char* hrtf_cache_dir;         /* disk policy directory */
     uint32_t hrtf_cache_policy;         /* joc_hrtf_cache_policy */
     uint32_t rosella_filterbank;        /* joc_rosella_filterbank; 0 = PUBLIC */
-    double hrtf_radius_m;               /* SOFA measurement-radius shell */
+    double hrtf_radius_m;               /* SOFA shell radius; <= 0 = automatic */
+    /* Reference environment for the direct SOFA path (config version 3). */
+    const char* reference_config_path;  /* NULL = local/binaural_reference.json */
+    uint32_t sofa_interpolation;        /* joc_sofa_interpolation */
+    /* Nonzero keeps the legacy SOFA compile step (hrtf_cache_policy/hrtf_cache_dir
+     * decide where the .jochrtf lands); zero renders the SOFA directly. */
+    uint32_t hrtf_compile;
 } joc_task_config;
 
 typedef enum joc_task_status {

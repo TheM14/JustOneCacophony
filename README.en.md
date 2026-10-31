@@ -6,8 +6,8 @@ The C++ implementation of JustOneCacophony: an execution core for E-AC-3 JOC
 bitstream parsing, object reconstruction and rendering. It extracts EMDF, ID14 JOC
 parameters and ID11 OAMD metadata from E-AC-3 syncframes, combines them with the
 core 5.1 PCM decoded by FFmpeg to rebuild the LFE and 15 object signals, and writes
-ADM BWF, a WAV for a chosen speaker layout, or a binaural WAV using a compiled HRTF
-directional field.
+ADM BWF, a WAV for a chosen speaker layout, or a binaural WAV rendered directly from
+full SOFA HRIRs (or from a compiled `.jochrtf` directional field).
 
 This is research code, not a complete, standard-conformant or production JOC
 decoder. It covers the bitstream forms it implements and reports an explicit error
@@ -224,7 +224,11 @@ The extra pair's **identity** never reaches the DSP (section 10.1): when the dep
 renders, with the bed mapping following the channel codes the `chanmap` declares. The bed
 layout the OAMD declares may hold more channels than the core substream codes (a 9.1.6 bed
 with a 5.1 core, for example): only a core channel missing from that layout counts as a
-mismatch. When one audio frame holds several EMDF containers carrying ID11/ID14, they
+mismatch. For bed-only content the 15 JOC object slots are the bed channels, each rendered as
+a point source at the fixed position its channel label defines (ETSI TS 103 420 table B.10);
+speaker, ADM and binaural output share those source coordinates and never re-place them per
+layout, while LFE keeps its separate path. When one audio frame holds several EMDF
+containers carrying ID11/ID14, they
 are scored by the association rule of section 8.2 and its Table 56: a container whose OAMD and JOC
 payloads share a group id and whose ID14 parses completely wins, then one whose ID14 merely parses;
 only a unique best score is used and the others are recorded as a diagnostic

@@ -48,7 +48,9 @@ struct Options {
     bool rosella_filterbank_set = false;
     std::string hrtf_cache_policy;
     std::string hrtf_cache_dir;
-    double hrtf_radius_m = 1.0;
+    double hrtf_radius_m = 0.0;   // 0 selects the single measurement shell
+    std::string reference_config;
+    std::string sofa_interpolation;
     double binaural_tail_seconds = 5.0;
     double binaural_tail_threshold = 1.0e-8;
     int binaural_chunk_frames = 64;
@@ -250,6 +252,8 @@ void parse_args(const std::vector<std::string>& arguments, Options* options) {
         else if (arg == "--hrtf-cache-policy") { options->hrtf_cache_policy = require_value(arguments, &index); }
         else if (arg == "--hrtf-cache-dir") { options->hrtf_cache_dir = require_value(arguments, &index); }
         else if (arg == "--hrtf-radius-m") { options->hrtf_radius_m = to_double(require_value(arguments, &index), "--hrtf-radius-m"); }
+        else if (arg == "--reference-config") { options->reference_config = require_value(arguments, &index); }
+        else if (arg == "--sofa-interpolation") { options->sofa_interpolation = require_value(arguments, &index); }
         else if (arg == "--binaural-tail-seconds") { options->binaural_tail_seconds = to_double(require_value(arguments, &index), "--binaural-tail-seconds"); }
         else if (arg == "--binaural-tail-threshold") { options->binaural_tail_threshold = to_double(require_value(arguments, &index), "--binaural-tail-threshold"); }
         else if (arg == "--binaural-chunk-frames") { options->binaural_chunk_frames = static_cast<int>(to_int(require_value(arguments, &index), "--binaural-chunk-frames")); }
@@ -354,7 +358,10 @@ struct HrtfInput {
     std::string compiled_path;  // or read this .jochrtf directly
     std::string cache_dir;      // disk policy directory
     std::string personalized_path;  // Rosella .personalized_headphone
+    std::string reference_config;   // SOFA reference environment
+    std::string interpolation;      // SOFA local interpolation
     bool disk = false;
+    bool compile = false;
 };
 
 std::string resolve_compiled_hrtf(const Options& options, const std::string& project_directory) {
@@ -396,12 +403,12 @@ HrtfInput resolve_hrtf_input(const Options& options, const std::string& project_
     if (!options.compiled_hrtf_cache.empty() && !options.hrtf_cache_policy.empty()) {
         fail("显式 .jochrtf 输入不能再指定 --hrtf-cache-policy");
     }
-    if (!options.compiled_hrtf_cache.empty() && options.hrtf_radius_m != 1.0) {
+    if (!options.compiled_hrtf_cache.empty() && options.hrtf_radius_m > 0.0) {
         fail("显式 .jochrtf 输入不能再选择 SOFA radius shell");
     }
     if (options.personalized_headphone_used &&
         (!options.hrtf_cache_policy.empty() || !options.hrtf_cache_dir.empty() ||
-         options.hrtf_radius_m != 1.0)) {
+         options.hrtf_radius_m > 0.0)) {
         fail("Rosella 模型输入不能使用 --hrtf-cache-policy/--hrtf-cache-dir/--hrtf-radius-m");
     }
 
@@ -434,7 +441,7 @@ HrtfInput resolve_hrtf_input(const Options& options, const std::string& project_
     }
     if (sofa.empty() && compiled.empty()) {
         if (!options.hrtf_cache_policy.empty() || !options.hrtf_cache_dir.empty() ||
-            options.hrtf_radius_m != 1.0) {
+            options.hrtf_radius_m > 0.0) {
             fail("HRTF cache/radius 选项需要 --sofa-hrtf");
         }
         fail("--binaural 未找到 HRTF 输入：默认 " + default_sofa + "、" + default_private +
@@ -443,7 +450,7 @@ HrtfInput resolve_hrtf_input(const Options& options, const std::string& project_
              "或 --compiled-hrtf-cache PATH 指定");
     }
     if (sofa.empty() && (!options.hrtf_cache_policy.empty() || !options.hrtf_cache_dir.empty() ||
-                         options.hrtf_radius_m != 1.0)) {
+                         options.hrtf_radius_m > 0.0)) {
         fail("HRTF cache/radius 选项需要 --sofa-hrtf");
     }
     if (sofa.empty()) {
@@ -452,11 +459,18 @@ HrtfInput resolve_hrtf_input(const Options& options, const std::string& project_
     }
     const std::string effective_policy =
         options.hrtf_cache_policy.empty() ? "memory" : options.hrtf_cache_policy;
+    input.compile = !options.hrtf_cache_policy.empty() || !options.hrtf_cache_dir.empty();
     if (!options.hrtf_cache_dir.empty() && effective_policy != "disk") {
         fail("--hrtf-cache-dir 需要 SOFA 与 disk cache policy 一起使用");
     }
     input.sofa_path = sofa;
     input.disk = effective_policy == "disk";
+    input.reference_config =
+        options.reference_config.empty()
+            ? fs_utf8::from_path(fs_utf8::to_path(project_directory) / "local" /
+                                 "binaural_reference.json")
+            : options.reference_config;
+    input.interpolation = options.sofa_interpolation;
     input.cache_dir = options.hrtf_cache_dir.empty() ? default_cache_dir : options.hrtf_cache_dir;
     if (!fs_utf8::exists(input.sofa_path)) {
         fail("SOFA HRTF 不存在: " + input.sofa_path);
@@ -564,6 +578,10 @@ int main(int argc, char** argv) {
                      {"ask", "continue", "float32", "abort"});
         check_choice(options.binaural_mode, "--binaural-mode", {"off", "near", "mid", "far"});
         check_choice(options.trajectory_mode, "--trajectory-mode", {"compact", "dense64"});
+        if (!options.sofa_interpolation.empty()) {
+            check_choice(options.sofa_interpolation, "--sofa-interpolation",
+                         {"lf_logmag_phase", "lf_mca_zero"});
+        }
         check_choice(options.backend, "--backend", {"auto", "native", "python"});
         check_choice(options.print_metadata, "--print-metadata", {"none", "summary", "frames"});
         check_choice(options.metadata_backend, "--metadata-backend", {"auto", "emdf", "sidecar"});
@@ -605,7 +623,7 @@ int main(int argc, char** argv) {
         const bool hrtf_options_used =
             !options.sofa_hrtf.empty() || !options.compiled_hrtf_cache.empty() ||
             options.personalized_headphone_used || !options.hrtf_cache_policy.empty() ||
-            !options.hrtf_cache_dir.empty() || options.hrtf_radius_m != 1.0;
+            !options.hrtf_cache_dir.empty() || options.hrtf_radius_m > 0.0;
         if (hrtf_options_used && !binaural_mode) {
             fail("SOFA/HRTF 选项仅与 --binaural 一起使用");
         }
@@ -623,7 +641,7 @@ int main(int argc, char** argv) {
         if (options.binaural_chunk_frames <= 0) {
             fail("binaural-chunk-frames 必须大于 0");
         }
-        if (!std::isfinite(options.hrtf_radius_m) || options.hrtf_radius_m <= 0.0) {
+        if (!std::isfinite(options.hrtf_radius_m) || options.hrtf_radius_m < 0.0) {
             fail("hrtf-radius-m 必须是正有限值");
         }
         if (options.duration_set && options.duration <= 0.0) {
@@ -718,12 +736,18 @@ int main(int argc, char** argv) {
     std::string hrtf_cache_dir;
     std::string personalized_path;
     std::string kernels_path;
+    std::string hrtf_reference_config;
+    std::string hrtf_interpolation;
+    bool hrtf_compile = false;
     if (binaural_mode) {
         try {
             const HrtfInput input = resolve_hrtf_input(options, project_directory);
             hrtf_path = input.compiled_path;
             hrtf_sofa_path = input.sofa_path;
             hrtf_cache_dir = input.cache_dir;
+            hrtf_reference_config = input.reference_config;
+            hrtf_interpolation = input.interpolation;
+            hrtf_compile = input.compile;
             personalized_path = input.personalized_path;
             kernels_path = find_kernels(options, arguments.empty() ? std::string()
                                                                    : arguments.front());
@@ -745,6 +769,12 @@ int main(int argc, char** argv) {
                                : options.hrtf_cache_policy == "none" ? JOC_HRTF_CACHE_NONE
                                                                     : JOC_HRTF_CACHE_MEMORY;
     config.hrtf_radius_m = options.hrtf_radius_m;
+    config.reference_config_path =
+        hrtf_reference_config.empty() ? nullptr : hrtf_reference_config.c_str();
+    config.sofa_interpolation = hrtf_interpolation == "lf_mca_zero"
+                                    ? JOC_SOFA_INTERPOLATION_MCA_ZERO
+                                    : JOC_SOFA_INTERPOLATION_LOGMAG_PHASE;
+    config.hrtf_compile = hrtf_compile ? 1u : 0u;
     config.kernels_path = kernels_path.empty() ? nullptr : kernels_path.c_str();
 
     joc_validation_issue issues[32];

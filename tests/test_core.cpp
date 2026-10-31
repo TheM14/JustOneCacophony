@@ -17,11 +17,14 @@
 #include "foundation/fs_utf8.h"
 #include "foundation/geometry.h"
 #include "hrtf/jochrtf.h"
+#include "hrtf/full_hrir_field.h"
+#include "hrtf/partitioned_convolution.h"
 #include "hrtf/sofa.h"
 #include "hrtf/sofa_cache.h"
 #include "hrtf/rosella_model.h"
 #include "hrtf/rosella_renderer.h"
 #include "hrtf/sofa_field.h"
+#include "hrtf/spherical_mesh.h"
 #include "foundation/mini_json.h"
 #include "foundation/sha256.h"
 #include "io/inflate.h"
@@ -31,6 +34,7 @@
 #include "io/process.h"
 #include "io/wav_writer.h"
 #include "io/zip_reader.h"
+#include "joc_bitstream/bed_layout_map.h"
 #include "oamd/oamd_parser.h"
 #include "stream/stream.h"
 #include "task/task.h"
@@ -294,6 +298,94 @@ void test_oamd_and_adm_helpers() {
 // DBMD segment 10: the nine configuration trims must default to automatic (bit 0
 // of each trim's first byte), and every other field of the block must keep the
 // layout the writer has always produced.
+// Spherical interpolation mesh: a 200-point Fibonacci sphere exercises the hull,
+// the barycentric weights and the Voronoi areas against values captured from the
+// reference implementation.
+void test_spherical_mesh() {
+    constexpr int kPoints = 200;
+    const double pi = 3.14159265358979323846;
+    std::vector<double> directions;
+    directions.reserve(static_cast<std::size_t>(kPoints) * 3u);
+    for (int index = 0; index < kPoints; ++index) {
+        const double z = 1.0 - 2.0 * (static_cast<double>(index) + 0.5) / kPoints;
+        const double phi = static_cast<double>(index) * pi * (3.0 - std::sqrt(5.0));
+        const double radius = std::sqrt(std::max(0.0, 1.0 - z * z));
+        directions.push_back(radius * std::cos(phi));
+        directions.push_back(radius * std::sin(phi));
+        directions.push_back(z);
+    }
+    joc::hrtf::SphericalMesh mesh;
+    joc::Status status = mesh.build(directions, kPoints);
+    CHECK(status.ok());
+    CHECK(mesh.vertex_count() == 200u);
+    CHECK(mesh.face_count() == 396u);
+
+    const double query[3] = {0.30304576336566319, 0.5050762722761053, 0.80812203564176865};
+    const int expected_ids[3] = {16, 11, 24};
+    const double expected_weights[3] = {0.18552244832037465, 0.23319383531074916,
+                                        0.5812837163688762};
+    std::vector<int> ids;
+    std::vector<double> weights;
+    status = mesh.weights(query, &ids, &weights);
+    CHECK(status.ok());
+    CHECK(ids.size() == 3u);
+    double difference = 0.0;
+    for (std::size_t index = 0; index < ids.size(); ++index) {
+        double expected = 0.0;
+        for (int corner = 0; corner < 3; ++corner) {
+            if (expected_ids[corner] == ids[index]) {
+                expected = expected_weights[corner];
+            }
+        }
+        difference += std::fabs(weights[index] - expected);
+    }
+    CHECK(difference < 1e-9);
+    CHECK(std::fabs(weights[0] + weights[1] + weights[2] - 1.0) < 1e-12);
+
+    std::vector<double> areas;
+    mesh.voronoi_areas(&areas);
+    CHECK(areas.size() == 200u);
+    double smallest = areas[0];
+    double largest = areas[0];
+    double total = 0.0;
+    for (const double area : areas) {
+        smallest = std::min(smallest, area);
+        largest = std::max(largest, area);
+        total += area;
+    }
+    CHECK(std::fabs(total - 1.0) < 1e-12);
+    CHECK(std::fabs(largest / smallest - 1.1197648114672005) < 1e-9);
+}
+
+// Rigid-sphere radial model: values captured from the reference implementation.
+void test_sphere_transfer() {
+    const std::vector<double> frequencies = {100.0, 1000.0, 10000.0};
+    const std::vector<double> cosines = {1.0, -1.0, 0.0};
+    std::vector<std::complex<double>> transfer;
+    const joc::Status status =
+        joc::hrtf::sphere_transfer(frequencies, 1.0, 0.0875, cosines, &transfer);
+    CHECK(status.ok());
+    CHECK(transfer.size() == 9u);
+    const double expected[9][2] = {
+        {1.1168983535509718, 0.2665696486002471},
+        {-0.510805763797141, 1.6128537943222743},
+        {-2.028923793661157, -0.7781755079388825},
+        {0.8548955324773564, -0.21699922414442047},
+        {-0.8363832921619323, -0.5012251963562975},
+        {0.03287720702899299, -0.7655728018349265},
+        {0.9881471826293796, -0.01028038096534477},
+        {1.0740047354266093, 0.11688911754407418},
+        {0.9394042077254096, -0.7927884777210633},
+    };
+    for (std::size_t index = 0; index < 9u; ++index) {
+        const double real = expected[index][0];
+        const double imaginary = expected[index][1];
+        CHECK(std::fabs(transfer[index].real() - real) < 1e-9 * (1.0 + std::fabs(real)));
+        CHECK(std::fabs(transfer[index].imag() - imaginary) <
+              1e-9 * (1.0 + std::fabs(imaginary)));
+    }
+}
+
 void test_dbmd_auto_trim() {
     std::string dbmd;
     CHECK(joc::adm::build_dbmd(25, joc::adm::BinauralMode::Mid, &dbmd).ok());
@@ -1133,6 +1225,186 @@ void test_clipgain_reset_clears_the_previous_gain() {
                       sizeof(float) * after_reset.size()) == 0);
 }
 
+// CBA bed:每个声道的方位来自它的标签（ETSI TS 103 420 V1.2.1 table B.10），
+// 声道顺序来自 table 12/13，因此 bed 声道不会随输出布局移动。
+void test_bed_layout_map() {
+    using joc::joc::BedChannel;
+    using joc::joc::BedLayout;
+
+    double xyz[3] = {0.0, 0.0, 0.0};
+    CHECK(joc::joc::bed_channel_adm_position(BedChannel::kLeft, xyz));
+    CHECK(xyz[0] == -1.0 && xyz[1] == 1.0 && xyz[2] == 0.0);
+    CHECK(joc::joc::bed_channel_adm_position(BedChannel::kCenter, xyz));
+    CHECK(xyz[0] == 0.0 && xyz[1] == 1.0 && xyz[2] == 0.0);
+    CHECK(joc::joc::bed_channel_adm_position(BedChannel::kTopFrontLeft, xyz));
+    CHECK(xyz[0] == -1.0 && xyz[1] == 1.0 && xyz[2] == 1.0);
+    CHECK(joc::joc::bed_channel_adm_position(BedChannel::kTopFrontRight, xyz));
+    CHECK(xyz[0] == 1.0 && xyz[1] == 1.0 && xyz[2] == 1.0);
+    CHECK(joc::joc::bed_channel_adm_position(BedChannel::kTopSideLeft, xyz));
+    CHECK(xyz[0] == -1.0 && xyz[1] == 0.0 && xyz[2] == 1.0);
+    CHECK(joc::joc::bed_channel_adm_position(BedChannel::kTopBackLeft, xyz));
+    CHECK(xyz[0] == -1.0 && xyz[1] == -1.0 && xyz[2] == 1.0);
+    CHECK(joc::joc::bed_channel_adm_position(BedChannel::kTopBackRight, xyz));
+    CHECK(xyz[0] == 1.0 && xyz[1] == -1.0 && xyz[2] == 1.0);
+    CHECK(joc::joc::bed_channel_adm_position(BedChannel::kLeftWide, xyz));
+    CHECK(xyz[0] == -1.0 && xyz[1] == 21.0 / 31.0 && xyz[2] == 0.0);
+    CHECK(joc::joc::bed_channel_adm_position(BedChannel::kRightWide, xyz));
+    CHECK(xyz[0] == 1.0 && xyz[1] == 21.0 / 31.0 && xyz[2] == 0.0);
+    CHECK(joc::joc::bed_channel_adm_position(BedChannel::kLfe, xyz));
+    CHECK(xyz[0] == -1.0 && xyz[1] == 1.0 && xyz[2] == -1.0);
+    CHECK(joc::joc::bed_channel_adm_position(BedChannel::kLfe2, xyz));
+    CHECK(xyz[0] == 1.0 && xyz[1] == 1.0 && xyz[2] == -1.0);
+
+    std::uint16_t q15[3] = {0, 0, 0};
+    CHECK(joc::joc::bed_channel_q15(BedChannel::kLeft, q15));
+    CHECK(q15[0] == 0 && q15[1] == 0 && q15[2] == 0);
+    CHECK(joc::joc::bed_channel_q15(BedChannel::kTopFrontLeft, q15));
+    CHECK(q15[0] == 0 && q15[1] == 0 && q15[2] == 32767);
+    CHECK(joc::joc::bed_channel_q15(BedChannel::kLeftWide, q15));
+    CHECK(q15[0] == 0 && q15[1] == 5285 && q15[2] == 0);
+    CHECK(joc::joc::bed_channel_q15(BedChannel::kTopBackLeft, q15));
+    CHECK(q15[0] == 0 && q15[1] == 32767 && q15[2] == 32767);
+
+    // table 12：0x0F 是 5.1，0x1FF 是 9.1.6（不含 LFE2）。
+    std::vector<joc::oamd::BedAssignment> standard(1);
+    standard[0].standard = true;
+    standard[0].mask = 0x0Fu;
+    const BedLayout five_one = joc::joc::resolve_bed_layout(standard, true);
+    CHECK(five_one.present && five_one.bed_only && five_one.complete);
+    CHECK(std::string(five_one.name) == "5.1");
+    CHECK(five_one.channels.size() == 5);
+    CHECK(five_one.channels[0] == BedChannel::kLeft);
+    CHECK(five_one.channels[1] == BedChannel::kRight);
+    CHECK(five_one.channels[2] == BedChannel::kCenter);
+    CHECK(five_one.channels[3] == BedChannel::kLeftSurround);
+    CHECK(five_one.channels[4] == BedChannel::kRightSurround);
+
+    standard[0].mask = 0x1FFu;
+    const BedLayout nine_six = joc::joc::resolve_bed_layout(standard, true);
+    CHECK(std::string(nine_six.name) == "9.1.6");
+    CHECK(nine_six.channels.size() == 15);
+    CHECK(nine_six.channels[0] == BedChannel::kLeft);
+    CHECK(nine_six.channels[2] == BedChannel::kCenter);
+    CHECK(nine_six.channels[3] == BedChannel::kLeftSurround);
+    CHECK(nine_six.channels[7] == BedChannel::kTopFrontLeft);
+    CHECK(nine_six.channels[9] == BedChannel::kTopSideLeft);
+    CHECK(nine_six.channels[11] == BedChannel::kTopBackLeft);
+    CHECK(nine_six.channels[13] == BedChannel::kLeftWide);
+    CHECK(nine_six.channels[14] == BedChannel::kRightWide);
+    // LFE 留在声明掩码里，但不占 JOC 对象槽。
+    CHECK(joc::joc::bed_layout_has(nine_six, BedChannel::kLfe));
+    bool lfe_slot = false;
+    for (const BedChannel channel : nine_six.channels) {
+        lfe_slot = lfe_slot || channel == BedChannel::kLfe ||
+                   channel == BedChannel::kLfe2;
+    }
+    CHECK(!lfe_slot);
+    CHECK(joc::joc::bed_layout_has(nine_six, BedChannel::kRightWide));
+
+    // table 13：17 bit 掩码的 channel order 与 table 12 相同。
+    std::vector<joc::oamd::BedAssignment> nonstandard(1);
+    nonstandard[0].standard = false;
+    nonstandard[0].mask = 0x3Fu;
+    const BedLayout ns_five = joc::joc::resolve_bed_layout(nonstandard, true);
+    CHECK(ns_five.channels.size() == 5);
+    CHECK(ns_five.channels[0] == BedChannel::kLeft);
+    CHECK(ns_five.channels[4] == BedChannel::kRightSurround);
+    nonstandard[0].mask = 0xFFFFu;
+    const BedLayout ns_nine = joc::joc::resolve_bed_layout(nonstandard, true);
+    CHECK(ns_nine.channels.size() == 15);
+    CHECK(ns_nine.channels[0] == BedChannel::kLeft);
+    CHECK(ns_nine.channels[13] == BedChannel::kLeftWide);
+    CHECK(ns_nine.channels[14] == BedChannel::kRightWide);
+}
+
+// Partitioned convolution: overlap-add with a shared input history and a filter
+// crossfade.  The expected values come from the reference
+// partitioned_convolution.py running the same filters and blocks.
+void test_partitioned_convolution() {
+    constexpr std::size_t kBlock = 128;
+    constexpr std::size_t kTaps = 300;
+    constexpr std::size_t kMaxTaps = 512;
+    constexpr std::size_t kOutputs = 2;
+
+    auto make_filter = [](double step, double decay, bool cosine, double offset) {
+        std::vector<double> values(kOutputs * kTaps);
+        for (std::size_t output = 0; output < kOutputs; ++output) {
+            for (std::size_t tap = 0; tap < kTaps; ++tap) {
+                const double angle = step * static_cast<double>(tap + 1) *
+                                     (static_cast<double>(output) + offset);
+                const double trig = cosine ? std::cos(angle) : std::sin(angle);
+                values[output * kTaps + tap] = trig * std::exp(-static_cast<double>(tap) / decay);
+            }
+        }
+        return values;
+    };
+
+    joc::hrtf::UniformPartitionedConvolver convolver(kOutputs, kMaxTaps, kBlock);
+    const std::vector<double> first = make_filter(0.017, 100.0, false, 1.0);
+    CHECK(convolver.set_filter(first.data(), kTaps, 0).ok());
+    CHECK(!convolver.transition_active());
+
+    std::vector<double> block(kBlock);
+    std::vector<double> out(kBlock * kOutputs);
+    std::vector<double> rendered;
+    for (std::size_t index = 0; index < 8; ++index) {
+        for (std::size_t sample = 0; sample < kBlock; ++sample) {
+            const double n = static_cast<double>(index * kBlock + sample);
+            block[sample] = std::sin(0.01 * n) + 0.5 * std::cos(0.003 * n);
+        }
+        CHECK(convolver.process_block(block.data(), out.data()).ok());
+        rendered.insert(rendered.end(), out.begin(), out.end());
+    }
+    CHECK(rendered.size() == 8 * kBlock * kOutputs);
+    CHECK(std::fabs(rendered[0] - 0.0084995905892490953) < 1e-9);
+    CHECK(std::fabs(rendered[1] - 0.016996724855971479) < 1e-9);
+    CHECK(std::fabs(rendered[2] - 0.025497145937656285) < 1e-9);
+    CHECK(std::fabs(rendered[63] - 8.1367456949245849) < 1e-9);
+    CHECK(std::fabs(rendered[64] - 4.6183248807335495) < 1e-9);
+    CHECK(std::fabs(rendered[65] - 8.5945567424849969) < 1e-9);
+    CHECK(std::fabs(rendered[127] - 24.744288415490566) < 1e-8);
+    CHECK(std::fabs(rendered[128] - 16.21718594261781) < 1e-8);
+    CHECK(std::fabs(rendered[129] - 25.258064041591062) < 1e-8);
+    CHECK(std::fabs(rendered[255] - 42.867139711879446) < 1e-8);
+    CHECK(std::fabs(rendered[256] - 47.087759632531053) < 1e-8);
+    CHECK(std::fabs(rendered[511] - 30.307479702394744) < 1e-8);
+    CHECK(std::fabs(rendered[512] - 64.6869976138059) < 1e-8);
+    CHECK(std::fabs(rendered[700] - 26.847289638199864) < 1e-8);
+    CHECK(std::fabs(rendered[701] - 2.9756928363101984) < 1e-8);
+    CHECK(std::fabs(rendered[1023] - -25.703654152948225) < 1e-8);
+    CHECK(std::fabs(rendered[1024] - -43.300148318757053) < 1e-8);
+
+    // A two-block crossfade keeps both filters' overlap tails alive.
+    const std::vector<double> second = make_filter(0.011, 140.0, true, 2.0);
+    CHECK(convolver.set_filter(second.data(), kTaps, 2).ok());
+    CHECK(convolver.transition_active());
+    std::vector<double> faded;
+    for (std::size_t index = 0; index < 4; ++index) {
+        for (std::size_t sample = 0; sample < kBlock; ++sample) {
+            const double n = 1000.0 + static_cast<double>(index * kBlock + sample);
+            block[sample] = std::sin(0.02 * n) + 0.3;
+        }
+        CHECK(convolver.process_block(block.data(), out.data()).ok());
+        faded.insert(faded.end(), out.begin(), out.end());
+    }
+    CHECK(!convolver.transition_active());
+    CHECK(std::fabs(faded[0] - -31.254215789646686) < 1e-8);
+    CHECK(std::fabs(faded[1] - -30.520784088408671) < 1e-8);
+    CHECK(std::fabs(faded[2] - -31.64727283056877) < 1e-8);
+    CHECK(std::fabs(faded[127] - 45.044850086774559) < 1e-8);
+    CHECK(std::fabs(faded[128] - 16.242938783563034) < 1e-8);
+    CHECK(std::fabs(faded[129] - 45.566945939182197) < 1e-8);
+    CHECK(std::fabs(faded[255] - -11.640284877460564) < 1e-8);
+    CHECK(std::fabs(faded[256] - 20.660738168974696) < 1e-8);
+    CHECK(std::fabs(faded[383] - -24.027948887675439) < 1e-8);
+    CHECK(std::fabs(faded[384] - -41.675076381317034) < 1e-8);
+    CHECK(std::fabs(faded[511] - 34.95547294171444) < 1e-8);
+    CHECK(std::fabs(faded[512] - -4.9486250951335764) < 1e-8);
+
+    convolver.reset();
+    CHECK(!convolver.transition_active());
+}
+
 int main() {
     test_sha256();
     test_crc32_and_inflate();
@@ -1144,6 +1416,10 @@ int main() {
     test_task_result_json();
     test_npy();
     test_oamd_and_adm_helpers();
+    test_bed_layout_map();
+    test_partitioned_convolution();
+    test_spherical_mesh();
+    test_sphere_transfer();
     test_dbmd_auto_trim();
     test_int24_packing();
     test_utf8_paths();

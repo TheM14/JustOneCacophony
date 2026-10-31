@@ -4,8 +4,8 @@
 
 JustOneCacophony 的 C++ 实现：E-AC-3 JOC 码流解析、对象重建与渲染的执行内核。它从 E-AC-3
 同步帧中提取 EMDF、ID14 JOC 参数与 ID11 OAMD 元数据，结合 FFmpeg 解码出的核心 PCM（N=5 或 7）
-重建 LFE 与 15 路对象 PCM，并输出 ADM BWF、指定扬声器布局的 WAV，或用编译好的 HRTF 方向场
-直接输出双耳 WAV。
+重建 LFE 与 15 路对象 PCM，并输出 ADM BWF、指定扬声器布局的 WAV，或按完整 HRIR 直接
+渲染双耳 WAV（SOFA），也可以读入编译好的 `.jochrtf` 方向场渲染。
 
 这是研究代码，不是完整、标准兼容或生产级的 JOC 解码器。它只覆盖已实现的码流形态，遇到未知
 变体时明确报错，而不是假装一切都很和谐。
@@ -191,6 +191,8 @@ ffmpeg 侧只在 $N=5$ 档位传 `-ac 6`；$N=7$ 档位不传 `-ac`，保留解�
 拒绝。额外那一对的**身份**只进元数据、不进 DSP（§10.1）：依赖子流 `chanmap` 与 $k$ 不一致、或
 OAMD 声明的 bed 布局可以比核心子流实际编码的声道多（例如 9.1.6 bed 只编 5.1 核心），只有核心
 声道在 bed 布局里找不到位置才记 diagnostics 并照常解码，床映射按 `chanmap` 的通道码走。
+bed-only 内容的 15 路 JOC 对象就是 bed 声道：每一路按其声道标签的固定方位（ETSI TS 103 420
+Table B.10）作为点声源渲染，扬声器、ADM 与双耳共用同一组源坐标，不随输出布局改变；LFE 独立处理。
 同一音频帧里出现多个含 ID11/ID14 的 EMDF 容器时，按规格 §8.2 + Table 56 的关联规则打分：
 OAMD 与 JOC 载荷 groupid 相同且 ID14 能完整解析的优先，其次只看 ID14 能否解析；唯一最高分才用，
 其余记入 diagnostics（`emdf/extra_container_ignored`）。额外那一对在 10 槽 ADM 骨架上的落位
