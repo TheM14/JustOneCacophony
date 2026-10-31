@@ -72,27 +72,10 @@ def resolve_output(source, requested=None, speaker_layout=None, *, binaural=Fals
     return target.expanduser().resolve()
 
 
-def _find_default_compiled_hrtf_cache():
-    """在默认 cache 目录寻找唯一的 .jochrtf；无文件返回 None，多个则报错。"""
-    directory = DEFAULT_HRTF_CACHE_DIR
-    if not directory.is_dir():
-        return None
-    candidates = sorted(directory.glob("*.jochrtf"))
-    if not candidates:
-        return None
-    if len(candidates) > 1:
-        listing = ", ".join(path.name for path in candidates[:8])
-        raise ValueError(
-            f"{directory} 下有多个 .jochrtf 缓存（{listing}…），无法自动选择；"
-            "请用 --compiled-hrtf-cache PATH 或 --sofa-hrtf PATH 显式指定")
-    return candidates[0]
-
-
 def resolve_binaural_hrtf_input(args, *, required):
     """解析 binaural 的 HRTF 输入。
 
-    无显式输入时按顺序回退：默认 HRTF/binaural.sofa → 默认 cache 目录下唯一的
-    .jochrtf → 默认 HRTF/binaural.personalized_headphone → 报错。
+    默认选择完整SOFA；若缺失则尝试原个性化默认文件。压缩输入只能显式选择。
     只校验路径，不做编译。
     """
     sofa = args.sofa_hrtf
@@ -104,10 +87,10 @@ def resolve_binaural_hrtf_input(args, *, required):
 
     if compiled is not None and cache_policy is not None:
         raise ValueError("显式 .jochrtf 输入不能再指定 --hrtf-cache-policy")
-    if compiled is not None and radius != 1.0:
+    if compiled is not None and radius is not None:
         raise ValueError("显式 .jochrtf 输入不能再选择 SOFA radius shell")
     if private is not None and (cache_policy is not None or cache_dir is not None
-                                or radius != 1.0):
+                                or radius is not None):
         raise ValueError(
             "Rosella 模型输入不能使用 "
             "--hrtf-cache-policy/--hrtf-cache-dir/--hrtf-radius-m")
@@ -116,12 +99,11 @@ def resolve_binaural_hrtf_input(args, *, required):
         if DEFAULT_SOFA_HRTF.is_file():
             sofa = DEFAULT_SOFA_HRTF
         else:
-            compiled = _find_default_compiled_hrtf_cache()
-            if compiled is None and DEFAULT_PERSONALIZED_HEADPHONE.is_file():
+            if DEFAULT_PERSONALIZED_HEADPHONE.is_file():
                 private = DEFAULT_PERSONALIZED_HEADPHONE
 
     if sofa is None and compiled is None and private is None:
-        if cache_policy is not None or cache_dir is not None or radius != 1.0:
+        if cache_policy is not None or cache_dir is not None or radius is not None:
             raise ValueError("HRTF cache/radius 选项需要 --sofa-hrtf")
         if required:
             raise ValueError(
@@ -133,18 +115,16 @@ def resolve_binaural_hrtf_input(args, *, required):
         return None
 
     if sofa is None and (cache_policy is not None or cache_dir is not None
-                         or radius != 1.0):
+                         or radius is not None):
         raise ValueError("HRTF cache/radius 选项需要 --sofa-hrtf")
-    effective_policy = "memory" if cache_policy is None else cache_policy
-    if cache_dir is not None and (sofa is None or effective_policy != "disk"):
-        raise ValueError("--hrtf-cache-dir 仅与 SOFA 的 disk cache policy 一起使用")
+    if cache_policy == "disk" or cache_dir is not None:
+        raise ValueError("SOFA直接渲染完整HRIR；请用 src/compile_hrtf.py 显式导出 .jochrtf")
     if sofa is not None:
         return {
             "kind": "sofa",
             "path": resolve_sofa_hrtf(sofa),
-            "cache_policy": effective_policy,
-            "cache_dir": (DEFAULT_HRTF_CACHE_DIR if cache_dir is None else
-                          cache_dir.expanduser().resolve()),
+            "cache_policy": None,
+            "cache_dir": None,
         }
     if compiled is not None:
         return {
@@ -455,13 +435,13 @@ def render(index, bed_path, frame_count, raw_path, gain, progress_every,
             if speaker_renderer is not None:
                 stage = time.perf_counter()
                 speaker_pcm = speaker_renderer.render_frame(
-                    pcm16.T, subs.get(11), speaker_metadata_offset)
+                    pcm16.T, subs.get(11) if subs is not None else None, speaker_metadata_offset)
                 speaker_render_seconds += time.perf_counter() - stage
                 stage = time.perf_counter()
                 speaker_sink.write_frame(speaker_pcm)
                 speaker_write_seconds += time.perf_counter() - stage
             if binaural_renderer is not None:
-                payload = subs.get(11)
+                payload = subs.get(11) if subs is not None else None
                 outer_offset = (
                     index.subpayload_sample_offset(row, 11)
                     if payload is not None and hasattr(index, "subpayload_sample_offset")
@@ -548,16 +528,13 @@ def build_parser():
     parser.add_argument("--speaker-metadata-offset", type=int, default=1473,
                         help="扬声器渲染 metadata 相对帧偏移，默认 1473 samples")
     parser.add_argument("--binaural-mode", choices=("off", "near", "mid", "far"),
-                        default="mid",
-                        help="双耳渲染模式，默认 mid（人为指定的渲染提示，非码流 "
-                             "原始元数据）；直接双耳渲染与 ADM BWF 的 DBMD 提示共用。"
-                             "off 仅用于 ADM BWF：关闭 DBMD 双耳提示（编码 0）")
+                        default=None,
+                        help="双耳渲染模式或ADM DBMD提示，默认mid；支持near/mid/far。"
+                             "off仅用于ADM BWF关闭DBMD双耳提示")
     hrtf_input = parser.add_mutually_exclusive_group()
     hrtf_input.add_argument(
         "--sofa-hrtf", type=Path,
-        help="SimpleFreeFieldHRIR SOFA；缺省时依次尝试 HRTF/binaural.sofa、"
-             "output/hrtf-cache 下唯一的 .jochrtf、"
-             "HRTF/binaural.personalized_headphone，均无则报错")
+        help=f"完整HRIR SOFA；默认 {DEFAULT_SOFA_HRTF}；缺失时尝试原个性化默认文件")
     hrtf_input.add_argument(
         "--compiled-hrtf-cache", type=Path,
         help="高级入口：显式读取 JOC .jochrtf compiled cache")
@@ -572,13 +549,17 @@ def build_parser():
              "2=11 taps/3 slots；仅作用于个性化模型")
     parser.add_argument(
         "--hrtf-cache-policy", choices=("none", "memory", "disk"), default=None,
-        help="SOFA 编译缓存；默认 memory，disk 写入可删除的 .jochrtf")
+        help=argparse.SUPPRESS)
     parser.add_argument(
         "--hrtf-cache-dir", type=Path,
-        help="disk cache 目录；默认 output/hrtf-cache")
+        help=argparse.SUPPRESS)
     parser.add_argument(
-        "--hrtf-radius-m", type=float, default=1.0,
-        help="选择最近的 SOFA measurement-radius shell，默认 1.0 m")
+        "--hrtf-radius-m", type=float, default=None,
+        help="选择最近的SOFA测量球壳；单球壳默认自动选择，多球壳必须指定")
+    parser.add_argument("--reference-config", type=Path,
+                        help="SOFA/.jochrtf的外部参考环境配置")
+    parser.add_argument("--sofa-interpolation", choices=("lf_logmag_phase", "lf_mca_zero"),
+                        default=None, help="完整HRIR局部插值，默认 lf_logmag_phase")
     parser.add_argument("--binaural-tail-seconds", type=float, default=5.0,
                         help="双耳 room/filterbank flush 上限，默认 5 秒")
     parser.add_argument("--binaural-tail-threshold", type=float, default=1.0e-8,
@@ -625,6 +606,7 @@ def main(argv=None):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="backslashreplace")
     args = build_parser().parse_args(argv)
+    args.binaural_mode = args.binaural_mode or "mid"
     source = args.input.expanduser().resolve()
     if not source.is_file():
         raise FileNotFoundError(source)
@@ -634,7 +616,7 @@ def main(argv=None):
     if binaural_mode and binaural_render_mode == "off":
         raise ValueError(
             "--binaural-mode off 仅用于 ADM BWF 输出（关闭 DBMD 双耳提示）；"
-            "直接双耳渲染请使用 near/mid/far")
+            "直接双耳渲染可使用near/mid/far")
     if args.speaker_output is not None and not speaker_mode:
         raise ValueError("--speaker-output 必须与 --speaker-layout 一起使用")
     if args.binaural_output is not None and not binaural_mode:
@@ -653,7 +635,9 @@ def main(argv=None):
         args.personalized_headphone is not None,
         args.hrtf_cache_policy is not None,
         args.hrtf_cache_dir is not None,
-        args.hrtf_radius_m != 1.0,
+        args.hrtf_radius_m is not None,
+        args.reference_config is not None,
+        args.sofa_interpolation is not None,
     ))
     if hrtf_options_used and not binaural_mode:
         raise ValueError("SOFA/HRTF 选项仅与 --binaural 一起使用")
@@ -669,7 +653,7 @@ def main(argv=None):
         raise ValueError("binaural-tail-threshold 必须是非负有限值")
     if args.binaural_chunk_frames <= 0:
         raise ValueError("binaural-chunk-frames 必须大于 0")
-    if not math.isfinite(args.hrtf_radius_m) or args.hrtf_radius_m <= 0.0:
+    if args.hrtf_radius_m is not None and (not math.isfinite(args.hrtf_radius_m) or args.hrtf_radius_m <= 0.0):
         raise ValueError("hrtf-radius-m 必须是正有限值")
     requested_output = (args.speaker_output if args.speaker_output is not None
                         else args.binaural_output if args.binaural_output is not None
@@ -694,6 +678,12 @@ def main(argv=None):
         raise ValueError("eac3-target-level 必须在 -31..0 之间")
     binaural_hrtf_input = resolve_binaural_hrtf_input(
         args, required=binaural_mode and not args.metadata_only)
+    if binaural_hrtf_input is not None:
+        kind = binaural_hrtf_input["kind"]
+        if kind == "rosella" and (args.reference_config is not None or args.sofa_interpolation is not None):
+            raise ValueError("参考环境/HRIR插值选项仅用于SOFA路径")
+        if kind == "compiled_cache" and args.sofa_interpolation is not None:
+            raise ValueError("--sofa-interpolation不适用于已编译输入")
     if (args.rosella_filterbank is not None and binaural_hrtf_input is not None
             and binaural_hrtf_input["kind"] != "rosella"):
         raise ValueError(
@@ -824,6 +814,7 @@ def main(argv=None):
                 "output_gain": gain_float64,
                 "chunk_frames": args.binaural_chunk_frames,
                 "bed_channels": getattr(index, "bed_channels", ()),
+                "reference_config": args.reference_config,
             }
             if hrtf_source["kind"] == "sofa":
                 binaural_decoder = timed_call(
@@ -833,6 +824,7 @@ def main(argv=None):
                     cache_policy=hrtf_source["cache_policy"],
                     cache_dir=hrtf_source["cache_dir"],
                     shell_radius_m=args.hrtf_radius_m,
+                    interpolation=args.sofa_interpolation or "lf_logmag_phase",
                     **common_options)
             elif hrtf_source["kind"] == "rosella":
                 binaural_decoder = timed_call(
@@ -914,10 +906,10 @@ def main(argv=None):
                         "source_sha256": (
                             binaural_backend_info["field"]["source_sha256"]),
                         "cache_policy": binaural_backend_info["cache_policy"],
-                        "cache_key": (
-                            binaural_backend_info["field"]["cache_key"]),
-                        "format_version": (
-                            binaural_backend_info["field"]["format_version"]),
+                        "cache_key": binaural_backend_info["field"].get("cache_key"),
+                        "format_version": binaural_backend_info["field"].get("format_version"),
+                        "representation": binaural_backend_info.get("direct_representation"),
+                        "reference": binaural_backend_info.get("reference"),
                     }
             finally:
                 spool.close()

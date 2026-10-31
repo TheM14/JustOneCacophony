@@ -1,4 +1,4 @@
-"""JOC frame adapter for the public SOFA binaural backend."""
+"""JOC frame adapter for independent SOFA and compact HRTF rendering."""
 from __future__ import annotations
 
 import math
@@ -8,7 +8,6 @@ import numpy as np
 
 from binaural_metadata import OamdPositionTimeline
 from public_filterbank import ANALYSIS_SYNTHESIS_LATENCY_SAMPLES
-from sofa_binaural_backend import SofaBinauralBackend
 from sofa_hrtf_field import (
     DEFAULT_HRTF_CACHE_DIR,
     DEFAULT_PROJECTION_RIDGE,
@@ -50,14 +49,13 @@ def resolve_compiled_hrtf_cache(path: str | Path) -> Path:
 class SofaBinauralRenderer:
     """Render interleaved LFE plus fifteen JOC objects to stereo.
 
-    The adapter owns frame buffering and sample-timed OAMD updates.  The
-    backend owns the 64-QMF/77-hybrid state, the 961-sample latency policy,
-    per-object direct/early state, and the shared late room.
+    The adapter owns frame buffering and sample-timed OAMD updates; the
+    selected backend owns direct filtering, reference state and latency.
     """
 
     def __init__(
             self, backend, *,
-            mode: str = "mid",
+            mode: str | None = None,
             object_delay_samples: int = 1473,
             tail_seconds: float = 5.0,
             chunk_frames: int = 64,
@@ -72,6 +70,7 @@ class SofaBinauralRenderer:
                 f"missing: {', '.join(missing)}")
         if backend.source_count != SOURCE_CHANNELS:
             raise ValueError(f"JOC binaural backend must have {SOURCE_CHANNELS} sources")
+        mode = backend.default_profile if mode is None else mode
         if backend.default_profile != str(mode).lower():
             raise ValueError("backend default profile does not match renderer mode")
         if int(object_delay_samples) < 0:
@@ -90,7 +89,9 @@ class SofaBinauralRenderer:
         self.dsp_backend = getattr(backend, "dsp_backend", "python-sofa")
         from bed_layout import bed_object_positions
 
-        self.timeline = OamdPositionTimeline(
+        from sofa_metadata import SofaPositionTimeline
+        timeline_type = SofaPositionTimeline if getattr(backend, "fixed_reference", False) else OamdPositionTimeline
+        self.timeline = timeline_type(
             15, bed_positions=bed_object_positions(bed_channels or ()))
 
         self._input_buffer = np.empty(
@@ -105,28 +106,32 @@ class SofaBinauralRenderer:
     @classmethod
     def from_sofa(
             cls, sofa: str | Path, *,
-            mode: str = "mid",
-            cache_policy: str = "memory",
-            cache_dir: str | Path | None = DEFAULT_HRTF_CACHE_DIR,
-            shell_radius_m: float = 1.0,
+            mode: str | None = None,
+            cache_policy: str | None = None,
+            cache_dir: str | Path | None = None,
+            shell_radius_m: float | None = None,
             projection_ridge: float = DEFAULT_PROJECTION_RIDGE,
             sh_ridge: float = DEFAULT_SH_RIDGE,
             object_delay_samples: int = 1473,
             tail_seconds: float = 5.0,
             output_gain: float = 1.0,
             chunk_frames: int = 64,
-            bed_channels=None) -> "SofaBinauralRenderer":
+            bed_channels=None, reference_config=None,
+            interpolation: str = "lf_logmag_phase") -> "SofaBinauralRenderer":
+        from sofa_reference_backend import ReferenceSofaBackend
+        if cache_policy not in (None, "none", "memory") or cache_dir is not None:
+            raise ValueError("SOFA renders full HRIRs; use compile_hrtf.py to export a .jochrtf")
+        if projection_ridge != DEFAULT_PROJECTION_RIDGE or sh_ridge != DEFAULT_SH_RIDGE:
+            raise ValueError("full HRIR rendering does not use projection/SH ridge parameters")
         source = resolve_sofa_hrtf(sofa)
-        backend = SofaBinauralBackend.from_sofa(
+        backend = ReferenceSofaBackend(
             source,
             source_count=SOURCE_CHANNELS,
-            default_profile=mode,
             output_gain=output_gain,
-            cache_policy=cache_policy,
-            cache_dir=cache_dir,
+            reference_config=reference_config,
+            mode=mode,
             shell_radius_m=shell_radius_m,
-            projection_ridge=projection_ridge,
-            sh_ridge=sh_ridge)
+            method=interpolation)
         return cls(
             backend,
             mode=mode,
@@ -138,18 +143,18 @@ class SofaBinauralRenderer:
     @classmethod
     def from_compiled_cache(
             cls, cache: str | Path, *,
-            mode: str = "mid",
+            mode: str | None = None,
             object_delay_samples: int = 1473,
             tail_seconds: float = 5.0,
             output_gain: float = 1.0,
             chunk_frames: int = 64,
-            bed_channels=None) -> "SofaBinauralRenderer":
+            bed_channels=None, reference_config=None) -> "SofaBinauralRenderer":
+        from sofa_reference_backend import ReferenceSofaBackend
         source = resolve_compiled_hrtf_cache(cache)
-        backend = SofaBinauralBackend.from_compiled_cache(
+        backend = ReferenceSofaBackend(
             source,
             source_count=SOURCE_CHANNELS,
-            default_profile=mode,
-            output_gain=output_gain)
+            compiled=True, reference_config=reference_config, output_gain=output_gain, mode=mode)
         return cls(
             backend,
             mode=mode,
@@ -222,15 +227,16 @@ class SofaBinauralRenderer:
         values = np.asarray(source, dtype=np.float64)
         if values.ndim != 2 or values.shape[1] != SOURCE_CHANNELS:
             raise ValueError(f"expected [samples,{SOURCE_CHANNELS}], got {values.shape}")
-        if len(values) % BINAURAL_BLOCK_SAMPLES:
-            raise ValueError("binaural input must be divisible by 512 samples")
+        block_samples = int(getattr(self.backend, "block_samples", BINAURAL_BLOCK_SAMPLES))
+        if len(values) % block_samples:
+            raise ValueError("binaural input must contain complete processing blocks")
         outputs = []
         block_base = self.processed_input_samples
-        for start in range(0, len(values), BINAURAL_BLOCK_SAMPLES):
+        for start in range(0, len(values), block_samples):
             sample = block_base + start
             self._set_block_parameters(sample)
             outputs.append(self.backend.process(
-                values[start:start + BINAURAL_BLOCK_SAMPLES]))
+                values[start:start + block_samples]))
         self.processed_input_samples += len(values)
         nonempty = [value for value in outputs if len(value)]
         if not nonempty:
@@ -240,7 +246,7 @@ class SofaBinauralRenderer:
         return output
 
     def finish(self) -> np.ndarray:
-        """Process pending source samples and drain early/late room state once."""
+        """Process pending source samples and drain filter/reference state once."""
         if self.finished:
             return np.empty((0, OUTPUT_CHANNELS), dtype=np.float64)
         outputs: list[np.ndarray] = []
@@ -264,10 +270,10 @@ class SofaBinauralRenderer:
     def backend_info(self) -> dict:
         info = self.backend.info()
         info.update({
-            "adapter": "JOC 1536-frame / 512-sample metadata",
+            "adapter": f"JOC 1536-frame / {getattr(self.backend, 'block_samples', BINAURAL_BLOCK_SAMPLES)}-sample metadata",
             "dsp_backend": self.dsp_backend,
             "mode": self.mode,
-            "latency_compensated_samples": BINAURAL_LATENCY_SAMPLES,
+            "latency_compensated_samples": getattr(self.backend, "latency_samples", BINAURAL_LATENCY_SAMPLES),
             "object_delay_samples": self.object_delay_samples,
             "tail_seconds": self.tail_seconds,
             "metadata_payloads": self.timeline.payload_count,

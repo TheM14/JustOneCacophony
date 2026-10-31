@@ -20,7 +20,7 @@
 - 直接渲染 `2.0`、`3.1`、`4.0`、`5.1`、`7.1`、`5.1.2`、`5.1.4`、`7.1.2`、`7.1.4`、`9.1.4`、
   `9.1.6`（`4.0` 是 Quad 布局，前后各一对；声道排列见[扬声器布局与声道顺序](#扬声器布局与声道顺序)）；
 - 从 `pcm16 + ID11/OAMD` 直接运行公开 SOFA 双耳渲染，不生成临时 ADM BWF；
-- 双耳 DSP 全程使用 float64/complex128，并保留所选滤波器组的延迟补偿（公开版 961、捕获版 448 samples）、跨帧状态和 room 尾声；
+- 双耳 DSP 全程使用 float64/complex128；SOFA保留完整HRIR、跨帧卷积和独立参考环境状态，个性化路线保留原滤波器组与延迟规则；
 - 直接输出统一支持 float32 或 PCM24 WAV，并在 PCM24 削波前提供明确处理策略；
 - 全程使用 NumPy 的纯 Python 实现；
 - 读取或写入 metadata sidecar，并生成元数据、运行时间和输出摘要。
@@ -84,10 +84,10 @@ python main.py input.m4a --speaker-layout 5.1 --speaker-format int24
 python main.py input.m4a --speaker-layout 7.1.2 --speaker-output output.7.1.2.wav
 ```
 
-直接输出双耳渲染 WAV（普通对象仅 Near/Mid/Far，默认 Mid）。HRTF 输入支持三种来源：
+直接输出双耳渲染 WAV。SOFA与压缩输入使用外部参考环境的 Near/Mid/Far，默认 Mid；个性化路线保持原三档行为。HRTF 输入支持三种来源：
 
 ```powershell
-# 1) SOFA（缺省取 HRTF/binaural.sofa，也可显式指定）
+# 1) 完整SOFA HRIR（默认 HRTF/binaural.sofa，可显式指定）
 python main.py input.m4a --binaural
 python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa
 
@@ -100,25 +100,27 @@ python main.py input.m4a --binaural --compiled-hrtf-cache C:\HRTF\subject.jochrt
 
 # 常用选项
 python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
-  --binaural-mode near
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
-  --hrtf-cache-policy disk
+  --sofa-interpolation lf_mca_zero --reference-config C:\config\reference.json
+python src\compile_hrtf.py C:\HRTF\subject.sofa C:\HRTF\subject.jochrtf
+python main.py input.m4a --binaural --personalized-headphone --binaural-mode near
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --binaural-mode far
 python main.py input.m4a --binaural --personalized-headphone `
   --rosella-filterbank 2
 python main.py input.m4a --binaural --binaural-output output.binaural.wav
 ```
 
-三者都不指定时的自动选择顺序：`HRTF/binaural.sofa` → `output/hrtf-cache` 下唯一的
-`.jochrtf` → `HRTF/binaural.personalized_headphone`；都没有则报错并提示显式指定。
+三者都不指定时先选择项目目录下的 `HRTF/binaural.sofa`；
+缺失时尝试原个性化默认文件。其他位置通过 `--sofa-hrtf PATH` 显式指定。
+`.jochrtf` 只显式选择，不自动生成或回退。
 
 - `.sofa` 是可移植的 source of truth；可以是自行扫描或任何来源的通用 HRTF 数据。
 - `.personalized_headphone` 是杜比官方软件个性化扫描得到的模型，其 JSON 解析由
   本项目自行实现（`src/rosella_model.py`），不调用杜比软件。
-- `.jochrtf` 是从 SOFA 编译出的项目内部 cache，可删除、可从 SOFA 重建，默认写在
-  `output/hrtf-cache`。
+- `.jochrtf` 是从SOFA显式离线导出的轻量方向场，原格式及读写器保留；高精度路线直接读取SOFA。
 
-HRTF 数据统一放在 `HRTF/`（git 忽略）：默认 SOFA `HRTF/binaural.sofa`、默认模型
-`HRTF/binaural.personalized_headphone`。cache 含有源 HRTF 的变换数据，使用与再分发
+个性化默认模型仍为 `HRTF/binaural.personalized_headphone`。SOFA与压缩路线还需要外部参考环境配置，
+默认读取本地 `local/binaural_reference.json`，或用 `--reference-config` / `BINAURAL_REFERENCE_CONFIG` 指定。
+具体环境数据不随源码提供，配置格式见[双耳渲染](docs/binaural.md)。cache 含有源 HRTF 的变换数据，使用与再分发
 仍受源数据许可约束；格式边界、计算公式、状态、时间轴及发布注意事项见
 [双耳渲染](docs/binaural.md) 和 [第三方通知](THIRD_PARTY_NOTICES.md)。
 

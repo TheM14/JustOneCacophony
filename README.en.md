@@ -22,7 +22,7 @@ This is research code, not a complete, standards-compliant, or production-grade 
   or `9.1.6` (`4.0` is the quad layout, a front and a back pair; see
   [Speaker layouts and channel order](#speaker-layouts-and-channel-order)).
 - Run public SOFA binaural rendering directly from `pcm16 + ID11/OAMD`, without a temporary ADM BWF.
-- Keep the binaural DSP in float64/complex128, including the selected filterbank's latency compensation (961 or 448 samples), cross-frame state, and the room tail.
+- Keep binaural DSP in float64/complex128: full SOFA HRIR convolution and independent reference state; the personalized route retains its existing filterbank and latency rules.
 - Use a shared float32/PCM24 WAV writer and explicit PCM24 clipping policy for direct outputs.
 - Implement everything in pure Python on NumPy;
 - Read or write metadata sidecars and produce metadata, timing, and output reports.
@@ -85,11 +85,12 @@ python main.py input.m4a --speaker-layout 5.1 --speaker-format int24
 python main.py input.m4a --speaker-layout 7.1.2 --speaker-output output.7.1.2.wav
 ```
 
-Write binaural stereo directly (ordinary objects are Near/Mid/Far only; Mid is
-the default). The HRTF input accepts three sources:
+Write binaural stereo directly. SOFA and compact inputs select Near/Mid/Far in an external
+reference environment, default Mid; personalized rendering retains its existing three modes.
+The HRTF input accepts three sources:
 
 ```powershell
-# 1) SOFA (defaults to HRTF/binaural.sofa, or an explicit path)
+# 1) Full SOFA HRIR (defaults to HRTF/binaural.sofa, or an explicit path)
 python main.py input.m4a --binaural
 python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa
 
@@ -102,30 +103,33 @@ python main.py input.m4a --binaural --compiled-hrtf-cache C:\HRTF\subject.jochrt
 
 # Common options
 python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
-  --binaural-mode near
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
-  --hrtf-cache-policy disk
+  --sofa-interpolation lf_mca_zero --reference-config C:\config\reference.json
+python src\compile_hrtf.py C:\HRTF\subject.sofa C:\HRTF\subject.jochrtf
+python main.py input.m4a --binaural --personalized-headphone --binaural-mode near
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --binaural-mode far
 python main.py input.m4a --binaural --personalized-headphone `
   --rosella-filterbank 2
 python main.py input.m4a --binaural --binaural-output output.binaural.wav
 ```
 
-With none of the three specified, resolution tries, in order:
-`HRTF/binaural.sofa`, the unique `.jochrtf` under `output/hrtf-cache`, then
-`HRTF/binaural.personalized_headphone`; if none exist, an error asks for an
-explicit path.
+With no explicit input, use `HRTF/binaural.sofa` under the project directory.
+If missing, try the original personalized default. Use `--sofa-hrtf PATH` for
+other locations. Compact input is always explicit, with no automatic export or fallback.
 
 - `.sofa` is the portable source of truth; it can hold self-scanned or any
   generic HRTF data.
 - `.personalized_headphone` is a model produced by Dolby's official
   personalization scan; its JSON parsing is implemented by this project
   (`src/rosella_model.py`) and does not invoke any Dolby software.
-- `.jochrtf` is a project-internal cache compiled from SOFA; it is disposable,
-  rebuildable, and written to `output/hrtf-cache` by default.
+- `.jochrtf` is an explicitly exported compact field; its format and loader/writer
+  remain available. High-precision rendering reads SOFA directly.
 
-HRTF data lives under `HRTF/` (git-ignored): the default SOFA
-`HRTF/binaural.sofa` and the default model
-`HRTF/binaural.personalized_headphone`. Because the cache contains transformed
+The personalized default remains `HRTF/binaural.personalized_headphone`.
+SOFA and compact routes also require an external reference configuration, read
+from local `local/binaural_reference.json`, `--reference-config`, or
+`BINAURAL_REFERENCE_CONFIG`. Environment data is not supplied with the source;
+see the configuration contract in [Binaural rendering](docs/binaural.en.md).
+Because the cache contains transformed
 HRTF data, its use and redistribution remain subject to the source dataset's
 terms. See [Binaural Rendering](docs/binaural.en.md) and
 [Third-party notices](THIRD_PARTY_NOTICES.md) for format boundaries, formulas,

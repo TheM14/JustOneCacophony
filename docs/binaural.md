@@ -2,247 +2,76 @@
 
 [English](binaural.en.md) · [返回 README](../README.md)
 
-JustOneCacophony 的双耳后端支持三种 HRTF 来源：`SimpleFreeFieldHRIR` SOFA、
-杜比官方软件个性化扫描导出的 Rosella `.personalized_headphone`（JSON 解析由本项目
-自行实现，不调用杜比软件），以及从 SOFA 编译出的 `.jochrtf` 缓存。SOFA 在模型加载
-时编译成内存方向场；`.jochrtf` 只是可删除、可重建的 JOC compiled HRTF cache，
-不是交换格式，也不是使用 SOFA 的前置步骤。
+## 三条独立路线
 
-```text
-SOFA FIR
-  -> CanonicalHrtf
-  -> 48 kHz / 单 radius shell / delay-phase policy
-  -> 64-QMF / 77-hybrid projection
-  -> 五阶 ACN/N3D 实球谐场
-  -> 逐对象 direct + early reflections
-  -> shared unitary-FDN late room
-  -> stereo float64
-```
+| 输入 | 直接声 | 距离与环境 |
+|---|---|---|
+| SOFA | 完整复数HRIR局部插值、自适应长度FIR、128样本分区卷积 | 外部参考配置的Near/Mid/Far |
+| `.jochrtf` | 保留原77带／五阶方向场及延迟表示 | 与SOFA相同的三档参考合同 |
+| `.personalized_headphone` | 原DSP及滤波器组 | 原Near/Mid/Far及环境处理 |
 
-## 输入接口
-
-CLI 有三个互斥的 HRTF 输入来源；都不指定时按默认规则自动选择：
+SOFA不会调用编译器、生成压缩缓存或自动回退。原压缩格式、校验器和离线编译能力保留。旧 `sofa_binaural_backend.py` 作为已有底层实现仍在，CLI工厂使用新的 `ReferenceSofaBackend`。
 
 ```powershell
-# 1) SOFA：缺省取 HRTF/binaural.sofa，也可显式指定
 python main.py input.m4a --binaural
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa
-
-# 2) Rosella .personalized_headphone：缺省取 HRTF/binaural.personalized_headphone
-python main.py input.m4a --binaural --personalized-headphone
-python main.py input.m4a --binaural --personalized-headphone C:\HRTF\subject.personalized_headphone
-
-# 3) .jochrtf：显式读取预编译 cache
-python main.py input.m4a --binaural `
-  --compiled-hrtf-cache C:\HRTF\subject.jochrtf
-
-# 可选：SOFA 透明生成/复用磁盘 cache
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
-  --hrtf-cache-policy disk
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --reference-config C:\config\reference.json
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --sofa-interpolation lf_mca_zero
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --binaural-mode near
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --binaural-mode far
+python src\compile_hrtf.py C:\HRTF\subject.sofa C:\HRTF\subject.jochrtf
+python main.py input.m4a --binaural --compiled-hrtf-cache C:\HRTF\subject.jochrtf
+python main.py input.m4a --binaural --personalized-headphone --binaural-mode far --rosella-filterbank 2
 ```
 
-默认选择顺序：`HRTF/binaural.sofa` → `output/hrtf-cache` 下唯一的 `.jochrtf` →
-`HRTF/binaural.personalized_headphone`；三者都没有时报错并提示显式指定。
-`output/hrtf-cache` 下有多个 `.jochrtf` 时同样报错，要求显式选择。
+默认SOFA为项目目录下的 `HRTF/binaural.sofa`，路径不依赖当前工作目录；其他位置用 `--sofa-hrtf PATH` 显式指定。单球壳自动选择，多球壳须用 `--hrtf-radius-m` 指定最近的测量球壳。个性化默认路径不变。三条双耳路线都支持 `--binaural-mode near|mid|far`，CLI默认mid；off仅适用于ADM DBMD提示。
 
-`.personalized_headphone` 的 JSON 解析由本项目自行实现（`src/rosella_model.py`），
-不调用任何杜比软件。
+## 外部参考配置
 
-`--hrtf-cache-policy` 可取 `none`、`memory`、`disk`。默认是 `memory`；`none` 和
-`memory` 都不会创建磁盘文件。`disk` 默认写入 `output/hrtf-cache`，也可用
-`--hrtf-cache-dir` 指定。`--hrtf-radius-m` 选择距离目标最近的 measurement shell。
+`--reference-config` > `BINAURAL_REFERENCE_CONFIG` > 本地 `local/binaural_reference.json`。缺失、SHA-256不符或不支持的映射明确报错。环境数据与具体身份说明不随源码提供。配置示例：
 
-Python API 使用显式 factory：
-
-```python
-from sofa_binaural_backend import SofaBinauralBackend
-
-renderer = SofaBinauralBackend.from_sofa(
-    "subject.sofa",
-    source_count=16,
-    default_profile="mid",
-    cache_policy="memory",
-)
-
-cached = SofaBinauralBackend.from_compiled_cache(
-    "subject.jochrtf",
-    source_count=16,
-    default_profile="mid",
-)
+```json
+{"schema":"binaural-reference-v1","profile_id":"reference-v1",
+ "model_path":"C:/path/to/reference-data.json","model_sha256":"<64 hex digits>",
+ "profile_index":3,"room_impulse_slots":4096,"level_calibration_directions":128,
+ "compiled_receiver_positions_m":[[0,0.09,0],[0,-0.09,0]]}
 ```
 
-文件工厂不会按“未知后缀”猜格式：SOFA 和 `.jochrtf` 始终走不同 loader。
+`model_path` 指向受现有参数加载器支持的外部数据，支持相对配置文件的路径；`profile_index` 固定公共电平校准锚点，选择渲染档位使用 `--binaural-mode`，不改校准锚点。压缩格式没有耳位字段，因此压缩输入必须显式配置耳位，且报告其来源。完整SOFA使用文件自身耳位。不同SOFA共用环境尺度，测量半径不定义场景距离或房间大小。
 
-## 双耳渲染模式
+参考映射执行所选档位的量化、轴缩放、边界与近中心正则规则。有限盒外位置沿边界射线延伸，保留ETSI距离因子，不能再次裁回坐标盒。Near共同直接声系数为1、房间发送为0；Mid/Far为：
 
-`--binaural-mode off|near|mid|far`（默认 `mid`）是**人为指定的渲染提示**，不是
-从输入 E-AC-3 JOC 码流提取或还原的原始双耳元数据：
+```text
+r_eff = h0 * reference_distance_m
+a = 1 / sqrt(1 + c * r_eff^2)
+b = r_eff * a
+```
 
-- 直接双耳渲染（`--binaural`）：near/mid/far 生效，默认 `mid`；`off` 报错；
-- ADM BWF：DBMD segment 10 中后 15 个 JOC 对象的 binaural render mode 写
-  `off=0/near=1/far=2/mid=3`，前 10 个 bed 保持不变，默认 `mid`；`off` 用于显式
-  关闭双耳元数据提示。
+房间发送乘对象信号后进入独立环境状态。完整SOFA直接声与环境分支分别处理，再对齐实现延迟并求和；没有额外的1/r或绝对飞行时间。输出增益只应用一次，不隐式限幅。
 
-## Canonical SOFA 契约
+## 完整HRIR数学与时间基准
 
-当前 strict importer 接受：
+严格导入器继续校验 `SimpleFreeFieldHRIR` 0.4/1.0/1.1、FIR、两个可由位置识别左右的耳、零Emitter偏移、自由场、单位和有限数值。重采样时Data.Delay的采样点数同比例变化。当前距离模型要求固定、对称并以听者中心为原点的耳位；不支持的几何明确拒绝。
 
-- `Conventions=SOFA`；
-- `SOFAConventions=SimpleFreeFieldHRIR`，version `0.4`、`1.0` 或 `1.1`；
-- `DataType=FIR`，`Data.IR[M,2,N]`；
-- 单一正有限 `Data.SamplingRate`，单位为 hertz/Hz；
-- spherical 或 Cartesian `SourcePosition`；
-- 单值或 per-measurement 的 `ListenerPosition/View/Up`；
-- 两个能由 listener-local lateral 坐标唯一识别左右的 receiver；
-- 单一且零偏移的 emitter；
-- causal `Data.Delay[I,2]` 或 `[M,2]`；
-- 明确的 free-field/anechoic `RoomType`。
+SOFA为前/左/上，ADM为右/前/上，变换为 `(y,-x,z)`。单位方向三维凸包构建局部三角网格，查询使用射线与平面三角形的非负、和为1的重心权重；不做经纬平面插值或外推。精确节点返回完整复数响应。跨越大测量缺口的面仍是低支持区域，网格包围原点不能证明覆盖精度。
 
-receiver 左右顺序由几何决定，不能假定 `Data.IR` 的 receiver index。SOFA listener
-坐标为 $+X$ front、
-$+Y$ left、
-$+Z$ up；ADM 坐标为
-$+X$ right、
-$+Y$ front、
-$+Z$ up，转换为：
+FFT最少2048点，按完整HRIR与Data.Delay自动扩展为满足时间预算的2次幂，自动长度上限16384点；不裁短输入。每耳在200–1500 Hz作线性相位回归，对齐后插值完整剩余复数响应，再恢复加权延迟。Data.Delay恰好施加一次，不能从耳位再加一次ITD。默认 `lf_logmag_phase` 对数幅度与对齐复数插值相位结合；可选 `lf_mca_zero` 使用41个连续Gammatone功率近似带、PCHIP和±12 dB修正限幅。这是独立MCA近似，并非第三方项目逐位复现。
 
-$$\bigl(x_{\mathrm{SOFA}},\ y_{\mathrm{SOFA}},\ z_{\mathrm{SOFA}}\bigr) = \bigl(y_{\mathrm{ADM}},\ -x_{\mathrm{ADM}},\ z_{\mathrm{ADM}}\bigr)$$
+距离补充采用归一化刚性球传递函数 `H_sphere(r)/H_sphere(r_measurement)` 的复数比值。测量半径处严格为1；不叠加第二套耳间延迟。球半径由对称耳位推导。中心使用参考正则半径与零ITD的球面面积加权能量平均响应平滑混合。该模型是人头径向变化的近似，不能把角度插值实验当作任意距离准确性证明。
 
-`CanonicalHrtf` 将 `Data.IR` 与 `Data.Delay` 分开保存。只有时域 baseline 才调用
-`materialized_measurement()` 将 delay 应用一次；运行时 SH 路径不先 materialize。
-非 48 kHz HRIR 使用 float64 `scipy.signal.resample_poly` 规范化，delay samples 按
-相同比例缩放。
+直接声电平按固定等面积方向及100–16000 Hz对数频率权重，与校准锚点的参考直接声匹配总双耳能量；每份SOFA只得到一个全局系数，三档共用该系数，不逐档、逐方向、逐耳或逐频率归一化。三档共用相同的HRIR插值、距离补充、卷积和时间补偿流程，只切换参考参数与其直接声/发送规则。
 
-GeneralFIR、BRIR、TF、多 emitter、多义 receiver 或非 free-field 数据需要单独的
-convention adapter，不能只通过 reshape 进入核心 importer。
+保留选定FFT长度的全部FIR采样，共同移位FFT长度的一半以存储前振铃。渲染时使用全方向双耳低频延迟平均值的中位数、取整为单一录音时间原点，给环境分支补齐该原点与实现延迟后统一补偿；报告此偏移。查询得到的原始复数HRIR不改时间基准。这个全局时间参考变换不根据目标距离增加传播时间。
 
-## Delay/phase：exactly once
+每对象独立卷积历史，更新时旧/新输出线性交叉淡化128样本，保持输入历史及独立overlap；环境发送平滑更新。环境计算按1536样本批处理，不改变128样本参数时间线，排空时裁掉额外计算填充。采样率固定48 kHz，内部float64/complex128。
 
-编译器只允许三种互斥语义：
+## 对象接入与支持范围
 
-1. 非零 `Data.Delay` 是 `Data.IR` 外部 delay；FIR 不去旋，运行时应用一次。
-2. `Data.Delay=0` 且 HRIR 有普通正 onset：以每耳 main peak 分离 arrival，拟合后
-   在运行时恢复一次；当前阈值为 peak index 大于 2 samples。
-3. `Data.Delay=0` 且双耳 FIR 共享 sample-0 起点：不发明外部 delay，原 complex
-   phase 直接进入五阶场。
+输入为每帧 `[1536,16]` PCM：0是LFE，1–15是已经重建的对象/bed槽。直接使用ID11时间线，不重新解码，不先转扬声器布局。保留1473样本内容时间补偿和32样本元数据对齐；新后端每128样本更新参数。
 
-任何路径都不能再叠加第二套 ear delay 或 phase-group delay。
+SOFA专用解析开关保留负高度、边界外因子及锚定字段；旧解析器默认行为与个性化时间线不变。有限盒外更新进入时间插值；当前多位置块、ISF、显式无穷远和需要屏幕校准的锚定明确返回结构化不支持错误。`finish()`只排空一次，并保留配置的尾声预算。
 
-## 公开 filterbank 与方向场
+## 轻量格式
 
-运行时固定为：
+`.jochrtf` v1仍为无pickle的NumPy ZIP，保存JSON元数据、77个频带中心、`complex128[36,2,77]`方向系数、`float64[36,2]`延迟系数和`float64[2,2]`边界。原格式、cache key、哈希校验、原子写入及源数据许可关系不变。它保留方向压缩的固有误差；与完整SOFA的距离语义一致不代表频响精度相同。滤波器组公开来源见 [data说明](../data/README.md)。
 
-- 48 kHz；
-- 64-sample QMF hop；
-- 64-QMF / 77-hybrid；
-- analysis/synthesis latency 961 samples；
-- 五阶、36 项、ACN/N3D real spherical harmonics；
-- PCM、delay、SH、room state 为 float64；频带传递和频域状态为 complex128。
-
-上面是 SOFA / `.jochrtf` 路径与公开滤波器组的固定参数。Rosella
-`.personalized_headphone` 路径的滤波器组可选：默认仍是这一套公开滤波器组（961
-samples），`--rosella-filterbank 2` 换成从参考渲染器捕获的版本（11 taps / 3 slots、
-448 samples）。两套实现的参数、缓冲、延迟与验证见
-[Rosella 滤波器组](rosella_filterbank.md)。
-
-每个 hybrid band 的 real/imaginary 单位增益都通过同一套 analysis/synthesis 链生成
-脉冲字典，共 154 个实参数；编译不是直接读取 77 个 FFT bin。默认 projection
-ridge 为 `1e-3`，SH ridge 为 `1e-5`。同方向 measurement 先合并，再用球面 Voronoi
-面积权重做 ridge fit。
-
-固定表位于 `data/rosella_kernels.npz`，实现公开标准化的滤波器组，各表可由如下
-公式计算。
-
-hybrid 分析核定义于 [3GPP TS 26.405 / ETSI TS 126 405](https://www.etsi.org/deliver/etsi_ts/126400_126499/126405/06.00.00_60/ts_126405v060000p.pdf)
-第 5.2.2 节（Table 1 的 $Q=8$/
-$Q=4$ 系数，delay 6）：
-
-$$G_q^p[n] = g^p[n]\cdot\exp\Bigl(j\,\frac{2\pi}{Q^p}\bigl(q+\tfrac12\bigr)(n-6)\Bigr),\qquad n=0,\dots,12$$
-
-QMF analysis 表即 MPEG-4 AAC/SBR（ISO/IEC 14496-3/AMD1:2003 第 4.B.18.2 节）
-的 64 complex QMF bank；打包的 $64\times10$ 表是公开 640-tap prototype
-$c_0,\dots,c_{639}$ 的多相重排：
-
-$$A_{r,t} = \frac{(-1)^t}{128}\,c_{63-r+64t},\qquad r=0,\dots,63,\ t=0,\dots,9$$
-
-QMF synthesis 表为上述 analysis 多相矩阵 $\mathbf{A}$ 的因果左逆，即求解
-$\mathbf{A}\,\mathbf{W}=\mathbf{P}$（
-$\mathbf{P}$ 为 577-sample 延迟置换；
-全链 $961 = 577 + 6\times64$），以 rank-4 分解形式存储：
-
-$$W_{b,l} = \sum_{r=1}^{4} t_{b,l,r}\,\mathbf{b}_{b,r}^{\top}$$
-
-hybrid synthesis 表为 77→64 重组：高频带恒等 $Y_{3+b}=X_{16+b}$；低频带（
-$C_p$ 为
-$8+4+4$ 子带划分）：
-
-$$Y_p = \sum_{q\in C_p}\Bigl(\mathrm{Re}X_q + j\,s_q\,\mathrm{Im}X_q\Bigr),\qquad s_q\in\{\pm1\}$$
-
-loader 校验 archive 和每个数组的 SHA-256；table version、所有数组 hash 与
-77 个 band-center 参考值都属于 cache key。标准可公开获取不等于获准实施相关
-专利；更多来源信息见 [`data/README.md`](../data/README.md) 与
-[`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)。
-
-## `.jochrtf`
-
-`.jochrtf` 是无 pickle 的压缩 NumPy archive，固定包含：
-
-| key | dtype / shape |
-|---|---|
-| `metadata_json` | 含 JSON 文本的 NumPy Unicode scalar（`dtype.kind == "U"`） |
-| `band_center_frequencies_hz` | little-endian `float64[77]` |
-| `coefficients` | little-endian `complex128[36,2,77]` |
-| `delay_coefficients` | little-endian `float64[36,2]` |
-| `delay_bounds` | little-endian `float64[2,2]` |
-
-metadata magic 固定为 `JOC-HRTF-CACHE`，并记录 schema/compiler/phase-policy、
-ACN/N3D、filterbank table hashes、SOFA content SHA-256、采样率、radius、order、
-两个 ridge、payload hash 和 fit report。cache key 覆盖所有会改变编译结果的字段。
-metadata 不保存本机绝对 `source_path`，仅可保存 source display name。
-
-loader 使用 `allow_pickle=False`，并在构造对象前检查 ZIP 成员集、解压大小、shape、
-dtype、端序、连续布局、有限值、delay bounds、band centers、payload hash 和 cache
-key。writer 使用同目录临时文件、`fsync`、进程持有的 OS 文件锁和原子
-`os.replace`；对应的隐藏 `.lock` sidecar 可保留，但不代表仍有 writer 持锁。
-旧版本、损坏或配置不匹配的 cache 不能命中；从 SOFA 启动时会重建，显式 cache
-入口则直接报错。
-
-删除磁盘 cache 后，从同一 SOFA 和同一编译配置得到的场与渲染结果不得改变。
-
-`.jochrtf` 包含由源 HRIR 变换得到的方向场系数与 delay 数据，因此“可以重建”不表示
-它不受数据许可约束。生成 cache 不会扩大源 SOFA/HRTF 数据集授予的权利；cache 的
-使用、复制和再分发仍须遵守源数据集条款。不能确认条款时，应把 `.jochrtf` 作为本地
-私有 cache，不随程序或构建产物发布。`source_sha256` 只用于内容一致性校验，不是许可
-或来源证明。
-
-## JOC 对象与房间
-
-生产适配器继续使用现有 JOC 调度：
-
-- 每帧输入 `[1536,16]`；
-- channel 0 是 special LFE，channel 1..15 是 JOC objects；
-- ID11/OAMD position 使用 sample-timed timeline；
-- 每 512 samples 更新方向/profile；
-- 每个对象拥有独立 direct/early history，late FDN 全局共享；
-- `finish()` 排空 early/late tail；输出增益显式应用，不隐含 limiter 或节目响度归一化。
-
-Near/Mid/Far、equal-power direct level、六面 shoebox 一阶 image source、late send、
-unitary FDN、LFE 120–180 Hz cosine-squared 低通及 room calibration 都是 JOC
-项目定义行为，不是 SOFA 或 Dolby 公布常数。
-
-filterbank、SH 方向场求值、逐对象 early/direct 历史与共享 FDN 全部在 Python/NumPy
-一侧执行，双耳 DSP 全程 float64/complex128。
-
-## 技术引用与权利边界
-
-- [SOFA SimpleFreeFieldHRIR convention](https://www.sofaconventions.org/mediawiki/index.php/SimpleFreeFieldHRIR)
-- [3GPP TS 26.405 / ETSI TS 126 405（64-QMF/77-hybrid 定义）](https://www.etsi.org/deliver/etsi_ts/126400_126499/126405/06.00.00_60/ts_126405v060000p.pdf)
-- [Dolby binaural render mode workflow](https://professionalsupport.dolby.com/s/article/What-is-Binaural-Render-Mode-and-how-do-the-settings-affect-my-mix)
-- [EP3090576A1](https://patents.google.com/patent/EP3090576A1/en)，仅作 direct/early/late、
-  subband 与 FDN 架构背景，不证明某个产品使用特定实施例。
-
-规范、源码或专利文献可公开获取，不等于获准复制其内容、再分发派生产物或实施其中的
-专利权利要求。本项目的技术引用本身不授予专利许可，也不作不侵权保证；准备发布或集成
-到产品的一方应自行审查适用的数据许可、软件许可、专利许可及 freedom-to-operate。
-公开标准来源与权利边界见
-[`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)。
+数学依据：[Duda与Martens 1998](https://www.ece.ucdavis.edu/cipic/wp-content/uploads/sites/12/2015/04/cipic_JASA_Nov_1998.pdf)，[MCA原论文](https://doi.org/10.1109/TASLP.2023.3313908)，[ETSI TS 103 420](https://www.etsi.org/deliver/etsi_ts/103400_103499/103420/01.02.01_60/ts_103420v010201p.pdf)。算法独立实现，不复制第三方HRTF源码；数据许可仍随外部数据适用。

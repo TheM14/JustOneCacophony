@@ -215,7 +215,7 @@ def _parse_program_assignment(reader, raw_payload):
     return program
 
 
-def _parse_object_info_block(reader, object_index, in_bed_or_isf, raw_payload):
+def _parse_object_info_block(reader, object_index, in_bed_or_isf, raw_payload, retain_spatial=False):
     """5.5.9 ``object_info_block(0)``：一个对象的属性更新。"""
     info = {
         "object": object_index,
@@ -263,9 +263,16 @@ def _parse_object_info_block(reader, object_index, in_bed_or_isf, raw_payload):
             z_sign = reader.read(1)
             z = reader.read(4)
             info["position"] = (x, y, z if z_sign else -z)
-            if reader.read(1):                      # b_object_distance_specified
-                if not reader.read(1):              # b_object_at_infinity
-                    reader.read(4)                  # distance_factor_idx
+            outside = bool(reader.read(1))
+            infinite = False
+            distance_index = None
+            if outside:
+                infinite = bool(reader.read(1))
+                if not infinite:
+                    distance_index = reader.read(4)
+            if retain_spatial:
+                info.update(distance_specified=outside, at_infinity=infinite,
+                            distance_factor_idx=distance_index)
         if zone_present:
             info["zone_constraints_idx"] = reader.read(3)
             info["enable_elevation"] = bool(reader.read(1))
@@ -277,9 +284,12 @@ def _parse_object_info_block(reader, object_index, in_bed_or_isf, raw_payload):
             elif size_idx == 2:
                 reader.read(15)
         if screen_present:
-            if reader.read(1):                      # b_object_use_screen_ref
-                reader.read(3)                      # screen_factor_bits
-                reader.read(2)                      # depth_factor_idx
+            screen_ref = bool(reader.read(1))
+            screen_bits = reader.read(3) if screen_ref else None
+            depth_index = reader.read(2) if screen_ref else None
+            if retain_spatial:
+                info.update(use_screen_ref=screen_ref, screen_factor_bits=screen_bits,
+                            depth_factor_idx=depth_index)
         info["snap"] = bool(reader.read(1))
     if reader.read(1):                              # b_additional_table_data_exists
         info["additional_table_bytes"] = reader.read(4) + 1
@@ -287,7 +297,7 @@ def _parse_object_info_block(reader, object_index, in_bed_or_isf, raw_payload):
     return info
 
 
-def _parse_object_element(reader, element, raw_payload):
+def _parse_object_element(reader, element, raw_payload, retain_spatial=False):
     """5.5.5 ``object_element()``：时间信息 + 每个对象一条 object_info_block。"""
     object_count = element["object_count"]
     try:
@@ -327,7 +337,7 @@ def _parse_object_element(reader, element, raw_payload):
             reader.read(5)
         objects = [
             _parse_object_info_block(
-                reader, index, index < element["bed_isf_objects"], raw_payload)
+                reader, index, index < element["bed_isf_objects"], raw_payload, retain_spatial)
             for index in range(object_count)
         ]
     except UnsupportedVariantError:
@@ -348,7 +358,7 @@ def _parse_object_element(reader, element, raw_payload):
     }
 
 
-def _parse_elements(reader, alternate_present, object_count, program, raw_payload):
+def _parse_elements(reader, alternate_present, object_count, program, raw_payload, retain_spatial=False):
     """5.5.4 ``oa_element_md()`` 目录；对象 element 按结构解析，其余按声明长度跳过。"""
     try:
         element_count = reader.read(4)
@@ -425,7 +435,7 @@ def _parse_elements(reader, alternate_present, object_count, program, raw_payloa
                         "payload": bytes_descriptor(raw_payload),
                     })
             object_element = _parse_object_element(
-                reader, element, raw_payload)
+                reader, element, raw_payload, retain_spatial)
             element["parsed_end_bit"] = reader.position
             element["object_element"] = object_element
             # 个别编码器声明的 oa_element_size 比实际内容短；以结构解析结果为准。
@@ -510,7 +520,7 @@ def program_bed_channels(bits_one):
     return program_bed_summary(bits_one)["channels"]
 
 
-def frame_update(bits_one):
+def frame_update(bits_one, *, retain_spatial=False):
     """单帧 OAMD → 位置字段增量及其 sample offset/ramp duration。"""
     bits, raw_payload = _payload_bits(bits_one)
     try:
@@ -532,7 +542,7 @@ def frame_update(bits_one):
         program = _parse_program_assignment(reader, raw_payload)
         alternate_present = bool(reader.read(1))
         object_element, elements = _parse_elements(
-            reader, alternate_present, object_count, program, raw_payload)
+            reader, alternate_present, object_count, program, raw_payload, retain_spatial)
     except UnsupportedVariantError:
         raise
     except ValueError as exc:
@@ -584,8 +594,8 @@ def frame_update(bits_one):
         x, y, z = position
         out[(slot, "q1")] = q_of(x, N_Q12) if 0 <= x <= N_Q12 else None
         out[(slot, "q2")] = q_of(y, N_Q12) if 0 <= y <= N_Q12 else None
-        # 5.6.1.1.10/5.6.1.1.11：pos3D_Z 带符号；当前 16 槽模型只表达非负高度。
-        out[(slot, "q3")] = q_of(z, N_Q3) if 0 <= z <= N_Q3 else (
+        # Preserve legacy nonnegative height unless signed spatial output is requested.
+        out[(slot, "q3")] = q_of(z, N_Q3) if (0 <= z <= N_Q3 or retain_spatial and -N_Q3 <= z < 0) else (
             0 if z < 0 else None)
 
     size_mismatch = [
