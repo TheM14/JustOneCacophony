@@ -79,26 +79,33 @@ BED_CHANNEL_NAMES = {
     "RC_TBL": "Ltr", "RC_TBR": "Rtr", "RC_LW": "Lw", "RC_RW": "Rw",
 }
 
-# 每个 bed 声道的固定方位（ADM 笛卡尔坐标，x 向右、y 向前、z 向上）。
-# bed 声道是固定位置，不是可移动对象；渲染时按这里的位置摆位，而不是沿用 OAMD 的
-# 对象坐标（bed 对象在 OAMD 里没有位置字段）。
+# 每个 bed 声道的固定方位（ADM 笛卡尔坐标，x 向右、y 向前、z 向上），取自
+# ETSI TS 103 420 V1.2.1 clause B.2.1.4 Table B.10：speakerLabel 各自对应唯一的
+# position(X,Y,Z)，与目标扬声器布局无关。bed 对象在 OAMD 里没有位置字段，位置只由
+# 声明的声道标签决定。
+# Table B.10 把 Lw/Rw 的 Y 记作 0,677419，即 ADM 62 级网格上的 42/62 = 21/31。
 BED_CHANNEL_ADM_POSITION = {
     "RC_L": (-1.0, 1.0, 0.0),
     "RC_R": (1.0, 1.0, 0.0),
     "RC_C": (0.0, 1.0, 0.0),
+    "RC_LFE": (-1.0, 1.0, -1.0),
     "RC_LS": (-1.0, 0.0, 0.0),
     "RC_RS": (1.0, 0.0, 0.0),
     "RC_LB": (-1.0, -1.0, 0.0),
     "RC_RB": (1.0, -1.0, 0.0),
-    "RC_LW": (-1.0, 0.5, 0.0),
-    "RC_RW": (1.0, 0.5, 0.0),
-    "RC_TFL": (-0.5, 0.5, 1.0),
-    "RC_TFR": (0.5, 0.5, 1.0),
+    "RC_TFL": (-1.0, 1.0, 1.0),
+    "RC_TFR": (1.0, 1.0, 1.0),
     "RC_TSL": (-1.0, 0.0, 1.0),
     "RC_TSR": (1.0, 0.0, 1.0),
-    "RC_TBL": (-0.5, -0.5, 1.0),
-    "RC_TBR": (0.5, -0.5, 1.0),
+    "RC_TBL": (-1.0, -1.0, 1.0),
+    "RC_TBR": (1.0, -1.0, 1.0),
+    "RC_LW": (-1.0, 21.0 / 31.0, 0.0),
+    "RC_RW": (1.0, 21.0 / 31.0, 0.0),
+    "RC_LFE2": (1.0, 1.0, -1.0),
 }
+
+# LFE 不是空间声源：它的 PCM 走独立通路，不参与对象摆位。
+BED_LFE_LABELS = frozenset(("RC_LFE", "RC_LFE2"))
 
 # 标准 bed 布局名：由声明声道的集合唯一确定（9.1.6 这类常用叫法即由此得来）。
 BED_LAYOUT_NAMES = {
@@ -139,6 +146,11 @@ def adm_xyz_to_q(x, y, z):
     return clamp(q1), clamp(q2), clamp(q3)
 
 
+def adm_xyz_to_render_coordinates(x, y, z):
+    """ADM 笛卡尔坐标 → 渲染器方位 ``(u, v, w)``（u 向右、v 向后、w 向上，0..1）。"""
+    return ((float(x) + 1.0) * 0.5, (1.0 - float(y)) * 0.5, float(z))
+
+
 def declared_bed_channels(assignments):
     """把 ``program_assignment()`` 的 bed 声明展开成有序的标准声道标签。
 
@@ -173,7 +185,7 @@ def bed_layout(assignments):
     labels = declared_bed_channels(assignments)
     if not labels:
         return None
-    channels = [label for label in labels if label not in ("RC_LFE", "RC_LFE2")]
+    channels = [label for label in labels if label not in BED_LFE_LABELS]
     return {
         "name": bed_layout_name(labels),
         "labels": list(labels),
@@ -184,29 +196,21 @@ def bed_layout(assignments):
 def bed_object_positions(labels):
     """JOC 对象槽 → 固定 ADM 位置：(1..15) 对应未含 LFE 的 bed 声道。
 
-    bed 对象在 OAMD 里没有位置字段，位置由声明的 bed 布局决定。返回的字典只包含
-    能给出固定位置的标准声道；不是 bed 声道的对象不在其中，仍按 OAMD 坐标渲染。
+    positions 由声道标签唯一决定（Table B.10），与目标输出布局无关——同一个 bed 声道
+    在扬声器布局和双耳渲染里都落在同一个源位置。返回的字典只包含能给出固定位置的
+    标准声道；不是 bed 声道的对象不在其中，仍按 OAMD 坐标渲染。LFE 走独立通路，
+    不出现在对象槽里。
     """
     positions = {}
     for index, label in enumerate(labels, 1):
         if index > 15:
             break
+        if label in BED_LFE_LABELS:
+            continue
         position = BED_CHANNEL_ADM_POSITION.get(label)
         if position is not None:
             positions[index] = position
     return positions
-
-
-def bed_object_names(labels):
-    """JOC 对象槽 → 扬声器布局短名（用于把 bed 声道直接落到同名扬声器）。"""
-    names = {}
-    for index, label in enumerate(labels, 1):
-        if index > 15:
-            break
-        name = BED_CHANNEL_NAMES.get(label)
-        if name is not None and name != "LFE":
-            names[index] = name
-    return names
 
 
 def joc_input_indices(locations, pair):

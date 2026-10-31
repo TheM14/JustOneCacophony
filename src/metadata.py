@@ -163,7 +163,8 @@ def check_cross_layer(parsed, *, frame, transport=None, bed_channels=None, bed_l
                 "子流声明的全频段通道数与 joc_dmx_config_idx 不一致",
                 frame=frame, details=details)
 
-    if bed_channels is not None:
+    # 没有 bed 声明（空列表）时这项不适用：动态对象 program 没有 bed 槽位可记录。
+    if bed_channels:
         core_positions = []
         if transport is not None:
             core_positions = list(transport["core_locations"])
@@ -208,7 +209,7 @@ class DirectPayloadIndex:
         self.diagnostics = diagnostics if diagnostics is not None else []
         self.config_idx = config_idx
         self.n_channels = n_channels
-        # OAMD bed 声明（内容声床布局）：bed 对象没有位置字段，位置由布局决定。
+        # OAMD bed 声明（内容声床布局）：bed 对象没有位置字段，位置由声道标签决定。
         self.bed_assignments = bed_assignments if bed_assignments is not None else []
         self.bed_layout = bed_layout(self.bed_assignments)
         self.bed_only = bool(bed_only)

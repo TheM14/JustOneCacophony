@@ -20,18 +20,37 @@ RAMP_DURATION_INDEX = (
 OBJECT_ELEMENT_ID = 1
 # 5.6.0.11 Table 11b：ISF 类型 → 对象数。
 ISF_OBJECT_COUNTS = (4, 8, 10, 14, 15, 30)
-# 5.6.1.1.4 Table 12：10 bit 标准 bed 掩码按位对应的声道（LSB = RC_L/RC_R）。
+# 5.6.1.1.4 Table 12：10 bit 标准 bed 掩码。array position 9（RC_L/RC_R）是 channel
+# order 的第一项，字段按 array position 0→9 逐位传输，读成整数后 position 9 落在 LSB，
+# 因此按 LSB→MSB 展开即得 channel order：(L,R), C, LFE, (Ls,Rs), … , LFE2。
 BED_CHANNEL_LABELS = (
     "RC_L/RC_R", "RC_C", "RC_LFE", "RC_LS/RC_RS", "RC_LB/RC_RB",
     "RC_TFL/RC_TFR", "RC_TSL/RC_TSR", "RC_TBL/RC_TBR", "RC_LW/RC_RW", "RC_LFE2",
 )
-# 5.6.1.1.5 Table 13：17 bit 非标准 bed 掩码按位对应的声道标签。
+# 5.6.1.1.5 Table 13：17 bit 非标准 bed 掩码，同样按 channel order 排列（RC_L 最先，
+# 对应 array position 16 = LSB）。
 NONSTD_BED_LABELS = (
-    "RC_LFE2", "RC_RW", "RC_LW", "RC_TBR", "RC_TBL", "RC_TSR", "RC_TSL",
-    "RC_TFR", "RC_TFL", "RC_RB", "RC_LB", "RC_RS", "RC_LS", "RC_LFE", "RC_C",
-    "RC_R", "RC_L",
+    "RC_L", "RC_R", "RC_C", "RC_LFE", "RC_LS", "RC_RS", "RC_LB", "RC_RB",
+    "RC_TFL", "RC_TFR", "RC_TSL", "RC_TSR", "RC_TBL", "RC_TBR", "RC_LW", "RC_RW",
+    "RC_LFE2",
 )
 MAX_SLOTS = 16
+
+
+def standard_bed_channels(bed_mask):
+    """5.6.1.1.4：标准 bed 掩码 → 按 channel order 排列的声道标签（LFE 留在原位）。"""
+    channels = []
+    for bit, labels in enumerate(BED_CHANNEL_LABELS):
+        if (int(bed_mask) >> bit) & 1:
+            channels.extend(labels.split("/"))
+    return channels
+
+
+def nonstandard_bed_channels(bed_mask):
+    """5.6.1.1.5：非标准 bed 掩码 → 按 channel order 排列的声道标签。"""
+    mask = int(bed_mask)
+    return [label for bit, label in enumerate(NONSTD_BED_LABELS)
+            if (mask >> bit) & 1]
 
 
 def q_of(k, n):
@@ -181,21 +200,15 @@ def _parse_program_assignment(reader, raw_payload):
                 continue
             if reader.read(1):                      # b_standard_chan_assign
                 bed_mask = reader.read(10)
-                channels = []
-                for bit in range(10):
-                    if (bed_mask >> bit) & 1:
-                        channels.extend(BED_CHANNEL_LABELS[bit].split("/"))
                 program["bed_assignments"].append({
                     "instance": instance, "lfe_only": False, "standard": True,
-                    "mask": bed_mask, "channels": channels,
+                    "mask": bed_mask, "channels": standard_bed_channels(bed_mask),
                 })
             else:
                 bed_mask = reader.read(17)
-                channels = [NONSTD_BED_LABELS[bit]
-                            for bit in range(17) if (bed_mask >> bit) & 1]
                 program["bed_assignments"].append({
                     "instance": instance, "lfe_only": False, "standard": False,
-                    "mask": bed_mask, "channels": channels,
+                    "mask": bed_mask, "channels": nonstandard_bed_channels(bed_mask),
                 })
         program["num_bed_objects"] = sum(
             len(assignment["channels"]) for assignment in program["bed_assignments"])

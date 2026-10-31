@@ -19,61 +19,18 @@ Q15_SCALE = 32768.0
 Q15_MAX = 32767.0 / Q15_SCALE
 GAIN_SNAP_THRESHOLD = 1.0e-4
 
-# 每个布局 region 0 控制点 → 该点上唯一响应的声道。床声道用这个锚点直接落到目标
-# 布局的同名扬声器上（床声道是一路固定通道，不是需要声像的对象）。
-_ANCHOR_CACHE: dict[str, dict[str, tuple[float, float, float]]] = {}
 
-
-def layout_channel_anchors(layout: SpeakerLayout) -> dict[str, tuple[float, float, float]]:
-    """返回 ``{声道名: (u, v, w)}``：把点对象放在这里时该声道增益为 1。
-
-    坐标取自布局自己的 region 0 控制点，因此锚点与布局的声像模型一致；目标布局没
-    有的声道不会出现在结果里。
-    """
-    cached = _ANCHOR_CACHE.get(layout.name)
-    if cached is not None:
-        return cached
-    anchors: dict[str, tuple[float, float, float]] = {}
-    region = layout.regions[0]
-    for coordinates in region.coordinates_q15:
-        u, v, w = (coordinate / 32767.0 for coordinate in coordinates)
-        gains = render_point_gains(layout, u, v, w, standard_order=True)
-        best = int(np.argmax(gains))
-        dominant = float(gains[best])
-        if dominant < 0.99:
-            continue
-        others = np.delete(gains, best)
-        if others.size and float(np.max(np.abs(others))) > 1.0e-3:
-            continue
-        anchors.setdefault(layout.channels[best], (u, v, w))
-    _ANCHOR_CACHE[layout.name] = anchors
-    return anchors
-
-
-def bed_object_anchors(layout: SpeakerLayout, bed_channels) -> dict[int, tuple[float, float, float]]:
+def bed_object_targets(bed_channels) -> dict[int, tuple[float, float, float]]:
     """JOC 对象槽 → 固定方位 ``(u, v, w)``；只包含 bed 声道。
 
-    目标布局有同名扬声器时用该扬声器的锚点（床声道直连同名声道）；目标布局没有这
-    个声道时退回 bed 布局给出的标准方位，由声像模型摆位。
+    bed 声道的方位由声道标签定义（ETSI TS 103 420 Table B.10），与目标扬声器布局
+    无关：同一个声道无论输出哪种布局都落在同一个源位置，再交给与动态对象相同的
+    点声源渲染路径。LFE 不占对象槽，单独处理。
     """
-    from bed_layout import BED_CHANNEL_ADM_POSITION, BED_CHANNEL_NAMES
+    from bed_layout import adm_xyz_to_render_coordinates, bed_object_positions
 
-    anchors = layout_channel_anchors(layout)
-    result: dict[int, tuple[float, float, float]] = {}
-    for object_index, label in enumerate(bed_channels or (), 1):
-        if object_index > 15:
-            break
-        name = BED_CHANNEL_NAMES.get(label)
-        if name is None or name == "LFE":
-            continue
-        if name in anchors:
-            result[object_index] = anchors[name]
-            continue
-        position = BED_CHANNEL_ADM_POSITION.get(label)
-        if position is not None:
-            x, y, z = position
-            result[object_index] = ((x + 1.0) * 0.5, (1.0 - y) * 0.5, z)
-    return result
+    return {slot: adm_xyz_to_render_coordinates(*xyz)
+            for slot, xyz in bed_object_positions(bed_channels or ()).items()}
 
 
 def _all_object_targets(layout: SpeakerLayout, state: JocFieldState,
@@ -258,7 +215,7 @@ class PythonSpeakerRenderer:
         self.block_size = int(block_size)
         if self.block_size <= 0:
             raise ValueError("block_size must be positive")
-        self.bed_targets = bed_object_anchors(self.layout, bed_channels)
+        self.bed_targets = bed_object_targets(bed_channels)
         self.reset()
 
     def reset(self):

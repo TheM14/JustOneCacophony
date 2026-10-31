@@ -14,8 +14,10 @@ This is research code, not a complete, standards-compliant, or production-grade 
 - Parse ID14 dense / sparse JOC parameters, Huffman data, differential matrices, and `joc_clipgain`.
 - Parse ID11 OAMD position updates and build object trajectories.
 - Read the bed layout the OAMD declares (5.1, 7.1, 7.1.2, 7.1.4, 9.1.4, 9.1.6, ...): for
-  bed-only content the 15 object slots are the bed channels, rendered at that layout's
-  fixed bed positions.
+  bed-only content the 15 object slots are the bed channels, each rendered as a point
+  source at the fixed position its channel label defines (ETSI TS 103 420 table B.10);
+  speaker and binaural output share those source positions and never re-place them per
+  layout, while LFE keeps its separate path.
 - Reconstruct LFE plus 15 object channels through analysis QMF, parameter interpolation, the object matrix, and inverse QMF.
 - Write a 25-channel ADM BWF: a 10-channel 7.1.2 bed (silent except for LFE) plus 15 objects.
 - Render directly to `2.0`, `3.1`, `4.0`, `5.1`, `7.1`, `5.1.2`, `5.1.4`, `7.1.2`, `7.1.4`, `9.1.4`
