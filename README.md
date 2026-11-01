@@ -85,7 +85,7 @@ python main.py input.m4a --speaker-layout 5.1 --speaker-format int24
 python main.py input.m4a --speaker-layout 7.1.2 --speaker-output output.7.1.2.wav
 ```
 
-直接输出双耳渲染 WAV。SOFA与压缩输入使用外部参考环境的 Near/Mid/Far，默认 Mid；个性化路线保持原三档行为。HRTF 输入支持三种来源：
+直接输出双耳渲染 WAV。SOFA与压缩输入默认仅渲染所选HRTF的直达声，可用`--sofa-room`启用项目自有房间；不做球头径向合成。个性化路线保持原Near/Mid/Far及房间处理。HRTF 输入支持三种来源：
 
 ```powershell
 # 1) 完整SOFA HRIR（默认 HRTF/binaural.sofa，可显式指定）
@@ -101,10 +101,12 @@ python main.py input.m4a --binaural --compiled-hrtf-cache C:\HRTF\subject.jochrt
 
 # 常用选项
 python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
-  --sofa-interpolation lf_mca_zero --reference-config C:\config\reference.json
+  --sofa-interpolation lf_mca_zero
 python src\compile_hrtf.py C:\HRTF\subject.sofa C:\HRTF\subject.jochrtf
 python main.py input.m4a --binaural --personalized-headphone --binaural-mode near
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --binaural-mode far
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --source-reference-distance-m 2.193
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --sofa-room
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --sofa-room --sofa-room-preset legacy
 python main.py input.m4a --binaural --personalized-headphone `
   --rosella-filterbank 2
 python main.py input.m4a --binaural --binaural-output output.binaural.wav
@@ -119,9 +121,9 @@ python main.py input.m4a --binaural --binaural-output output.binaural.wav
   本项目自行实现（`src/rosella_model.py`），不调用杜比软件。
 - `.jochrtf` 是从SOFA显式离线导出的轻量方向场，原格式及读写器保留；高精度路线直接读取SOFA。
 
-个性化默认模型仍为 `HRTF/binaural.personalized_headphone`。SOFA与压缩路线还需要外部参考环境配置，
-默认读取本地 `local/binaural_reference.json`，或用 `--reference-config` / `BINAURAL_REFERENCE_CONFIG` 指定。
-具体环境数据不随源码提供，配置格式见[双耳渲染](docs/binaural.md)。cache 含有源 HRTF 的变换数据，使用与再分发
+个性化默认模型仍为 `HRTF/binaural.personalized_headphone`。SOFA与压缩路线沿用Near约1 m、Mid约2.193 m、Far约6.402 m的点声源参考尺度，默认Mid。
+默认不改变测量半径、HRIR、节目增益或传播延迟；开启`--sofa-room`后，使用原项目镜像早反射及FDN房间耦合。Near/Mid默认采用紧凑房间，Far默认采用原大房间；`--sofa-room-preset compact|legacy`可显式选择。两套晚期FIR均随代码提供。
+当前支持自由场HRIR SOFA，BRIR尚未接入；后续BRIR会直接使用文件内房间响应并忽略额外房间开关。细节见[双耳渲染](docs/binaural.md)。cache 含有源 HRTF 的变换数据，使用与再分发
 仍受源数据许可约束；格式边界、计算公式、状态、时间轴及发布注意事项见
 [双耳渲染](docs/binaural.md) 和 [第三方通知](THIRD_PARTY_NOTICES.md)。
 
@@ -273,7 +275,7 @@ JustOneCacophony/
 - 基于目标布局 region 的等功率声像；
 - 布局位置补偿与逐样本增益斜坡；
 - float32 与 PCM24 输出量化；
-- SOFA canonical importer、64-QMF/77-hybrid 投影、`36×2×77` 五阶方向 field、exactly-once delay/phase、项目 early/late room 与 special LFE。
+- SOFA canonical importer、完整HRIR方向插值、显式64-QMF/77-hybrid压缩导出、`36×2×77`五阶方向field、exactly-once delay/phase与special LFE。
 
 解码与渲染过程使用的公式见[数学说明](docs/math.md)。
 

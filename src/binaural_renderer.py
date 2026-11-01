@@ -116,22 +116,25 @@ class SofaBinauralRenderer:
             tail_seconds: float = 5.0,
             output_gain: float = 1.0,
             chunk_frames: int = 64,
-            bed_channels=None, reference_config=None,
-            interpolation: str = "lf_logmag_phase") -> "SofaBinauralRenderer":
-        from sofa_reference_backend import ReferenceSofaBackend
+            bed_channels=None,
+            interpolation: str = "lf_logmag_phase",
+            reference_distance_m: float | None = None,
+            sofa_room: bool = False,
+            room_preset: str | None = None) -> "SofaBinauralRenderer":
+        from sofa_direct_backend import DirectSofaBackend
         if cache_policy not in (None, "none", "memory") or cache_dir is not None:
             raise ValueError("SOFA renders full HRIRs; use compile_hrtf.py to export a .jochrtf")
         if projection_ridge != DEFAULT_PROJECTION_RIDGE or sh_ridge != DEFAULT_SH_RIDGE:
             raise ValueError("full HRIR rendering does not use projection/SH ridge parameters")
         source = resolve_sofa_hrtf(sofa)
-        backend = ReferenceSofaBackend(
+        backend = DirectSofaBackend(
             source,
             source_count=SOURCE_CHANNELS,
             output_gain=output_gain,
-            reference_config=reference_config,
             mode=mode,
             shell_radius_m=shell_radius_m,
-            method=interpolation)
+            method=interpolation,
+            reference_distance_m=reference_distance_m, sofa_room=sofa_room, room_preset=room_preset)
         return cls(
             backend,
             mode=mode,
@@ -148,13 +151,17 @@ class SofaBinauralRenderer:
             tail_seconds: float = 5.0,
             output_gain: float = 1.0,
             chunk_frames: int = 64,
-            bed_channels=None, reference_config=None) -> "SofaBinauralRenderer":
-        from sofa_reference_backend import ReferenceSofaBackend
+            bed_channels=None,
+            reference_distance_m: float | None = None,
+            sofa_room: bool = False,
+            room_preset: str | None = None) -> "SofaBinauralRenderer":
+        from sofa_direct_backend import DirectSofaBackend
         source = resolve_compiled_hrtf_cache(cache)
-        backend = ReferenceSofaBackend(
+        backend = DirectSofaBackend(
             source,
             source_count=SOURCE_CHANNELS,
-            compiled=True, reference_config=reference_config, output_gain=output_gain, mode=mode)
+            compiled=True, output_gain=output_gain, mode=mode,
+            reference_distance_m=reference_distance_m, sofa_room=sofa_room, room_preset=room_preset)
         return cls(
             backend,
             mode=mode,

@@ -5,12 +5,14 @@ from collections import OrderedDict
 import math
 import numpy as np
 from scipy.interpolate import PchipInterpolator
-from scipy.spatial import ConvexHull, SphericalVoronoi, cKDTree
+from scipy.spatial import ConvexHull, cKDTree
 
 from sofa_canonical import CanonicalHrtf, load_simple_free_field_hrir
 
 
 class FullHrirField:
+    response_kind = "hrir"
+
     def __init__(self, source, *, method="lf_logmag_phase", shell_radius_m=None,
                  fft_size=None):
         if method not in ("lf_logmag_phase", "lf_mca_zero"):
@@ -41,13 +43,6 @@ class FullHrirField:
         if not np.allclose(receiver, receiver[0], atol=1e-9, rtol=0):
             raise ValueError("moving receiver geometry is unsupported")
         self.receivers = receiver[0].copy()
-        if np.linalg.norm(self.receivers.mean(axis=0)) > 1e-6:
-            raise ValueError("radial model requires ears centred on the listener")
-        self.head_radius_m = float(np.linalg.norm(self.receivers[0]))
-        if not (0.04 < self.head_radius_m < .15) or not np.isclose(
-                np.linalg.norm(self.receivers[1]), self.head_radius_m, atol=1e-6):
-            raise ValueError("unsupported receiver geometry for the radial model")
-        self.ear_directions = self.receivers/self.head_radius_m
         unit = c.unit_directions[selected]
         _, first, inverse = np.unique(np.round(unit, 10), axis=0, return_index=True, return_inverse=True)
         for group in np.flatnonzero(np.bincount(inverse) > 1):
@@ -83,10 +78,6 @@ class FullHrirField:
         self.common_latency_samples = self.fft_size//2
         physical = raw*np.exp(-1j*self.omega*c.delay_samples[selected, :, None])
         self.floor = max(float(np.max(np.abs(physical)))*1e-6, 1e-15)
-        areas = SphericalVoronoi(self.directions).calculate_areas()
-        areas /= areas.sum()
-        energy = np.einsum("m,mef->f", areas, np.abs(physical)**2)/2
-        self.centre_spectrum = np.sqrt(energy)*np.exp(-1j*self.omega*self.recording_origin_samples)
         self.aligned = physical*np.exp(1j*self.omega*self.delays[..., None])
         self.log_magnitude = None
         self.auditory = None
@@ -166,55 +157,5 @@ class FullHrirField:
                     interpolation_storage_bytes=sum(x.nbytes for x in arrays if x is not None),
                     max_triangle_edge_degrees=self.max_triangle_edge_degrees,
                     phase_fit_rms_rad_p95=float(np.percentile(self.phase_fit_rms_rad, 95)),
-                    ear_model="complex-rigid-sphere-distance-ratio",
-                    radial_model_validation="analytic-identity-and-series-checks; approximate-human-head")
-
-
-def sphere_transfer(frequencies, radius, head_radius, cosines, *, sound_speed=343.3,
-                    tolerance=1e-10):
-    """Point-source pressure / free-field centre pressure, FFT sign convention.
-
-    Evaluate the rigid-sphere series using adjacent Hankel ratios, avoiding
-    overflow of high-order Neumann functions at low frequency.
-    """
-    f = np.asarray(frequencies, dtype=np.float64)
-    r, a = float(radius), float(head_radius)
-    mu = np.asarray(cosines, dtype=np.float64)
-    if f.ndim != 1 or not np.isfinite(f).all() or np.any(f < 0) or not np.isfinite(mu).all():
-        raise ValueError("invalid sphere frequency or incidence")
-    if not (math.isfinite(r) and math.isfinite(a) and r > a > 0):
-        raise ValueError("sphere source must be outside the head")
-    x = 2*np.pi*f*a/sound_speed
-    z = x*(r/a)
-    order = max(int(math.ceil(float(x.max(initial=0))))+32,
-                int(math.ceil(math.log(tolerance)/math.log(a/r)))+16)
-    if order > 4096:
-        raise ValueError("source too close to the sphere surface")
-    mu = np.clip(mu, -1., 1.)
-    p_before, p = np.ones_like(mu), mu.copy()
-    result = np.ones(mu.shape+(len(f),), dtype=np.complex128)/(1+1j*x)
-    ratio_a = x/(1+1j*x)
-    ratio_r = z/(1+1j*z)
-    product = np.ones_like(x, dtype=np.complex128)
-    for n in range(1, order+1):
-        quotient = np.divide(ratio_a, ratio_r, out=np.full_like(ratio_a, a/r), where=z != 0)
-        product *= quotient
-        result += (2*n+1)*p[..., None]*product/(n+1-x*ratio_a)
-        p_before, p = p, ((2*n+1)*mu*p-n*p_before)/(n+1)
-        ratio_a = x/((2*n+1)-x*ratio_a)
-        ratio_r = z/((2*n+1)-z*ratio_r)
-    result *= np.exp(1j*x)
-    if not np.isfinite(result).all():
-        raise ValueError("sphere series failed to converge")
-    return result
-
-
-def radial_ratio(field, direction, radius):
-    if abs(float(radius)-field.measurement_radius_m) < 1e-10:
-        return np.ones((2, len(field.frequencies)), dtype=np.complex128)
-    mu = field.ear_directions @ np.asarray(direction, dtype=np.float64)
-    source = sphere_transfer(field.frequencies, field.measurement_radius_m, field.head_radius_m, mu)
-    target = sphere_transfer(field.frequencies, radius, field.head_radius_m, mu)
-    if np.min(np.abs(source)) < 1e-10:
-        raise ValueError("singular radial reference response")
-    return target/source
+                    ear_model="measured-SOFA-receivers",
+                    receiver_positions_m=self.receivers.tolist())

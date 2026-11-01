@@ -529,7 +529,7 @@ def build_parser():
                         help="扬声器渲染 metadata 相对帧偏移，默认 1473 samples")
     parser.add_argument("--binaural-mode", choices=("off", "near", "mid", "far"),
                         default=None,
-                        help="双耳渲染模式或ADM DBMD提示，默认mid；支持near/mid/far。"
+                        help="双耳参考距离档位或ADM DBMD提示，默认mid；支持near/mid/far。"
                              "off仅用于ADM BWF关闭DBMD双耳提示")
     hrtf_input = parser.add_mutually_exclusive_group()
     hrtf_input.add_argument(
@@ -556,12 +556,16 @@ def build_parser():
     parser.add_argument(
         "--hrtf-radius-m", type=float, default=None,
         help="选择最近的SOFA测量球壳；单球壳默认自动选择，多球壳必须指定")
-    parser.add_argument("--reference-config", type=Path,
-                        help="SOFA/.jochrtf的外部参考环境配置")
     parser.add_argument("--sofa-interpolation", choices=("lf_logmag_phase", "lf_mca_zero"),
                         default=None, help="完整HRIR局部插值，默认 lf_logmag_phase")
+    parser.add_argument("--source-reference-distance-m", type=float,
+                        help="覆盖SOFA/压缩输入所选档位的点声源参考距离；默认mid约2.193 m")
+    parser.add_argument("--sofa-room", action="store_true",
+                        help="可选：为SOFA/压缩输入启用项目自有房间模型；默认关闭")
+    parser.add_argument("--sofa-room-preset", choices=("compact", "legacy"),
+                        help="房间预设；默认Near/Mid紧凑房间，Far原大房间；需要--sofa-room")
     parser.add_argument("--binaural-tail-seconds", type=float, default=5.0,
-                        help="双耳 room/filterbank flush 上限，默认 5 秒")
+                        help="双耳 FIR/filterbank 排空上限，默认 5 秒")
     parser.add_argument("--binaural-tail-threshold", type=float, default=1.0e-8,
                         help="双耳尾声裁切阈值，默认 1e-8；主体至少保留原时长")
     parser.add_argument("--binaural-chunk-frames", type=int, default=64,
@@ -636,8 +640,10 @@ def main(argv=None):
         args.hrtf_cache_policy is not None,
         args.hrtf_cache_dir is not None,
         args.hrtf_radius_m is not None,
-        args.reference_config is not None,
         args.sofa_interpolation is not None,
+        args.source_reference_distance_m is not None,
+        args.sofa_room,
+        args.sofa_room_preset is not None,
     ))
     if hrtf_options_used and not binaural_mode:
         raise ValueError("SOFA/HRTF 选项仅与 --binaural 一起使用")
@@ -678,12 +684,22 @@ def main(argv=None):
         raise ValueError("eac3-target-level 必须在 -31..0 之间")
     binaural_hrtf_input = resolve_binaural_hrtf_input(
         args, required=binaural_mode and not args.metadata_only)
+    if args.source_reference_distance_m is not None:
+        if (not math.isfinite(args.source_reference_distance_m)
+                or args.source_reference_distance_m <= 0):
+            raise ValueError("source-reference-distance-m 必须是正有限值")
+        if binaural_hrtf_input is None or binaural_hrtf_input["kind"] == "rosella":
+            raise ValueError("--source-reference-distance-m 仅用于 SOFA/压缩输入")
     if binaural_hrtf_input is not None:
         kind = binaural_hrtf_input["kind"]
-        if kind == "rosella" and (args.reference_config is not None or args.sofa_interpolation is not None):
-            raise ValueError("参考环境/HRIR插值选项仅用于SOFA路径")
+        if kind == "rosella" and args.sofa_interpolation is not None:
+            raise ValueError("HRIR插值选项仅用于SOFA路径")
         if kind == "compiled_cache" and args.sofa_interpolation is not None:
             raise ValueError("--sofa-interpolation不适用于已编译输入")
+    if args.sofa_room and (binaural_hrtf_input is None or binaural_hrtf_input["kind"] == "rosella"):
+        raise ValueError("--sofa-room 仅用于SOFA/压缩输入；个性化模型使用自身房间处理")
+    if args.sofa_room_preset is not None and not args.sofa_room:
+        raise ValueError("--sofa-room-preset 需要 --sofa-room")
     if (args.rosella_filterbank is not None and binaural_hrtf_input is not None
             and binaural_hrtf_input["kind"] != "rosella"):
         raise ValueError(
@@ -814,8 +830,12 @@ def main(argv=None):
                 "output_gain": gain_float64,
                 "chunk_frames": args.binaural_chunk_frames,
                 "bed_channels": getattr(index, "bed_channels", ()),
-                "reference_config": args.reference_config,
             }
+            if args.source_reference_distance_m is not None:
+                common_options["reference_distance_m"] = args.source_reference_distance_m
+            if args.sofa_room:
+                common_options["sofa_room"] = True
+                common_options["room_preset"] = args.sofa_room_preset
             if hrtf_source["kind"] == "sofa":
                 binaural_decoder = timed_call(
                     timings, "create_binaural_renderer",
@@ -849,6 +869,9 @@ def main(argv=None):
                 f"backend={binaural_decoder.dsp_backend} "
                 f"precision=float64/complex128 "
                 f"hrtf={hrtf_source['kind']}:{hrtf_source['path']}", flush=True)
+            if hrtf_source["kind"] != "rosella":
+                room = binaural_decoder.backend.room
+                print(f"[binaural] room={'off' if room is None else room.preset}", flush=True)
             if hrtf_source["kind"] == "rosella":
                 print(
                     f"[binaural] filterbank={FILTERBANK_NAMES[binaural_decoder.filterbank]}"

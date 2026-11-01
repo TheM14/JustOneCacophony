@@ -87,8 +87,9 @@ python main.py input.m4a --speaker-layout 5.1 --speaker-format int24
 python main.py input.m4a --speaker-layout 7.1.2 --speaker-output output.7.1.2.wav
 ```
 
-Write binaural stereo directly. SOFA and compact inputs select Near/Mid/Far in an external
-reference environment, default Mid; personalized rendering retains its existing three modes.
+Write binaural stereo directly. SOFA and compact inputs render direct HRTFs by default;
+`--sofa-room` enables the existing project room. There is no synthetic radial head filtering. Personalized rendering
+retains its existing Near/Mid/Far modes and room processing.
 The HRTF input accepts three sources:
 
 ```powershell
@@ -105,10 +106,12 @@ python main.py input.m4a --binaural --compiled-hrtf-cache C:\HRTF\subject.jochrt
 
 # Common options
 python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
-  --sofa-interpolation lf_mca_zero --reference-config C:\config\reference.json
+  --sofa-interpolation lf_mca_zero
 python src\compile_hrtf.py C:\HRTF\subject.sofa C:\HRTF\subject.jochrtf
 python main.py input.m4a --binaural --personalized-headphone --binaural-mode near
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --binaural-mode far
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --source-reference-distance-m 2.193
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --sofa-room
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --sofa-room --sofa-room-preset legacy
 python main.py input.m4a --binaural --personalized-headphone `
   --rosella-filterbank 2
 python main.py input.m4a --binaural --binaural-output output.binaural.wav
@@ -127,10 +130,15 @@ other locations. Compact input is always explicit, with no automatic export or f
   remain available. High-precision rendering reads SOFA directly.
 
 The personalized default remains `HRTF/binaural.personalized_headphone`.
-SOFA and compact routes also require an external reference configuration, read
-from local `local/binaural_reference.json`, `--reference-config`, or
-`BINAURAL_REFERENCE_CONFIG`. Environment data is not supplied with the source;
-see the configuration contract in [Binaural rendering](docs/binaural.en.md).
+SOFA and compact routes retain Near/Mid/Far point-source scales of approximately
+1, 2.193 and 6.402 m, default Mid. Direct-only rendering does not alter the measured
+radius, HRIR, programme gain or flight time. `--sofa-room` enables the original project
+image-source/FDN coupling. Near/Mid default to the compact room, Far to the original
+large room. `--sofa-room-preset compact|legacy` selects either explicitly; both FIR
+assets ship with the code.
+Free-field HRIR SOFA is supported; BRIR loading is not implemented yet. Future BRIR
+input will retain its recorded room and ignore the additional room switch.
+See [Binaural rendering](docs/binaural.en.md).
 Because the cache contains transformed
 HRTF data, its use and redistribution remain subject to the source dataset's
 terms. See [Binaural Rendering](docs/binaural.en.md) and
@@ -315,7 +323,7 @@ The main documented stages are:
 - equal-power panning over target-layout regions;
 - layout-dependent position compensation and sample-wise gain ramps;
 - float32 and PCM24 output quantization;
-- SOFA canonical import, 64-QMF/77-hybrid projection, `36×2×77` fifth-order fields, exactly-once delay/phase, project early/late room behavior, and special LFE.
+- SOFA canonical import, full-HRIR directional interpolation, explicit 64-QMF/77-hybrid compact export, `36×2×77` fifth-order fields, exactly-once delay/phase, and special LFE.
 
 See the [mathematical notes](docs/math.en.md) for the equations used by the decoding and rendering process.
 

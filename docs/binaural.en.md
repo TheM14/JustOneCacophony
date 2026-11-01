@@ -1,67 +1,92 @@
 # Binaural rendering
 
-[中文](binaural.md) · [Back to README](../README.en.md)
+[中文](binaural.md) · [README](../README.en.md)
 
-## Routes
+## Independent input routes
 
-- SOFA: full complex local HRIR interpolation, adaptive-length filters and 128-sample partitioned convolution.
-- `.jochrtf`: the existing compact 77-band/fifth-order field and delay representation.
-- `.personalized_headphone`: the existing DSP, filterbank selection and Near/Mid/Far behavior.
+| Input | Rendering | Distance and environment |
+|---|---|---|
+| SOFA | Full complex directional HRIR interpolation, adaptive FIR length, 128-sample partitioned convolution | Direct by default; optional project room; no synthetic radial head filtering |
+| `.jochrtf` | Existing 77-band, fifth-order field and delay representation | Direct by default; same optional room |
+| `.personalized_headphone` | Existing DSP, filterbank and model parameters | Existing Near/Mid/Far and room processing unchanged |
 
-SOFA and compact inputs use the same externally configured reference geometry, distance gains and environment state. SOFA never compiles or silently falls back to the compact format. The old compact loader/writer and compiler remain available.
+SOFA never invokes the compact compiler, writes a compact cache or falls back to it. The compact format, validation and offline compiler remain available. SOFA and compact input use `DirectSofaBackend` with the object timeline.
 
 ```powershell
 python main.py input.m4a --binaural
-python main.py input.m4a --binaural --sofa-hrtf subject.sofa --reference-config reference.json
-python main.py input.m4a --binaural --sofa-hrtf subject.sofa --sofa-interpolation lf_mca_zero
-python main.py input.m4a --binaural --sofa-hrtf subject.sofa --binaural-mode near
-python main.py input.m4a --binaural --sofa-hrtf subject.sofa --binaural-mode far
-python src\compile_hrtf.py subject.sofa subject.jochrtf
-python main.py input.m4a --binaural --compiled-hrtf-cache subject.jochrtf
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --sofa-interpolation lf_mca_zero
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --source-reference-distance-m 2.193
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --sofa-room
+python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --sofa-room --sofa-room-preset legacy
+python src\compile_hrtf.py C:\HRTF\subject.sofa C:\HRTF\subject.jochrtf
+python main.py input.m4a --binaural --compiled-hrtf-cache C:\HRTF\subject.jochrtf
 python main.py input.m4a --binaural --personalized-headphone --binaural-mode far --rosella-filterbank 2
 ```
 
-The default SOFA is `HRTF/binaural.sofa` under the project directory, independently of the current working directory. Use `--sofa-hrtf PATH` for other locations. A single measured shell is selected automatically; multi-shell data requires `--hrtf-radius-m`. The personalized default path is unchanged. All three binaural routes accept `--binaural-mode near|mid|far`, defaulting to mid in the CLI; off remains an ADM-only DBMD hint.
+The default SOFA is `HRTF/binaural.sofa` under the project directory, independent of the working directory. Use `--sofa-hrtf PATH` for other locations. A single measurement shell is selected automatically; multiple shells require `--hrtf-radius-m`. Radial interpolation is not implemented. The personalized default remains `HRTF/binaural.personalized_headphone`.
 
-## Reference configuration
+SOFA and compact inputs retain the Near/Mid/Far point-source scales, default Mid. Personalized presets and ADM DBMD hints retain their existing behavior.
 
-Resolution order: `--reference-config`, `BINAURAL_REFERENCE_CONFIG`, then local `local/binaural_reference.json`. Missing data, a hash mismatch, or an unsupported mapping is an error. Environment data and its specific identity are not supplied with the source. Example:
+## Point-source scale
 
-```json
-{"schema":"binaural-reference-v1","profile_id":"reference-v1",
- "model_path":"C:/path/to/reference-data.json","model_sha256":"<64 hex digits>",
- "profile_index":3,"room_impulse_slots":4096,"level_calibration_directions":128,
- "compiled_receiver_positions_m":[[0,0.09,0],[0,-0.09,0]]}
+Near/Mid/Far reference distances are 1.00000465, 2.19327927 and 6.40177584 m. `--source-reference-distance-m` overrides the selected scale. For ADM right/front/up coordinates `p=(x,y,z)`:
+
+```text
+q_SOFA = (y, -x, z) / ||p||
+d_nominal = reference_distance_m * ||p||
+H_render(ear, f) = H_selected_shell(ear, f, q_SOFA)
 ```
 
-The external data must be accepted by the existing parameter loader. Relative paths resolve against the configuration file. `profile_index` fixes the shared level-calibration anchor; `--binaural-mode` selects the rendering profile without changing that anchor. Compact files do not store receiver positions; they require explicit configured geometry. Full SOFA uses its own ear positions. A measured radius does not set the scene scale or room size.
+This defines nominal metric object coordinates, without turning a 1.2 m measurement into measured 2.193 m data or changing SOFA metadata. Direct-only rendering adds no inverse-distance attenuation, radial sphere ratio, synthetic centre response, room send, dry/wet coupling or distance-dependent flight time. Programme gain and the SOFA response scale are retained. The optional room uses the original project coupling; explicit output gain is applied once.
 
-Reference mapping uses the selected profile's quantization, axes, bounds and centre regularization. Outside positions extend the listener-to-boundary ray by the coded finite factor and are never clamped back inside. Near uses direct gain 1 and environment send 0. Mid/Far use `a=1/sqrt(1+c*(h0*r)^2)` and `b=h0*r*a`. Send gain is not final reverberant pressure. All modes share the same interpolation, radial adaptation, convolution and timing. There is no additional 1/r attenuation or absolute flight-time delay.
+A coincident source has no defined direction. Retain that object's last valid direction, or use front when no history exists. No zero-ITD response is synthesized. Finite outside coordinates retain the metadata distance factor rather than being clamped into the unit box.
 
-## Full HRIR model
+SOFA requires no personalized model or machine-local configuration. Direct-only rendering does not read a room asset. Reports record input identity, measured radius, interpolation and the room switch.
 
-The strict importer validates SimpleFreeFieldHRIR 0.4/1.0/1.1, FIR, units, listener orientation, ear order, zero emitter offset, finite data and free-field declarations. Resampling scales Data.Delay in samples. The radial adapter requires fixed symmetric receiver positions centred on the listener.
+## Optional project room
 
-Map ADM right/front/up to SOFA front/left/up with `(y,-x,z)`. A 3D convex hull supplies local spherical triangles. Ray/planar barycentric weights are nonnegative and sum to one; exact measured nodes preserve the full complex response. Large triangles over coverage holes still have limited support.
+`--sofa-room` is off by default. It reuses the original `public_room.py` and `reference_distance.py` algorithms with original and compact parameter sets: six first-order image reflections plus a shared four-line orthogonal Hadamard FDN with two all-pass diffusers and low-pass damping. The project listening preset aims to approximate an ideal listening environment dominated by direct sound. It is not a measured BRIR or a mandated standard room. No Rosella room table is required.
 
-Per-ear delay comes from phase regression at 200–1500 Hz. Interpolate aligned complex residuals and restore weighted delay, including Data.Delay once. The default `lf_logmag_phase` combines interpolated log magnitude with aligned complex phase. `lf_mca_zero` is an independent local MCA approximation with 41 continuous Gammatone power bands, PCHIP and a ±12 dB gain bound; it is not a bitwise reproduction of a third-party implementation.
+Near/Mid default to `compact`; Far defaults to `legacy` to retain its unit-coordinate
+source range. Select either with `--sofa-room-preset compact|legacy`. Compact dimensions
+come from [model 9 in Zahorik 2009, Table 1](https://pmc.ncbi.nlm.nih.gov/articles/PMC2730711/).
+The same project algorithm scales late delays, diffusion times and the RT60 parameter
+by V/S. Only the geometry is borrowed; this does not reproduce the paper's BRIR model.
 
-Radial adaptation multiplies by the complex normalized rigid-sphere ratio `H_sphere(r)/H_sphere(r_measured)`, exactly one at the measured radius. Ear geometry determines sphere radius. Near the centre, the configured regularization and an equal-ear, zero-ITD, spherical-area-weighted energy response give a continuous blend. This is an approximate human-head radial model; angular interpolation scores do not validate arbitrary distances.
+Full-HRIR rendering evaluates the selected SOFA at each reflected direction. Fractional delays use phase ramps across the full FFT grid, with extra delay `(L_path-L_direct)/c`; native `Data.Delay` is retained once. Direct, early and late gains follow the original project policy. Sources must lie inside the optional room geometry; outside positions are not silently clipped.
 
-Calibration computes one global scalar per input at the configured anchor from equal-area directions and total binaural energy with logarithmic frequency weighting at 100–16000 Hz. All three modes share that scalar; no per-mode/ear/direction/frequency normalization is applied.
+Both FDNs are excited by a unit impulse at 48 kHz and stored as stereo float64 FIRs.
+`data/sofa-room-compact.npz` has 37,383 taps and an RT60 parameter of about 0.3894 s;
+`data/sofa-room.npz` retains the original 81,600 taps and 0.85 s parameter. Omitted probe
+tail energy is about `2.2e-13` in both. PCM FFT convolution realizes each time-invariant
+system. Early reflections use the selected SOFA; late output retains the original
+stereo FDN definition.
 
-The FFT size is at least 2048, automatically increased to a power of two that fits the complete HRIR and Data.Delay, up to 16384. All resulting FIR taps are retained, with a declared common shift of half the FFT size. Rendering rebases one global recording origin, the rounded median of mean-ear fitted delays; the environment branch receives matching delay before common compensation. Original spectrum queries retain the dataset time reference. The shift is independent of target source distance.
+Late FIR alignment includes the convolution implementation shift and the selected SOFA's common recording-delay estimate. Enabled room processing uses 1536-sample batches while retaining 128-sample parameter updates; extra flush padding is discarded. Early reflections in `.jochrtf` retain their 77-band approximation. Regenerate both assets with `python src\generate_sofa_room.py`, or select one using `--preset compact|legacy`; the archives record parameters, provenance, coefficient hash and tail budget.
 
-Per-object convolution retains input history and independent old/new overlap during a 128-sample output crossfade. Environment computation batches 1536 samples without changing the 128-sample parameter timeline; extra computation padding is trimmed when draining. Source PCM, delays and accumulation use float64; spectra use complex128, at 48 kHz.
+## Full HRIR and time reference
 
-## Scheduling and limits
+The importer validates `SimpleFreeFieldHRIR` versions 0.4/1.0/1.1, FIR data, two consistently identifiable left/right receivers, zero emitter offset, free-field metadata, units and finite numbers. Processing uses 48 kHz; resampling scales sample-valued `Data.Delay` accordingly. Receivers must remain fixed across measurements; angular interpolation no longer fits a symmetric spherical head.
 
-Each `[1536,16]` frame contains LFE followed by 15 already reconstructed objects/bed slots. Metadata retains the existing 1473-sample content offset and 32-sample alignment; new parameters update every 128 samples. A SOFA-only opt-in preserves negative elevation, outside distance and anchor fields. Legacy parsing and the personalized timeline retain their default behavior.
+BRIR and SOFA conventions other than `SimpleFreeFieldHRIR` are not implemented. Unsupported files are rejected. The backend has a response-type guard to announce BRIR and ignore `--sofa-room` once BRIR loading is implemented; current tests cover that policy interface, not a BRIR loader.
 
-Multi-position blocks, ISF, explicit infinity and screen anchors requiring calibration return structured unsupported errors. Finite outside updates participate in timeline interpolation. `finish()` drains state only once; output gain is applied once without an implicit limiter.
+A 3-D convex hull of measured unit directions defines local triangles. Ray/triangle barycentric weights are nonnegative and sum to one. There is no longitude/latitude planar interpolation or extrapolation beyond directional coverage. Measured nodes retain their complex response.
 
-## Compact files
+Low-frequency alignment fits delay over 200–1500 Hz. Default `lf_logmag_phase` interpolates log magnitude and reconstructs phase from aligned complex residuals and interpolated delay. Optional `lf_mca_zero` applies auditory-band magnitude correction. Neither replaces the selected full FIR with a minimum-phase response.
 
-Version-1 `.jochrtf` files retain their pickle-free ZIP schema, band centres, complex128 `[36,2,77]` coefficients, float64 `[36,2]` delay coefficients, `[2,2]` bounds, metadata, hash validation and atomic writer. Their inherent directional compression error remains. See [filterbank data](../data/README.en.md) for the public filterbank sources.
+`Data.Delay` is included once. A common half-FFT shift stores interpolation pre-ringing; output compensates only convolution/filterbank implementation latency. The file's common recording delay, relative ear delays and frequency-dependent phase remain intact. The fitted recording origin is no longer subtracted, and target distance adds no flight time. DC and Nyquist use real endpoints for a real output sequence.
 
-Mathematical sources: [Duda and Martens 1998](https://www.ece.ucdavis.edu/cipic/wp-content/uploads/sites/12/2015/04/cipic_JASA_Nov_1998.pdf), [MCA paper](https://doi.org/10.1109/TASLP.2023.3313908), [ETSI TS 103 420](https://www.etsi.org/deliver/etsi_ts/103400_103499/103420/01.02.01_60/ts_103420v010201p.pdf). HRTF algorithms are independently implemented; external data retain their own licence terms.
+Each object retains its own convolution history. Updates crossfade old/new outputs over 128 samples using complete input history for both filters. Filter updates are delayed by the common artificial FIR shift so removing that shift does not advance metadata changes. Full HRIR uses PCM convolution; QMF/hybrid is confined to explicit compact input. Arithmetic is float64/complex128, without implicit limiting.
+
+## Object input
+
+Each reconstructed frame is `[1536,16]` PCM: LFE at slot 0 and fifteen reconstructed object/bed slots at 1–15. The ID11 timeline feeds these directly, without another decode or an intermediate loudspeaker render. The existing 1473-sample object compensation and 32-sample metadata alignment are retained. Parameters update every 128 samples.
+
+LFE retains separate low-pass treatment and no room send. SOFA metadata preserves negative elevation, finite outside factors and anchoring flags; personalized parsing and timing are unchanged. Multi-position blocks, ISF, explicit infinity and anchors requiring unavailable screen calibration are rejected. `finish()` drains once. The tail option bounds FIR/filterbank and optional room draining.
+
+## Compact representation
+
+`.jochrtf` v1 remains a pickle-free NumPy ZIP containing JSON metadata, 77 band centres, `complex128[36,2,77]` directional coefficients, `float64[36,2]` delay coefficients and `float64[2,2]` bounds. Its format, cache key, hashes, atomic writing and source-data licensing remain unchanged. Its angular/frequency approximation is not equivalent to full-HRIR precision.
+
+Filterbank provenance is documented in [data notes](../data/README.en.md). See the [MCA paper](https://doi.org/10.1109/TASLP.2023.3313908) for the correction model. Algorithms are independently implemented; external measurements retain their own licensing terms.

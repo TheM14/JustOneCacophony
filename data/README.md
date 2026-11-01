@@ -4,6 +4,22 @@
 
 本目录保存 Python 生产路径使用的静态表数据，不保存用户 HRTF。
 
+SOFA与压缩HRTF输入默认仅渲染直达声。可选`--sofa-room`读取下列资产，由原项目`public_room.py`中的同一四路FDN独立生成，不包含HRTF或外部模型系数。早反射按资产记录的几何使用同一六面镜像算法计算，随后使用所选完整HRIR或压缩方向场。个性化路线继续读取其模型自身的房间参数。
+
+格式均为`sofa-project-room-v1`，采样率48 kHz。JSON记录FDN及几何参数、系数SHA-256和截断尾能量。
+
+| 文件 | 预设 | `late_fir` |
+|---|---|---|
+| `sofa-room-compact.npz` | Near/Mid默认紧凑房间 | `float64[2,37383]` |
+| `sofa-room.npz` | Far默认／可显式选择的原大房间 | `float64[2,81600]` |
+
+紧凑预设的尺寸取自[Zahorik 2009表1的模型9](https://pmc.ncbi.nlm.nih.gov/articles/PMC2730711/)，晚期时间尺度按本项目原预设的`V/S`比例缩放；它不是对论文BRIR的完整复现。可重生成两套资产：
+
+```powershell
+python src\generate_sofa_room.py
+python src\generate_sofa_room.py --preset compact
+```
+
 `tables.npz` 保存 JOC 核心解码表：
 
 ```text
@@ -21,7 +37,7 @@ joc_huff_code_7ch_pos_index_sparse      int64[6,2]
 
 ## 双耳渲染表
 
-`rosella_kernels.npz` 保存公开 SOFA 双耳路径使用的 64-QMF/77-hybrid 固定表：
+`rosella_kernels.npz` 保存`.jochrtf`压缩渲染和个性化bank 1使用的64-QMF/77-hybrid固定表；完整SOFA路线直接在PCM域卷积：
 
 ```text
 format_version                  little-endian int32[1]
