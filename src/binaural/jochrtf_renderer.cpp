@@ -1,7 +1,7 @@
 // Derived from the upstream native/src/sofa_binaural_renderer.cpp (JustOneCacophony
 // @ 6bc2c2885666bb151bb66af93472199af9a99b81, sha256 81b485e4c71907672ab308ddc38228
 // 4acf29161cee93d7906785a4cce58941c7) and a drop-in replacement for it: the same
-// ejoc_sofa_binaural_* C ABI.  The changes are table hoisting, result memoisation,
+// ejoc_jochrtf_* C ABI.  The changes are table hoisting, result memoisation,
 // input validation and a dispatched SIMD cascade -- no arithmetic is reordered,
 // reassociated or contracted, so the output is bit-identical to the upstream
 // implementation (verified: identical FNV-1a over the exact output bit patterns at
@@ -1378,7 +1378,7 @@ using ejoc::sofa_binaural::Renderer;
 
 extern "C" {
 
-ejoc_sofa_binaural_handle EJOC_CALL ejoc_sofa_binaural_create(void) {
+ejoc_jochrtf_handle EJOC_CALL ejoc_jochrtf_create(void) {
     try {
         return new (std::nothrow) Renderer();
     } catch (...) {
@@ -1386,21 +1386,21 @@ ejoc_sofa_binaural_handle EJOC_CALL ejoc_sofa_binaural_create(void) {
     }
 }
 
-void EJOC_CALL ejoc_sofa_binaural_destroy(ejoc_sofa_binaural_handle handle) {
+void EJOC_CALL ejoc_jochrtf_destroy(ejoc_jochrtf_handle handle) {
     delete static_cast<Renderer*>(handle);
 }
 
-int EJOC_CALL ejoc_sofa_binaural_reset(ejoc_sofa_binaural_handle handle) {
+int EJOC_CALL ejoc_jochrtf_reset(ejoc_jochrtf_handle handle) {
     return handle ? static_cast<Renderer*>(handle)->reset() : -1;
 }
 
-const char* EJOC_CALL ejoc_sofa_binaural_last_error(
-    ejoc_sofa_binaural_handle handle) {
+const char* EJOC_CALL ejoc_jochrtf_last_error(
+    ejoc_jochrtf_handle handle) {
     return handle ? static_cast<Renderer*>(handle)->error() : "null handle";
 }
 
-int EJOC_CALL ejoc_sofa_binaural_configure_kernels(
-    ejoc_sofa_binaural_handle handle, const double* qmf_analysis,
+int EJOC_CALL ejoc_jochrtf_configure_kernels(
+    ejoc_jochrtf_handle handle, const double* qmf_analysis,
     const double* hybrid_low, const int16_t* hybrid_indices,
     const double* hybrid_values, uint32_t hybrid_count, const double* qmf_basis,
     const double* qmf_taps) {
@@ -1409,8 +1409,8 @@ int EJOC_CALL ejoc_sofa_binaural_configure_kernels(
         qmf_basis, qmf_taps) : -1;
 }
 
-int EJOC_CALL ejoc_sofa_binaural_configure_field(
-    ejoc_sofa_binaural_handle handle, const double* coefficients,
+int EJOC_CALL ejoc_jochrtf_configure_field(
+    ejoc_jochrtf_handle handle, const double* coefficients,
     const double* delay_coefficients, const double* delay_bounds,
     const double* band_centers, double measurement_radius_m) {
     return handle ? static_cast<Renderer*>(handle)->configure_field(
@@ -1418,8 +1418,8 @@ int EJOC_CALL ejoc_sofa_binaural_configure_field(
         measurement_radius_m) : -1;
 }
 
-int EJOC_CALL ejoc_sofa_binaural_configure_room(
-    ejoc_sofa_binaural_handle handle, const double* room_dims,
+int EJOC_CALL ejoc_jochrtf_configure_room(
+    ejoc_jochrtf_handle handle, const double* room_dims,
     const double* listener_pos, const double* wall_gains, double speed_of_sound,
     const uint32_t* fdn_delays, const double* fdn_feedback, double damping,
     double fdn_output_gain, const uint32_t* allpass_delays,
@@ -1430,24 +1430,24 @@ int EJOC_CALL ejoc_sofa_binaural_configure_room(
         enable_early, enable_late) : -1;
 }
 
-int EJOC_CALL ejoc_sofa_binaural_set_source(
-    ejoc_sofa_binaural_handle handle, uint32_t source, const double* position_adm,
+int EJOC_CALL ejoc_jochrtf_set_source(
+    ejoc_jochrtf_handle handle, uint32_t source, const double* position_adm,
     uint32_t profile, double gain, uint32_t enabled, uint32_t special_lfe,
     uint32_t fade) {
     return handle ? static_cast<Renderer*>(handle)->set_source(
         source, position_adm, profile, gain, enabled, special_lfe, fade) : -1;
 }
 
-int EJOC_CALL ejoc_sofa_binaural_process(
-    ejoc_sofa_binaural_handle handle, const double* input16_interleaved,
+int EJOC_CALL ejoc_jochrtf_process(
+    ejoc_jochrtf_handle handle, const double* input16_interleaved,
     uint32_t sample_count, double output_gain, double* output_stereo_interleaved) {
     return handle ? static_cast<Renderer*>(handle)->process(
         input16_interleaved, sample_count, output_gain, output_stereo_interleaved)
         : -1;
 }
 
-int EJOC_CALL ejoc_sofa_binaural_finish(
-    ejoc_sofa_binaural_handle handle, uint32_t flush_samples,
+int EJOC_CALL ejoc_jochrtf_finish(
+    ejoc_jochrtf_handle handle, uint32_t flush_samples,
     double* output_stereo_interleaved, uint32_t capacity) {
     return handle ? static_cast<Renderer*>(handle)->finish(
         flush_samples, output_stereo_interleaved, capacity) : -1;

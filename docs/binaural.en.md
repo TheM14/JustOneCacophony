@@ -2,102 +2,26 @@
 
 [中文](binaural.md) · [Back to README](../README.en.md)
 
-JustOneCacophony's binaural backend supports three HRTF sources:
-`SimpleFreeFieldHRIR` SOFA, the Rosella `.personalized_headphone` model exported
-by Dolby's official personalization scan (its JSON parsing is implemented by
-this project and invokes no Dolby software), and `.jochrtf` (a JOC compiled HRTF
-cache).
-
-SOFA keeps its full HRIRs and renders directly through a configured reference
-environment; it is no longer compiled into a directional field:
+JustOneCacophony's binaural backend supports two HRTF sources: the Rosella
+`.personalized_headphone` model exported by Dolby's official personalization scan
+(its JSON parsing is implemented by this project and invokes no Dolby software),
+and an offline compiled `.jochrtf` directional-field cache. A `.jochrtf` file is
+a disposable, reproducible JOC compiled HRTF cache, not an interchange format.
 
 ```text
-SOFA full HRIR [M,2,N]
-  -> CanonicalHrtf (48 kHz / one radius shell)
-  -> delay-aligned complex spectra (200-1500 Hz phase fit, Data.Delay included)
-  -> spherical-triangle barycentric interpolation (lf_logmag_phase or lf_mca_zero)
-  -> rigid-sphere radial correction (reference-environment distance)
-  -> per-object partitioned convolution (block 128, FFT = max(2048, >=2*support))
-  -> reference-environment recursive room model
-  -> float64 stereo (one common latency removed)
+.jochrtf
+  -> 77-band directional field + delay model
+  -> 64-QMF / 77-hybrid analysis
+  -> per-object direct + optional early reflections
+  -> optional shared unitary-FDN late room
+  -> stereo float64
 ```
-
-`.jochrtf` stays an explicit input (`--compiled-hrtf-cache`) and keeps the
-real-SH field renderer; passing `--hrtf-cache-policy` / `--hrtf-cache-dir`
-selects the legacy "SOFA -> `.jochrtf`" compile path.
-
-## Point-source reference scale
-
-Near/Mid/Far use reference distances of 1.00000465 / 2.19327927 / 6.40177584 m;
-`--source-reference-distance-m` overrides the selected mode. For an ADM
-right/front/up position `p = (x, y, z)`:
-
-```text
-q_SOFA    = (y, -x, z) / ||p||
-d_nominal = reference_distance_m * ||p||
-H_render  = H_selected_shell(q_SOFA)
-```
-
-The reference distance only gives object coordinates a nominal metric scale. It
-does not turn a 1.2 m measurement radius into a 2.193 m ground truth and does not
-rewrite the SOFA metadata. The default direct mode adds no 1/r attenuation, no
-head-sphere distance ratio, no synthetic centre response, no room send and no
-target-distance propagation delay; programme gain and the SOFA response scale
-are preserved.
-
-A coincident source has no defined direction, so the object keeps its last valid
-direction, or front when there is no history. Finite positions outside the unit
-box keep their metadata distance factor and are not clamped.
-
-## Optional project room
-
-`--sofa-room` is off by default and reuses the project's own room algorithms:
-six first-order image reflections plus a shared FDN tail with a four-channel
-orthogonal Hadamard feedback matrix, two all-pass diffusers and low-pass damping.
-It is a listening preset of this project, not a measured BRIR or an external
-standard room, and it does not use the Rosella room tables.
-
-When enabled, Near/Mid default to the `compact` room and Far to the `legacy`
-room; `--sofa-room-preset compact|legacy` selects explicitly. The compact
-geometry follows
-[Zahorik 2009, Table 1 model 9](https://pmc.ncbi.nlm.nih.gov/articles/PMC2730711/),
-keeping the original image/FDN algorithm while scaling late delay, diffusion
-time and RT60 by the `V/S` ratio; the parameters and their source are recorded
-in the asset metadata. Only the geometry is borrowed, not that paper's BRIR
-algorithm.
-
-The full-HRIR route queries an HRIR for each of the six arrival directions and
-applies the fractional delay as a phase ramp on the full frequency grid; the
-extra flight time of a reflection is `(L_path - L_direct)/c`, preserving the
-original `Data.Delay`. Direct sound, reflections and the late send use the
-project's original gain formulas.
-
-The late FDN is rendered at 48 kHz with a unit impulse into a two-channel float64
-FIR cut at 2*RT60: 37,383 taps (RT60 about 0.3894 s) for the compact room and
-81,600 taps (RT60 0.85 s) for the legacy one. The FIR is produced at startup by
-the four-line Hadamard feedback loop, the two all-pass diffusers and the low-pass
-damping in `src/binaural/room_tables.cpp`; no audio asset ships with the binary.
-At runtime the same LTI system is applied by PCM-domain FFT convolution in
-1536-sample batches, the early reflections still use the selected SOFA, and the
-LFE channel never enters the room. These states are neither generated nor kept
-when the room is off, and batch padding is trimmed on flush.
 
 ## Inputs
 
-A SOFA input renders directly from its full HRIRs and only needs the SOFA file:
-
-```powershell
-joc_cli input.m4a --binaural `
-    --sofa-hrtf HRTF\subject.sofa `
-    --binaural-mode mid --sofa-interpolation lf_logmag_phase
-
-joc_cli input.m4a --binaural --sofa-hrtf HRTF\subject.sofa --sofa-room
-joc_cli input.m4a --binaural --sofa-hrtf HRTF\subject.sofa --sofa-room --sofa-room-preset legacy
-```
-
-A `.jochrtf` input (and `.personalized_headphone`) also needs the shared filterbank
-tables.  Both are read-only inputs; parsing and coordinate validation happen while the
-model is loaded, and nothing is converted again during rendering.
+The binaural backend consumes a compiled directional field (a JOC compiled HRTF cache,
+`.jochrtf`) plus the shared filterbank tables.  Both are read-only inputs: this library
+performs no parsing or conversion of measurement data formats.
 
 ```powershell
 joc_cli input.m4a --binaural `
@@ -106,15 +30,8 @@ joc_cli input.m4a --binaural `
     --binaural-mode mid --binaural-tail-seconds 5.0
 ```
 
-A multi-radius SOFA requires `--hrtf-radius-m`; a single shell is selected
-automatically. `--sofa-interpolation` picks the local interpolation of the full HRIR:
-`lf_logmag_phase` (default, log magnitude plus phase) or `lf_mca_zero` (auditory-band
-magnitude correction).
-
 The library exposes the same fields: `joc_task_config` for a file task,
-`joc_stream_config` for streaming, where `hrtf_sofa_path` (or `hrtf_path`),
-`sofa_interpolation`, `hrtf_radius_m`, `source_reference_distance_m`, `sofa_room`,
-`sofa_room_preset`, `sofa_room_asset_dir`, `hrtf_compile`, `kernels_path`,
+`joc_stream_config` for streaming, where `hrtf_path`, `kernels_path`,
 `binaural_mode` and `binaural_tail_seconds` configure the binaural path.
 
 The `.jochrtf` file is an **input**, not a product of this library: compiling it from
@@ -139,41 +56,6 @@ input E-AC-3 JOC bitstream:
   entries unchanged; the default is `mid`, and `off` explicitly disables the
   binaural metadata hint.
 
-## Canonical SOFA contract
-
-The strict importer currently accepts:
-
-- `Conventions=SOFA`;
-- `SOFAConventions=SimpleFreeFieldHRIR`, version `0.4`, `1.0`, or `1.1`;
-- `DataType=FIR` and `Data.IR[M,2,N]`;
-- one positive finite `Data.SamplingRate` in hertz/Hz;
-- spherical or Cartesian `SourcePosition`;
-- singleton or per-measurement `ListenerPosition/View/Up`;
-- two receivers whose listener-local lateral geometry uniquely identifies L/R;
-- one zero-offset emitter;
-- causal `Data.Delay[I,2]` or `[M,2]`;
-- an explicitly free-field/anechoic `RoomType`.
-
-Receiver order comes from geometry, never from the receiver array index. SOFA
-listener coordinates are $+X$ front,
-$+Y$ left,
-$+Z$ up; ADM coordinates are
-$+X$ right,
-$+Y$ front,
-$+Z$ up:
-
-$$\bigl(x_{\mathrm{SOFA}},\ y_{\mathrm{SOFA}},\ z_{\mathrm{SOFA}}\bigr) = \bigl(y_{\mathrm{ADM}},\ -x_{\mathrm{ADM}},\ z_{\mathrm{ADM}}\bigr)$$
-
-`CanonicalHrtf` keeps `Data.IR` and `Data.Delay` separate. Only a time-domain
-baseline calls `materialized_measurement()` to apply delay once; the runtime SH
-path never materializes and then restores the delay. Non-48-kHz HRIRs are
-normalized with float64 `scipy.signal.resample_poly`, and delay samples scale by
-the same ratio.
-
-GeneralFIR, BRIR, TF, multiple emitters, ambiguous receivers, and non-free-field
-data require convention-specific adapters. They cannot enter the core importer
-through a reshape.
-
 ## Exactly-once delay and phase
 
 The compiler recognizes three mutually exclusive representations:
@@ -188,13 +70,9 @@ The compiler recognizes three mutually exclusive representations:
 
 No path may add a second ear delay or phase-group delay.
 
-The direct SOFA path does not use this compile-time policy: it keeps the full IRs and
-estimates the arrival time with a 200-1500 Hz phase fit, so `Data.Delay` and the fitted
-delay are each applied once (the delay is removed first and restored afterwards).
-
 ## Public filterbank and directional field
 
-The SOFA and `.jochrtf` runtime is fixed at:
+The `.jochrtf` runtime is fixed at:
 
 - 48 kHz;
 - a 64-sample QMF hop;
@@ -314,7 +192,7 @@ Dolby.
 
 The binaural renderer is implemented inside this library: the filterbank, the SH
 directional-field evaluation, the per-object early/direct histories and the shared
-FDN all run in `joc_core` (the `ejoc_sofa_binaural_*` kernel), consuming a compiled
+FDN all run in `joc_core` (the `ejoc_jochrtf_*` kernel), consuming a compiled
 directional field and 512-sample metadata updates.
 
 ## Technical references and rights boundary

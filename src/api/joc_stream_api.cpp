@@ -36,23 +36,15 @@ joc::stream::Config to_config(const joc_stream_config& config) {
     }
     out.gain_db = config.gain_db;
     out.native_threads = config.native_threads;
-    // The binaural HRTF inputs of joc_task_config, copied with the same defaults:
-    // the policy is taken verbatim (0 is "none", a real choice, not "unset") and
-    // the radius keeps its documented default of 1.0 when the field is not set.
-    if (config.hrtf_sofa_path != nullptr) { out.hrtf_sofa_path = config.hrtf_sofa_path; }
     if (config.personalized_headphone_path != nullptr) {
         out.personalized_headphone_path = config.personalized_headphone_path;
     }
-    if (config.hrtf_cache_dir != nullptr) { out.hrtf_cache_dir = config.hrtf_cache_dir; }
-    out.hrtf_cache_policy = config.hrtf_cache_policy;
-    if (config.hrtf_radius_m > 0.0) { out.hrtf_radius_m = config.hrtf_radius_m; }
+    // 0 is the documented "off" spelling for the room switch.
+    out.jochrtf_room = config.jochrtf_room;
     // 0 is "unset" here as well: the Rosella path defaults to the public bank.
     if (config.rosella_filterbank != 0u) {
         out.rosella_filterbank = config.rosella_filterbank;
     }
-    out.source_reference_distance_m = config.source_reference_distance_m;
-    out.sofa_room = config.sofa_room != 0u;
-    if (config.sofa_room_preset != nullptr) { out.sofa_room_preset = config.sofa_room_preset; }
     return out;
 }
 

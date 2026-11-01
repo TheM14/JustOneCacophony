@@ -2,100 +2,36 @@
 
 [English](binaural.en.md) · [返回 README](../README.md)
 
-JustOneCacophony 的双耳后端支持三种 HRTF 来源：`SimpleFreeFieldHRIR` SOFA、
-杜比官方软件个性化扫描导出的 Rosella `.personalized_headphone`（JSON 解析由本项目
-自行实现，不调用杜比软件），以及 `.jochrtf`（JOC compiled HRTF cache）。
-
-SOFA 默认保留完整 HRIR，按点声源参考直连渲染，不编译成方向场：
-
-```text
-SOFA 完整 HRIR [M,2,N]
-  -> CanonicalHrtf（48 kHz / 单 radius shell）
-  -> 延迟对齐的复数频谱（200-1500 Hz 相位拟合，含 Data.Delay）
-  -> 球面三角形重心插值（lf_logmag_phase 或 lf_mca_zero）
-  -> 点声源参考尺度（方向 + 档位参考距离，无径向修正）
-  -> 逐对象 partitioned convolution（block 128，FFT = max(2048, ≥2×support)）
-  -> 可选项目房间（六路一阶镜像 + 共享 FDN 晚期 FIR）
-  -> stereo float64（统一扣除 latency）
-```
-
-`.jochrtf` 仍是显式输入（`--compiled-hrtf-cache`），走球谐方向场渲染；显式给出
-`--hrtf-cache-policy` / `--hrtf-cache-dir` 会回到旧的“SOFA → `.jochrtf`”编译路径。
-
-## 点声源参考尺度
-
-Near/Mid/Far 的参考距离分别为 1.00000465 / 2.19327927 / 6.40177584 m，可用
-`--source-reference-distance-m` 覆盖所选档位。对于 ADM 右/前/上坐标 `p=(x,y,z)`：
+JustOneCacophony 的双耳后端支持两种 HRTF 来源：杜比官方软件个性化扫描导出的
+Rosella `.personalized_headphone`（JSON 解析由本项目自行实现，不调用杜比软件），以及
+离线编译好的 `.jochrtf` 方向场缓存。`.jochrtf` 是可删除、可重建的 JOC compiled HRTF
+cache，不是交换格式。
 
 ```text
-q_SOFA     = (y, -x, z) / ||p||
-d_nominal  = reference_distance_m * ||p||
-H_render   = H_selected_shell(q_SOFA)
+.jochrtf
+  -> 77 带方向场 + 延迟模型
+  -> 64-QMF / 77-hybrid analysis
+  -> 逐对象 direct + 可选 early reflections
+  -> 可选 shared unitary-FDN late room
+  -> stereo float64
 ```
-
-参考距离只给对象坐标规定标称米制尺度，不会把测量半径为 1.2 m 的 HRIR 合成成 2.193 m
-的真值，也不改动 SOFA 测量元数据。默认直达声模式不额外应用 1/r 衰减、球头距离比值、
-人工中心响应、房间发送或目标距离传播延迟；节目增益与 SOFA 响应刻度保持不变。
-
-声源与听者重合时方向没有定义，沿用该对象最后一个有效方向；没有历史时取正前方。
-有限盒外坐标保留元数据距离因子，不裁回单位盒。
-
-## 可选项目房间
-
-`--sofa-room` 默认关闭，复用项目原有的房间算法：六个一阶镜像反射，以及四路正交
-Hadamard 反馈、两级全通扩散、低通阻尼的共享 FDN 晚期。它是项目自有的听感预设，
-不是测量 BRIR 或外部标准房间，也不依赖 Rosella 房间表。
-
-启用后 Near/Mid 默认使用 `compact` 紧凑房间，Far 默认使用 `legacy` 原大房间；
-`--sofa-room-preset compact|legacy` 可显式选择。紧凑房间尺寸取自
-[Zahorik 2009 表 1 模型 9](https://pmc.ncbi.nlm.nih.gov/articles/PMC2730711/)，
-保留原镜像/FDN 算法，将晚期延迟、扩散时间与 RT60 参数按 `V/S` 比例缩短；参数与来源
-记录在资产元数据中，借用的只是文献几何，不是该论文 BRIR 算法的复现。
-
-完整 HRIR 路线对六个到达方向分别查询 HRIR，以完整频率网格上的相位斜坡实现分数采样
-延迟；反射路径相对直达路径的额外时间为 `(L_path - L_direct)/c`，保留原 HRIR 的
-`Data.Delay`。直接声、反射与晚期发送使用项目原有的增益公式。
-
-晚期 FDN 在 48 kHz 下用单位脉冲生成双声道 float64 FIR，长度截到 2×RT60：紧凑版
-37,383 点、RT60 参数约 0.3894 s，原版 81,600 点、RT60 参数 0.85 s。FIR 由
-`src/binaural/room_tables.cpp` 里的四路 Hadamard 反馈、两级全通扩散与低通阻尼在启动时
-现场渲染，不读取任何随包发布的音频资产。运行时按 1536 样本批次在 PCM 域做 FFT 卷积，
-早期反射仍使用所选 SOFA；LFE 声道不进房间。房间关闭时既不生成也不保留这些状态，
-排空时裁去批处理填充。
-
-指向同一声道的直达声是延迟对齐后的完整 HRIR 插值结果；文件任务的 latency 由 field
-（FFT/2 与 recording origin）决定，输出前统一扣除。
 
 ## 输入接口
 
-SOFA 输入直接按完整 HRIR 渲染，只需要 SOFA 本身：
-
-```powershell
-joc_cli input.m4a --binaural `
-    --sofa-hrtf HRTF\subject.sofa `
-    --binaural-mode mid --sofa-interpolation lf_logmag_phase
-
-joc_cli input.m4a --binaural --sofa-hrtf HRTF\subject.sofa --sofa-room
-joc_cli input.m4a --binaural --sofa-hrtf HRTF\subject.sofa --sofa-room --sofa-room-preset legacy
-```
-
-`.jochrtf` 输入（以及 `.personalized_headphone`）需要共享滤波器组表，两者都是只读输入：
+双耳后端消费两种输入：已编译的方向场（JOC compiled HRTF cache，`.jochrtf`）配共享滤波器组表，
+或者是 Rosella `.personalized_headphone` 模型。两者都是只读输入，本库不做测量数据格式的解析：
 
 ```powershell
 joc_cli input.m4a --binaural `
     --compiled-hrtf-cache path\to\subject.jochrtf `
     --kernels data\rosella_kernels.npz `
+    --jochrtf-room on `
     --binaural-mode mid --binaural-tail-seconds 5.0
+joc_cli input.m4a --binaural --personalized-headphone HRTF\binaural.personalized_headphone
 ```
 
-多球壳 SOFA 必须用 `--hrtf-radius-m` 指定球壳（单球壳自动选择）；`--hrtf-radius-m`
-对已编译的 `.jochrtf` 不再生效。`--sofa-interpolation` 选择完整 HRIR 的局部插值：
-`lf_logmag_phase`（默认，对数幅度 + 相位）或 `lf_mca_zero`（听觉带幅度修正）。
-
 库接口使用同一组字段：文件任务用 `joc_task_config`，流式用 `joc_stream_config`，
-其中 `hrtf_sofa_path`（或 `hrtf_path`）、`sofa_interpolation`、`hrtf_radius_m`、
-`source_reference_distance_m`、`sofa_room`、`sofa_room_preset`、`sofa_room_asset_dir`、
-`hrtf_compile`、`kernels_path`、`binaural_mode`、`binaural_tail_seconds` 决定双耳通路。
+其中 `hrtf_path`、`kernels_path`、`binaural_mode`、`binaural_tail_seconds` 决定双耳通路。
 
 `.jochrtf` 是**输入**而不是本库的产物：从 SOFA 或测量数据编译该缓存属于工具链的职责，
 与本仓库解耦。缓存加载时会校验成员集合、dtype 与形状、C 连续性、CRC-32 以及按成员重算的
@@ -114,39 +50,6 @@ joc_cli input.m4a --binaural `
   `off=0/near=1/far=2/mid=3`，前 10 个 bed 保持不变，默认 `mid`；`off` 用于显式
   关闭双耳元数据提示。
 
-## Canonical SOFA 契约
-
-当前 strict importer 接受：
-
-- `Conventions=SOFA`；
-- `SOFAConventions=SimpleFreeFieldHRIR`，version `0.4`、`1.0` 或 `1.1`；
-- `DataType=FIR`，`Data.IR[M,2,N]`；
-- 单一正有限 `Data.SamplingRate`，单位为 hertz/Hz；
-- spherical 或 Cartesian `SourcePosition`；
-- 单值或 per-measurement 的 `ListenerPosition/View/Up`；
-- 两个能由 listener-local lateral 坐标唯一识别左右的 receiver；
-- 单一且零偏移的 emitter；
-- causal `Data.Delay[I,2]` 或 `[M,2]`；
-- 明确的 free-field/anechoic `RoomType`。
-
-receiver 左右顺序由几何决定，不能假定 `Data.IR` 的 receiver index。SOFA listener
-坐标为 $+X$ front、
-$+Y$ left、
-$+Z$ up；ADM 坐标为
-$+X$ right、
-$+Y$ front、
-$+Z$ up，转换为：
-
-$$\bigl(x_{\mathrm{SOFA}},\ y_{\mathrm{SOFA}},\ z_{\mathrm{SOFA}}\bigr) = \bigl(y_{\mathrm{ADM}},\ -x_{\mathrm{ADM}},\ z_{\mathrm{ADM}}\bigr)$$
-
-`CanonicalHrtf` 将 `Data.IR` 与 `Data.Delay` 分开保存。只有时域 baseline 才调用
-`materialized_measurement()` 将 delay 应用一次；运行时 SH 路径不先 materialize。
-非 48 kHz HRIR 使用 float64 `scipy.signal.resample_poly` 规范化，delay samples 按
-相同比例缩放。
-
-GeneralFIR、BRIR、TF、多 emitter、多义 receiver 或非 free-field 数据需要单独的
-convention adapter，不能只通过 reshape 进入核心 importer。
-
 ## Delay/phase：exactly once
 
 编译器只允许三种互斥语义：
@@ -158,9 +61,6 @@ convention adapter，不能只通过 reshape 进入核心 importer。
    phase 直接进入五阶场。
 
 任何路径都不能再叠加第二套 ear delay 或 phase-group delay。
-
-SOFA 直连路径不走这套编译期语义：它保留完整 IR，用 200-1500 Hz 相位拟合估计到达时间，
-`Data.Delay` 与拟合出的延迟各应用一次（先去掉 `Data.Delay`，再用插值后的延迟复原）。
 
 ## 公开 filterbank 与方向场
 
@@ -232,8 +132,7 @@ loader 使用 `allow_pickle=False`，并在构造对象前检查 ZIP 成员集�
 dtype、端序、连续布局、有限值、delay bounds、band centers、payload hash 和 cache
 key。writer 使用同目录临时文件、`fsync`、进程持有的 OS 文件锁和原子
 `os.replace`；对应的隐藏 `.lock` sidecar 可保留，但不代表仍有 writer 持锁。
-旧版本、损坏或配置不匹配的 cache 不能命中；从 SOFA 启动时会重建，显式 cache
-入口则直接报错。
+旧版本、损坏或配置不匹配的 cache 不会命中，而是直接报错。
 
 删除磁盘 cache 后，从同一 SOFA 和同一编译配置得到的场与渲染结果不得改变。
 
@@ -251,7 +150,7 @@ key。writer 使用同目录临时文件、`fsync`、进程持有的 OS 文件�
 
 | 取值 | 滤波器组 | 低频 hybrid | 高频 slot delay | 延迟 |
 | --- | --- | --- | --- | ---: |
-| `1`（默认） | `PublicFilterbank`（与 SOFA 路径共用） | 13 taps | 6 slots | 961 samples |
+| `1`（默认） | `PublicFilterbank`（与 Rosella 路径共用） | 13 taps | 6 slots | 961 samples |
 | `2` | `RosellaFilterbank`（从参考渲染器捕获） | 11 taps | 3 slots | 448 samples |
 
 两套实现通过同一组四个有状态 half-step 调用，因此切换时系数、高频 delay、历史缓冲
@@ -275,7 +174,7 @@ unitary FDN、LFE 120–180 Hz cosine-squared 低通及 room calibration 都是 
 项目定义行为，不是 SOFA 或 Dolby 公布常数。
 
 双耳渲染在本库内实现：filterbank、SH 方向场求值、逐对象 early/direct 历史与共享 FDN
-全部执行于 `joc_core`（`ejoc_sofa_binaural_*` 内核），对外只消费编译好的方向场与
+全部执行于 `joc_core`（`ejoc_jochrtf_*` 内核），对外只消费编译好的方向场与
 512-sample 粒度的元数据更新。
 
 ## 技术引用与权利边界

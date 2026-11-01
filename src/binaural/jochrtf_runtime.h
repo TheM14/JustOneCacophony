@@ -38,13 +38,13 @@ enum class Profile : std::uint32_t { Near = 0, Mid = 1, Far = 2 };
 
 bool profile_from_name(const char* name, Profile* out);
 
-class SofaBinauralRuntime {
+class JochrtfRuntime {
 public:
-    SofaBinauralRuntime() = default;
-    ~SofaBinauralRuntime();
+    JochrtfRuntime() = default;
+    ~JochrtfRuntime();
 
-    SofaBinauralRuntime(const SofaBinauralRuntime&) = delete;
-    SofaBinauralRuntime& operator=(const SofaBinauralRuntime&) = delete;
+    JochrtfRuntime(const JochrtfRuntime&) = delete;
+    JochrtfRuntime& operator=(const JochrtfRuntime&) = delete;
 
     Status open(const hrtf::Field& field, const hrtf::Kernels& kernels, Profile profile,
                 const RoomConstants& room = RoomConstants{});
@@ -83,7 +83,7 @@ public:
 private:
     Status process_block();
 
-    ejoc_sofa_binaural_handle handle_ = nullptr;
+    ejoc_jochrtf_handle handle_ = nullptr;
     Profile profile_ = Profile::Mid;
     timeline::OamdPositionTimeline timeline_;
     std::vector<double> staging_;

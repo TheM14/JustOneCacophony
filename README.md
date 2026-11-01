@@ -4,8 +4,8 @@
 
 JustOneCacophony 的 C++ 实现：E-AC-3 JOC 码流解析、对象重建与渲染的执行内核。它从 E-AC-3
 同步帧中提取 EMDF、ID14 JOC 参数与 ID11 OAMD 元数据，结合 FFmpeg 解码出的核心 PCM（N=5 或 7）
-重建 LFE 与 15 路对象 PCM，并输出 ADM BWF、指定扬声器布局的 WAV，或按完整 HRIR 直接
-渲染双耳 WAV（SOFA），也可以读入编译好的 `.jochrtf` 方向场渲染。
+重建 LFE 与 15 路对象 PCM，并输出 ADM BWF、指定扬声器布局的 WAV，或用编译好的 HRTF 方向场
+直接输出双耳 WAV。
 
 这是研究代码，不是完整、标准兼容或生产级的 JOC 解码器。它只覆盖已实现的码流形态，遇到未知
 变体时明确报错，而不是假装一切都很和谐。
@@ -24,7 +24,7 @@ Windows（MSVC / VS 2022，静态 CRT）、Linux 与 macOS 由 `.github/workflow
 
 最重的双耳循环由**运行时派发**：同一份二进制里装多套 ISA 代码，启动时按 CPUID/XGETBV 选最宽
 的一套，输出逐字节不变（见 [SIMD 与运行时派发](docs/simd.md)）。`JOC_ENABLE_AVX2` /
-`JOC_ENABLE_AVX512`（默认都 ON）只决定是否把这些单元编进二进制：带上 AVX2 单元让 SOFA 双耳
+`JOC_ENABLE_AVX512`（默认都 ON）只决定是否把这些单元编进二进制：带上 AVX2 单元让 `.jochrtf` 双耳
 内核快 12.4%、Rosella 快 1.8%，而没有 AVX2 的 CPU 仍走基线（SSE2）路径。要产出只带基线 ISA
 的二进制：
 
@@ -67,10 +67,11 @@ joc_cli input.m4a -o out/adm.wav                 # 指定输出
 joc_cli input.m4a --speaker-layout 5.1           # -> output/<名称>.5.1.wav
 joc_cli input.m4a --speaker-layout 7.1.4 --speaker-output out/714.wav --speaker-format int24
 
-# 双耳（HRTF 默认取 <exe>/HRTF/binaural.sofa，其次 <exe>/HRTF/binaural.personalized_headphone）
+# 双耳（默认取 <exe>/HRTF/binaural.personalized_headphone）
 joc_cli input.m4a --binaural
-joc_cli input.m4a --binaural --sofa-hrtf HRTF/other.sofa   # 换一个 SOFA
 joc_cli input.m4a --binaural --personalized-headphone      # Rosella 个性化模型
+joc_cli input.m4a --binaural --compiled-hrtf-cache HRTF/subject.jochrtf   # 离线编译的 .jochrtf
+joc_cli input.m4a --binaural --compiled-hrtf-cache HRTF/subject.jochrtf --jochrtf-room off
 #   -> output/<名称>.binaural.wav
 joc_cli input.m4a --binaural --personalized-headphone --rosella-filterbank 2   # 新版 Rosella 滤波器组
 
@@ -87,7 +88,7 @@ joc_cli input.eac3 --metadata-only --print-metadata summary   # 只解析并打�
 
 `--rosella-filterbank 1|2` 选择 Rosella 个性化模型使用的滤波器组：`1`（默认）是 13 taps /
 6 slots 的公开滤波器组，`2` 是 11 taps / 3 slots 的捕获版。两者延迟分别为 961 / 448 samples，
-系数、历史缓冲与 flush 容量各自独立；该选项只作用于 `.personalized_headphone`，SOFA 与
+系数、历史缓冲与 flush 容量各自独立；该选项只作用于 `.personalized_headphone`，
 `.jochrtf` 路径给出时直接报错。详见 [Rosella 滤波器组](docs/rosella_filterbank.en.md)。
 
 **与上游参数的差异**：`--backend python` 与 metadata sidecar（`--metadata-dir`/
@@ -191,8 +192,6 @@ ffmpeg 侧只在 $N=5$ 档位传 `-ac 6`；$N=7$ 档位不传 `-ac`，保留解�
 拒绝。额外那一对的**身份**只进元数据、不进 DSP（§10.1）：依赖子流 `chanmap` 与 $k$ 不一致、或
 OAMD 声明的 bed 布局可以比核心子流实际编码的声道多（例如 9.1.6 bed 只编 5.1 核心），只有核心
 声道在 bed 布局里找不到位置才记 diagnostics 并照常解码，床映射按 `chanmap` 的通道码走。
-bed-only 内容的 15 路 JOC 对象就是 bed 声道：每一路按其声道标签的固定方位（ETSI TS 103 420
-Table B.10）作为点声源渲染，扬声器、ADM 与双耳共用同一组源坐标，不随输出布局改变；LFE 独立处理。
 同一音频帧里出现多个含 ID11/ID14 的 EMDF 容器时，按规格 §8.2 + Table 56 的关联规则打分：
 OAMD 与 JOC 载荷 groupid 相同且 ID14 能完整解析的优先，其次只看 ID14 能否解析；唯一最高分才用，
 其余记入 diagnostics（`emdf/extra_container_ignored`）。额外那一对在 10 槽 ADM 骨架上的落位

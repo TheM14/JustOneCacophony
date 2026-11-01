@@ -92,14 +92,8 @@ set(JOC_REUSED_SOURCES
 set(JOC_INTERNAL_SOURCES
     src/adm/adm_metadata.cpp
     src/adm/adm_tracks.cpp
-    src/binaural/binaural_runtime.cpp
-    src/binaural/direct_sofa_runtime.cpp
-    src/binaural/point_source.cpp
-    src/binaural/reference_distance.cpp
-    src/binaural/room_tables.cpp
-    src/binaural/shoebox_room.cpp
-    src/binaural/sofa_room.cpp
-    src/binaural/sofa_binaural_renderer.cpp
+    src/binaural/jochrtf_runtime.cpp
+    src/binaural/jochrtf_renderer.cpp
     src/eac3_transport/eac3_reader.cpp
     src/emdf/emdf_parser.cpp
     src/foundation/bit_reader.cpp
@@ -114,14 +108,7 @@ set(JOC_INTERNAL_SOURCES
     src/hrtf/rosella_filterbank.cpp
     src/hrtf/rosella_model.cpp
     src/hrtf/rosella_renderer.cpp
-    src/hrtf/rosella_reference.cpp
     src/hrtf/kernel_tables.cpp
-    src/hrtf/full_hrir_field.cpp
-    src/hrtf/partitioned_convolution.cpp
-    src/hrtf/sofa.cpp
-    src/hrtf/sofa_cache.cpp
-    src/hrtf/sofa_field.cpp
-    src/hrtf/spherical_mesh.cpp
     src/io/adm_writer.cpp
     src/io/hdf5.cpp
     src/io/inflate.cpp
@@ -314,20 +301,10 @@ if(JOC_BUILD_DEVTOOLS)
     add_executable(joc_dump devtools/joc_dump/main.cpp)
     target_link_libraries(joc_dump PRIVATE joc_core joc_core_impl)
     target_include_directories(joc_dump PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-    # SOFA reader probe: the C++ side of devtools/checks/check_sofa.py.
-    add_executable(joc_sofa_field_probe devtools/sofa_field_probe/main.cpp)
-    add_executable(joc_dictionary_probe devtools/sofa_field_probe/dictionary_main.cpp)
-    target_link_libraries(joc_dictionary_probe PRIVATE joc_core_impl)
-    target_include_directories(joc_dictionary_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-    target_link_libraries(joc_sofa_field_probe PRIVATE joc_core_impl)
-    target_include_directories(joc_sofa_field_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     # Rosella model probe: the C++ side of devtools/checks/check_rosella.py.
     add_executable(joc_rosella_probe devtools/rosella_probe/main.cpp)
     target_link_libraries(joc_rosella_probe PRIVATE joc_core_impl)
     target_include_directories(joc_rosella_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
-    add_executable(joc_sofa_probe devtools/sofa_probe/main.cpp)
-    target_link_libraries(joc_sofa_probe PRIVATE joc_core_impl)
-    target_include_directories(joc_sofa_probe PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     # Probe for the streaming surface: the acceptance harness and the usage
     # example for joc_stream.h.  Not shipped: a player integrates the library.
     add_executable(joc_stream_probe devtools/joc_stream/main.cpp)
@@ -342,7 +319,6 @@ if(JOC_BUILD_TESTS)
     list(APPEND JOC_MSVC_TARGETS joc_tests joc_rosella_filterbank_tests joc_headers_c joc_headers_cpp)
 endif()
 if(JOC_BUILD_DEVTOOLS)
-    list(APPEND JOC_MSVC_TARGETS joc_rosella_probe joc_dump joc_stream_probe joc_sofa_probe joc_sofa_field_probe joc_dictionary_probe)
 endif()
 
 if(MSVC)

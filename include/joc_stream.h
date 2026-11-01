@@ -64,20 +64,10 @@ typedef struct joc_stream_config {
     double gain_db;                   /* default 0 */
     uint32_t native_threads;
     uint32_t rosella_filterbank;      /* joc_rosella_filterbank; Rosella input, 0 = PUBLIC */
-    /* Binaural HRTF input, the same three shapes joc_task_config accepts: when
-     * hrtf_sofa_path is set the library compiles it with hrtf_cache_policy /
-     * hrtf_cache_dir / hrtf_radius_m and hrtf_path is unused; when
-     * personalized_headphone_path is set the Rosella runtime renders instead.
-     * hrtf_path stays the fallback/advanced input that reads a .jochrtf directly. */
-    const char* hrtf_sofa_path;              /* SOFA SimpleFreeFieldHRIR input */
+    /* Binaural input, the same shapes joc_task_config accepts: a compiled
+     * .jochrtf field (hrtf_path) or a Rosella .personalized_headphone model. */
     const char* personalized_headphone_path; /* Rosella .personalized_headphone input */
-    const char* hrtf_cache_dir;              /* disk cache directory for SOFA compilation */
-    uint32_t hrtf_cache_policy;              /* joc_hrtf_cache_policy: 0 none, 1 memory, 2 disk */
-    double hrtf_radius_m;                    /* SOFA measurement-radius shell, default 1.0 */
-    /* Direct SOFA rendering: the same fields joc_task_config carries. */
-    double source_reference_distance_m;      /* > 0 overrides the mode's reference distance */
-    uint32_t sofa_room;                      /* non-zero enables the project room */
-    const char* sofa_room_preset;            /* "compact" or "legacy"; NULL = by mode */
+    uint32_t jochrtf_room;                   /* non-zero enables the project room */
 } joc_stream_config;
 
 typedef struct joc_stream_buffer {

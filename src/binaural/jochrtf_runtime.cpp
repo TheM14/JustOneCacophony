@@ -1,4 +1,4 @@
-#include "binaural/binaural_runtime.h"
+#include "binaural/jochrtf_runtime.h"
 
 #include <algorithm>
 #include <cmath>
@@ -29,14 +29,14 @@ bool profile_from_name(const char* name, Profile* out) {
     return false;
 }
 
-SofaBinauralRuntime::~SofaBinauralRuntime() {
+JochrtfRuntime::~JochrtfRuntime() {
     if (handle_ != nullptr) {
-        ejoc_sofa_binaural_destroy(handle_);
+        ejoc_jochrtf_destroy(handle_);
         handle_ = nullptr;
     }
 }
 
-Status SofaBinauralRuntime::open(const hrtf::Field& field, const hrtf::Kernels& kernels,
+Status JochrtfRuntime::open(const hrtf::Field& field, const hrtf::Kernels& kernels,
                                 Profile profile, const RoomConstants& room) {
     if (handle_ != nullptr) {
         return Status::fail(JOC_ERR_STATE, stage::kRender, "binaural runtime already open");
@@ -47,36 +47,36 @@ Status SofaBinauralRuntime::open(const hrtf::Field& field, const hrtf::Kernels& 
         return Status::fail(JOC_ERR_HRTF_FORMAT, stage::kRender,
                             "compiled HRTF field has unexpected array sizes");
     }
-    handle_ = ejoc_sofa_binaural_create();
+    handle_ = ejoc_jochrtf_create();
     if (handle_ == nullptr) {
         return Status::fail(JOC_ERR_OUT_OF_MEMORY, stage::kRender,
-                            "ejoc_sofa_binaural_create failed");
+                            "ejoc_jochrtf_create failed");
     }
     profile_ = profile;
 
-    if (ejoc_sofa_binaural_configure_kernels(
+    if (ejoc_jochrtf_configure_kernels(
             handle_, kernels.qmf_analysis.data(), kernels.hybrid_low.data(),
             kernels.hybrid_indices.data(), kernels.hybrid_values.data(), kernels.hybrid_count,
             kernels.qmf_basis.data(), kernels.qmf_taps.data()) != 0) {
-        const char* message = ejoc_sofa_binaural_last_error(handle_);
+        const char* message = ejoc_jochrtf_last_error(handle_);
         return Status::fail(JOC_ERR_HRTF_FORMAT, stage::kRender,
                             std::string("configure_kernels failed: ") +
                                 (message != nullptr ? message : "unknown"));
     }
-    if (ejoc_sofa_binaural_configure_field(handle_, field.coefficients.data(),
+    if (ejoc_jochrtf_configure_field(handle_, field.coefficients.data(),
                                           field.delay_coefficients.data(),
                                           field.delay_bounds.data(), field.band_centers_hz.data(),
                                           field.measurement_radius_m) != 0) {
-        const char* message = ejoc_sofa_binaural_last_error(handle_);
+        const char* message = ejoc_jochrtf_last_error(handle_);
         return Status::fail(JOC_ERR_HRTF_FORMAT, stage::kRender,
                             std::string("configure_field failed: ") +
                                 (message != nullptr ? message : "unknown"));
     }
-    if (ejoc_sofa_binaural_configure_room(
+    if (ejoc_jochrtf_configure_room(
             handle_, room.dims, room.listener, room.walls, room.speed_of_sound, room.fdn_delays,
             room.fdn_feedback, room.damping, room.fdn_output_gain, room.allpass_delays,
             room.allpass_gains, room.enable_early_reflections, room.enable_late_room) != 0) {
-        const char* message = ejoc_sofa_binaural_last_error(handle_);
+        const char* message = ejoc_jochrtf_last_error(handle_);
         return Status::fail(JOC_ERR_RENDER_FAILED, stage::kRender,
                             std::string("configure_room failed: ") +
                                 (message != nullptr ? message : "unknown"));
@@ -95,7 +95,7 @@ Status SofaBinauralRuntime::open(const hrtf::Field& field, const hrtf::Kernels& 
     return Status::success();
 }
 
-Status SofaBinauralRuntime::process_block() {
+Status JochrtfRuntime::process_block() {
     double positions[timeline::kTimelineObjects][3] = {};
     const Status queried = timeline_.positions_at(static_cast<std::int64_t>(processed_samples_),
                                                   positions);
@@ -106,28 +106,28 @@ Status SofaBinauralRuntime::process_block() {
     // backend default (fade enabled) applies - the per-object path crossfade is
     // part of the reference behaviour, not an optional extra.
     constexpr std::uint32_t kFade = 1u;
-    if (ejoc_sofa_binaural_set_source(handle_, 0u, kLfePosition,
+    if (ejoc_jochrtf_set_source(handle_, 0u, kLfePosition,
                                       static_cast<std::uint32_t>(profile_), 1.0, 1u, 1u,
                                       kFade) != 0) {
-        const char* message = ejoc_sofa_binaural_last_error(handle_);
+        const char* message = ejoc_jochrtf_last_error(handle_);
         return Status::fail(JOC_ERR_RENDER_FAILED, stage::kRender,
                             std::string("set_source(LFE) failed: ") +
                                 (message != nullptr ? message : "unknown"));
     }
     for (std::uint32_t source = 0; source < timeline::kTimelineObjects; ++source) {
-        if (ejoc_sofa_binaural_set_source(handle_, source + 1u, positions[source],
+        if (ejoc_jochrtf_set_source(handle_, source + 1u, positions[source],
                                           static_cast<std::uint32_t>(profile_), 1.0, 1u, 0u,
                                           kFade) != 0) {
-            const char* message = ejoc_sofa_binaural_last_error(handle_);
+            const char* message = ejoc_jochrtf_last_error(handle_);
             return Status::fail(JOC_ERR_RENDER_FAILED, stage::kRender,
                                 std::string("set_source(object ") + std::to_string(source + 1u) +
                                     ") failed: " + (message != nullptr ? message : "unknown"));
         }
     }
-    const int trimmed = ejoc_sofa_binaural_process(handle_, staging_.data(), kBlockSamples, 1.0,
+    const int trimmed = ejoc_jochrtf_process(handle_, staging_.data(), kBlockSamples, 1.0,
                                                    block_output_.data());
     if (trimmed < 0) {
-        const char* message = ejoc_sofa_binaural_last_error(handle_);
+        const char* message = ejoc_jochrtf_last_error(handle_);
         return Status::fail(JOC_ERR_RENDER_FAILED, stage::kRender,
                             std::string("sofa process failed: ") +
                                 (message != nullptr ? message : "unknown"));
@@ -142,7 +142,7 @@ Status SofaBinauralRuntime::process_block() {
     return Status::success();
 }
 
-Status SofaBinauralRuntime::submit_frame(const float* objects16_planar,
+Status JochrtfRuntime::submit_frame(const float* objects16_planar,
                                         const oamd::OamdUpdate* update, std::int64_t frame_index,
                                         std::int64_t outer_sample_offset,
                                         std::int64_t object_delay_samples) {
@@ -186,7 +186,7 @@ Status SofaBinauralRuntime::submit_frame(const float* objects16_planar,
     return Status::success();
 }
 
-std::uint32_t SofaBinauralRuntime::finish_capacity(double tail_seconds) const {
+std::uint32_t JochrtfRuntime::finish_capacity(double tail_seconds) const {
     std::int64_t requested = tail_samples_;
     if (tail_seconds >= 0.0) {
         requested = static_cast<std::int64_t>(std::ceil(tail_seconds * 48000.0 - 1e-9));
@@ -198,11 +198,11 @@ std::uint32_t SofaBinauralRuntime::finish_capacity(double tail_seconds) const {
     return static_cast<std::uint32_t>(drain);
 }
 
-Status SofaBinauralRuntime::reset() {
+Status JochrtfRuntime::reset() {
     if (handle_ == nullptr) {
         return Status::fail(JOC_ERR_STATE, stage::kRender, "binaural runtime is not open");
     }
-    if (ejoc_sofa_binaural_reset(handle_) != 0) {
+    if (ejoc_jochrtf_reset(handle_) != 0) {
         return Status::fail(JOC_ERR_RENDER_FAILED, stage::kRender, "sofa reset failed");
     }
     timeline_.reset();
@@ -214,7 +214,7 @@ Status SofaBinauralRuntime::reset() {
     return Status::success();
 }
 
-Status SofaBinauralRuntime::finish(std::uint32_t flush_samples, std::vector<double>* out) {
+Status JochrtfRuntime::finish(std::uint32_t flush_samples, std::vector<double>* out) {
     if (handle_ == nullptr) {
         return Status::fail(JOC_ERR_STATE, stage::kRender, "binaural runtime is not open");
     }
@@ -230,9 +230,9 @@ Status SofaBinauralRuntime::finish(std::uint32_t flush_samples, std::vector<doub
     std::uint32_t remaining = flush_samples;
     while (remaining > 0) {
         const std::uint32_t request = std::min<std::uint32_t>(remaining, kBlockSamples);
-        const int produced = ejoc_sofa_binaural_finish(handle_, request, chunk.data(), request);
+        const int produced = ejoc_jochrtf_finish(handle_, request, chunk.data(), request);
         if (produced < 0) {
-            const char* message = ejoc_sofa_binaural_last_error(handle_);
+            const char* message = ejoc_jochrtf_last_error(handle_);
             return Status::fail(JOC_ERR_RENDER_FAILED, stage::kRender,
                                 std::string("sofa finish failed: ") +
                                     (message != nullptr ? message : "unknown"));

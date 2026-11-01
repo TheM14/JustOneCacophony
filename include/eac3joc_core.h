@@ -188,19 +188,19 @@ per-object whole-QMF-slot delay histories, six first-order image-source early
 reflections, the shared unitary-FDN late room, the 120-180 Hz LFE low-pass and
 the 961-sample latency compensation.  The caller configures the filterbank
 tables, the compiled HRTF field and the room constants once, then per 512-sample
-block updates every source with ejoc_sofa_binaural_set_source() and calls
-ejoc_sofa_binaural_process().  Process returns the number of trimmed stereo
+block updates every source with ejoc_jochrtf_set_source() and calls
+ejoc_jochrtf_process().  Process returns the number of trimmed stereo
 samples written; the first 961 processed samples across calls are discarded.
 */
-typedef void* ejoc_sofa_binaural_handle;
+typedef void* ejoc_jochrtf_handle;
 
-EJOC_API ejoc_sofa_binaural_handle EJOC_CALL ejoc_sofa_binaural_create(void);
-EJOC_API void EJOC_CALL ejoc_sofa_binaural_destroy(ejoc_sofa_binaural_handle handle);
-EJOC_API int EJOC_CALL ejoc_sofa_binaural_reset(ejoc_sofa_binaural_handle handle);
-EJOC_API const char* EJOC_CALL ejoc_sofa_binaural_last_error(
-    ejoc_sofa_binaural_handle handle);
-EJOC_API int EJOC_CALL ejoc_sofa_binaural_configure_kernels(
-    ejoc_sofa_binaural_handle handle,
+EJOC_API ejoc_jochrtf_handle EJOC_CALL ejoc_jochrtf_create(void);
+EJOC_API void EJOC_CALL ejoc_jochrtf_destroy(ejoc_jochrtf_handle handle);
+EJOC_API int EJOC_CALL ejoc_jochrtf_reset(ejoc_jochrtf_handle handle);
+EJOC_API const char* EJOC_CALL ejoc_jochrtf_last_error(
+    ejoc_jochrtf_handle handle);
+EJOC_API int EJOC_CALL ejoc_jochrtf_configure_kernels(
+    ejoc_jochrtf_handle handle,
     const double* qmf_analysis,
     const double* hybrid_low,
     const int16_t* hybrid_indices,
@@ -208,15 +208,15 @@ EJOC_API int EJOC_CALL ejoc_sofa_binaural_configure_kernels(
     uint32_t hybrid_count,
     const double* qmf_basis,
     const double* qmf_taps);
-EJOC_API int EJOC_CALL ejoc_sofa_binaural_configure_field(
-    ejoc_sofa_binaural_handle handle,
+EJOC_API int EJOC_CALL ejoc_jochrtf_configure_field(
+    ejoc_jochrtf_handle handle,
     const double* coefficients,
     const double* delay_coefficients,
     const double* delay_bounds,
     const double* band_centers,
     double measurement_radius_m);
-EJOC_API int EJOC_CALL ejoc_sofa_binaural_configure_room(
-    ejoc_sofa_binaural_handle handle,
+EJOC_API int EJOC_CALL ejoc_jochrtf_configure_room(
+    ejoc_jochrtf_handle handle,
     const double* room_dims,
     const double* listener_pos,
     const double* wall_gains,
@@ -229,8 +229,8 @@ EJOC_API int EJOC_CALL ejoc_sofa_binaural_configure_room(
     const double* allpass_gains,
     uint32_t enable_early_reflections,
     uint32_t enable_late_room);
-EJOC_API int EJOC_CALL ejoc_sofa_binaural_set_source(
-    ejoc_sofa_binaural_handle handle,
+EJOC_API int EJOC_CALL ejoc_jochrtf_set_source(
+    ejoc_jochrtf_handle handle,
     uint32_t source,
     const double* position_adm,
     uint32_t profile,
@@ -238,14 +238,14 @@ EJOC_API int EJOC_CALL ejoc_sofa_binaural_set_source(
     uint32_t enabled,
     uint32_t special_lfe,
     uint32_t fade);
-EJOC_API int EJOC_CALL ejoc_sofa_binaural_process(
-    ejoc_sofa_binaural_handle handle,
+EJOC_API int EJOC_CALL ejoc_jochrtf_process(
+    ejoc_jochrtf_handle handle,
     const double* input16_interleaved,
     uint32_t sample_count,
     double output_gain,
     double* output_stereo_interleaved);
-EJOC_API int EJOC_CALL ejoc_sofa_binaural_finish(
-    ejoc_sofa_binaural_handle handle,
+EJOC_API int EJOC_CALL ejoc_jochrtf_finish(
+    ejoc_jochrtf_handle handle,
     uint32_t flush_samples,
     double* output_stereo_interleaved,
     uint32_t capacity);

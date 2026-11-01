@@ -4,7 +4,7 @@
 // choices and defaults, and the same default output naming under output/.
 //
 // Options that exist only because this build has no Python side or no Rosella
-// import chain (--backend python, --sofa-hrtf, --personalized-headphone,
+// import chain (--backend python, --personalized-headphone,
 // metadata sidecars) fail with an explicit message instead of being ignored.
 #include <algorithm>
 #include <cmath>
@@ -40,19 +40,12 @@ struct Options {
     std::string clip_action = "ask";
     int speaker_metadata_offset = 1473;
     std::string binaural_mode = "mid";
-    std::string sofa_hrtf;
     std::string compiled_hrtf_cache;
+    std::string jochrtf_room = "on";
     std::string personalized_headphone;
     bool personalized_headphone_used = false;
     int rosella_filterbank = 1;
     bool rosella_filterbank_set = false;
-    std::string hrtf_cache_policy;
-    std::string hrtf_cache_dir;
-    double hrtf_radius_m = 0.0;   // 0 selects the single measurement shell
-    std::string sofa_interpolation;
-    double source_reference_distance_m = 0.0;
-    bool sofa_room = false;
-    std::string sofa_room_preset;
     double binaural_tail_seconds = 5.0;
     double binaural_tail_threshold = 1.0e-8;
     int binaural_chunk_frames = 64;
@@ -121,18 +114,12 @@ void print_usage() {
         "  --speaker-metadata-offset N  扬声器渲染 metadata 相对帧偏移，默认 1473 samples\n"
         "  --binaural-mode M     双耳渲染模式 off|near|mid|far，默认 mid；\n"
         "                        off 仅用于 ADM BWF（关闭 DBMD 双耳提示）\n"
-        "  --sofa-hrtf PATH      SOFA SimpleFreeFieldHRIR 输入；.jochrtf 由本工具内部编译\n"
         "  --personalized-headphone [PATH]  Rosella 个性化模型，默认 "
         "HRTF/binaural.personalized_headphone\n"
         "  --rosella-filterbank N  Rosella 模型滤波器组：1=13 taps/6 slots（默认），\n"
         "                        2=11 taps/3 slots；仅作用于个性化模型\n"
-        "  --compiled-hrtf-cache PATH   直接读取 .jochrtf（高级用法，跳过 SOFA 编译）\n"
-        "  --source-reference-distance-m R  覆盖档位的点声源参考距离（米）\n"
-        "  --sofa-room           可选：为 SOFA 启用项目自有房间，默认关闭\n"
-        "  --sofa-room-preset P  房间预设 compact|legacy；默认 near/mid 用 compact、far 用 legacy\n"
-        "  --hrtf-cache-policy P SOFA 编译缓存策略 none|memory|disk，默认 memory\n"
-        "  --hrtf-cache-dir DIR  disk cache 目录，默认 <exe>/output/hrtf-cache\n"
-        "  --hrtf-radius-m R     选择最近的 SOFA measurement-radius shell，默认 1.0 m\n"
+        "  --compiled-hrtf-cache PATH   读取离线编译好的 .jochrtf\n"
+        "  --jochrtf-room on|off  .jochrtf 的项目房间，默认 on；off 只输出直达声\n"
         "  --binaural-tail-seconds S    双耳 room/filterbank flush 上限，默认 5 秒\n"
         "  --binaural-tail-threshold T  双耳尾声裁切阈值，默认 1e-8；主体至少保留原时长\n"
         "  --binaural-chunk-frames N    双耳内部批处理帧数，默认 64（本构建按 512 块渲染，\n"
@@ -238,8 +225,8 @@ void parse_args(const std::vector<std::string>& arguments, Options* options) {
                 to_int(require_value(arguments, &index), "--speaker-metadata-offset"));
         }
         else if (arg == "--binaural-mode") { options->binaural_mode = require_value(arguments, &index); }
-        else if (arg == "--sofa-hrtf") { options->sofa_hrtf = require_value(arguments, &index); }
         else if (arg == "--compiled-hrtf-cache") { options->compiled_hrtf_cache = require_value(arguments, &index); }
+        else if (arg == "--jochrtf-room") { options->jochrtf_room = require_value(arguments, &index); }
         else if (arg == "--personalized-headphone") {
             options->personalized_headphone_used = true;
             // nargs="?": the path is optional, so the next token may be the input.
@@ -254,13 +241,6 @@ void parse_args(const std::vector<std::string>& arguments, Options* options) {
                 to_int(require_value(arguments, &index), "--rosella-filterbank"));
             options->rosella_filterbank_set = true;
         }
-        else if (arg == "--hrtf-cache-policy") { options->hrtf_cache_policy = require_value(arguments, &index); }
-        else if (arg == "--hrtf-cache-dir") { options->hrtf_cache_dir = require_value(arguments, &index); }
-        else if (arg == "--hrtf-radius-m") { options->hrtf_radius_m = to_double(require_value(arguments, &index), "--hrtf-radius-m"); }
-        else if (arg == "--source-reference-distance-m") { options->source_reference_distance_m = to_double(require_value(arguments, &index), "--source-reference-distance-m"); }
-        else if (arg == "--sofa-room") { options->sofa_room = true; }
-        else if (arg == "--sofa-room-preset") { options->sofa_room_preset = require_value(arguments, &index); }
-        else if (arg == "--sofa-interpolation") { options->sofa_interpolation = require_value(arguments, &index); }
         else if (arg == "--binaural-tail-seconds") { options->binaural_tail_seconds = to_double(require_value(arguments, &index), "--binaural-tail-seconds"); }
         else if (arg == "--binaural-tail-threshold") { options->binaural_tail_threshold = to_double(require_value(arguments, &index), "--binaural-tail-threshold"); }
         else if (arg == "--binaural-chunk-frames") { options->binaural_chunk_frames = static_cast<int>(to_int(require_value(arguments, &index), "--binaural-chunk-frames")); }
@@ -356,18 +336,12 @@ std::string find_kernels(const Options& options, const std::string& argv0) {
     return options.kernels;
 }
 
-// Mirrors the reference binaural HRTF resolution (main.py:89-160): the SOFA file
-// is the user-facing input and the .jochrtf is only its compiled cache.  Paths
-// are anchored at the executable directory, as the reference anchors them at the
-// project directory.
+// The binaural input is either an explicitly compiled .jochrtf field or a Rosella
+// .personalized_headphone model.  Paths are anchored at the executable directory,
+// as the reference anchors them at the project directory.
 struct HrtfInput {
-    std::string sofa_path;      // compile this
-    std::string compiled_path;  // or read this .jochrtf directly
-    std::string cache_dir;      // disk policy directory
+    std::string compiled_path;      // read this .jochrtf
     std::string personalized_path;  // Rosella .personalized_headphone
-    std::string interpolation;      // SOFA local interpolation
-    bool disk = false;
-    bool compile = false;
 };
 
 std::string resolve_compiled_hrtf(const Options& options, const std::string& project_directory) {
@@ -375,9 +349,7 @@ std::string resolve_compiled_hrtf(const Options& options, const std::string& pro
         return options.compiled_hrtf_cache;
     }
     const std::string directory_utf8 =
-        options.hrtf_cache_dir.empty()
-            ? fs_utf8::from_path(fs_utf8::to_path(project_directory) / "output" / "hrtf-cache")
-            : options.hrtf_cache_dir;
+        fs_utf8::from_path(fs_utf8::to_path(project_directory) / "output" / "hrtf-cache");
     if (!fs_utf8::is_directory(directory_utf8)) {
         return std::string();
     }
@@ -391,34 +363,18 @@ std::string resolve_compiled_hrtf(const Options& options, const std::string& pro
     std::sort(candidates.begin(), candidates.end());
     if (candidates.size() > 1u) {
         fail(directory_utf8 +
-             " 下有多个 .jochrtf 缓存，无法自动选择；请用 --sofa-hrtf PATH 或 "
-             "--compiled-hrtf-cache PATH 显式指定");
+             " 下有多个 .jochrtf 缓存，无法自动选择；请用 --compiled-hrtf-cache PATH 显式指定");
     }
     return candidates.empty() ? std::string() : fs_utf8::from_path(candidates.front());
 }
 
 HrtfInput resolve_hrtf_input(const Options& options, const std::string& project_directory) {
     HrtfInput input;
-    const std::string default_sofa =
-        fs_utf8::from_path(fs_utf8::to_path(project_directory) / "HRTF" / "binaural.sofa");
     const std::string default_private = fs_utf8::from_path(
         fs_utf8::to_path(project_directory) / "HRTF" / "binaural.personalized_headphone");
     const std::string default_cache_dir =
         fs_utf8::from_path(fs_utf8::to_path(project_directory) / "output" / "hrtf-cache");
 
-    if (!options.compiled_hrtf_cache.empty() && !options.hrtf_cache_policy.empty()) {
-        fail("显式 .jochrtf 输入不能再指定 --hrtf-cache-policy");
-    }
-    if (!options.compiled_hrtf_cache.empty() && options.hrtf_radius_m > 0.0) {
-        fail("显式 .jochrtf 输入不能再选择 SOFA radius shell");
-    }
-    if (options.personalized_headphone_used &&
-        (!options.hrtf_cache_policy.empty() || !options.hrtf_cache_dir.empty() ||
-         options.hrtf_radius_m > 0.0)) {
-        fail("Rosella 模型输入不能使用 --hrtf-cache-policy/--hrtf-cache-dir/--hrtf-radius-m");
-    }
-
-    std::string sofa = options.sofa_hrtf;
     std::string compiled = options.compiled_hrtf_cache;
     std::string personalized =
         options.personalized_headphone_used ? options.personalized_headphone : std::string();
@@ -426,16 +382,11 @@ HrtfInput resolve_hrtf_input(const Options& options, const std::string& project_
         // "--personalized-headphone" without a path means the project default.
         personalized = default_private;
     }
-    if (sofa.empty() && compiled.empty() && personalized.empty()) {
-        // The reference order: the SOFA file, then the unique compiled cache, then the
-        // personalized model.
-        if (fs_utf8::exists(default_sofa)) {
-            sofa = default_sofa;
-        } else {
-            compiled = resolve_compiled_hrtf(options, project_directory);
-            if (compiled.empty() && fs_utf8::exists(default_private)) {
-                personalized = default_private;
-            }
+    if (compiled.empty() && personalized.empty()) {
+        // The compiled cache, then the personalized model.
+        compiled = resolve_compiled_hrtf(options, project_directory);
+        if (compiled.empty() && fs_utf8::exists(default_private)) {
+            personalized = default_private;
         }
     }
     if (!personalized.empty()) {
@@ -445,37 +396,12 @@ HrtfInput resolve_hrtf_input(const Options& options, const std::string& project_
         input.personalized_path = personalized;
         return input;
     }
-    if (sofa.empty() && compiled.empty()) {
-        if (!options.hrtf_cache_policy.empty() || !options.hrtf_cache_dir.empty() ||
-            options.hrtf_radius_m > 0.0) {
-            fail("HRTF cache/radius 选项需要 --sofa-hrtf");
-        }
-        fail("--binaural 未找到 HRTF 输入：默认 " + default_sofa + "、" + default_private +
-             " 或 " + default_cache_dir +
-             " 下的 .jochrtf 都不存在，请用 --sofa-hrtf PATH、--personalized-headphone PATH "
-             "或 --compiled-hrtf-cache PATH 指定");
+    if (compiled.empty()) {
+        fail("--binaural 未找到 HRTF 输入：默认 " + default_private + " 与 " + default_cache_dir +
+             " 下的 .jochrtf 都不存在，请用 --personalized-headphone PATH 或 "
+             "--compiled-hrtf-cache PATH 指定");
     }
-    if (sofa.empty() && (!options.hrtf_cache_policy.empty() || !options.hrtf_cache_dir.empty() ||
-                         options.hrtf_radius_m > 0.0)) {
-        fail("HRTF cache/radius 选项需要 --sofa-hrtf");
-    }
-    if (sofa.empty()) {
-        input.compiled_path = compiled;
-        return input;
-    }
-    const std::string effective_policy =
-        options.hrtf_cache_policy.empty() ? "memory" : options.hrtf_cache_policy;
-    input.compile = !options.hrtf_cache_policy.empty() || !options.hrtf_cache_dir.empty();
-    if (!options.hrtf_cache_dir.empty() && effective_policy != "disk") {
-        fail("--hrtf-cache-dir 需要 SOFA 与 disk cache policy 一起使用");
-    }
-    input.sofa_path = sofa;
-    input.disk = effective_policy == "disk";
-    input.interpolation = options.sofa_interpolation;
-    input.cache_dir = options.hrtf_cache_dir.empty() ? default_cache_dir : options.hrtf_cache_dir;
-    if (!fs_utf8::exists(input.sofa_path)) {
-        fail("SOFA HRTF 不存在: " + input.sofa_path);
-    }
+    input.compiled_path = compiled;
     return input;
 }
 
@@ -579,21 +505,9 @@ int main(int argc, char** argv) {
                      {"ask", "continue", "float32", "abort"});
         check_choice(options.binaural_mode, "--binaural-mode", {"off", "near", "mid", "far"});
         check_choice(options.trajectory_mode, "--trajectory-mode", {"compact", "dense64"});
-        if (!options.sofa_interpolation.empty()) {
-            check_choice(options.sofa_interpolation, "--sofa-interpolation",
-                         {"lf_logmag_phase", "lf_mca_zero"});
-        }
-        if (!options.sofa_room_preset.empty()) {
-            check_choice(options.sofa_room_preset, "--sofa-room-preset",
-                         {"compact", "legacy"});
-        }
         check_choice(options.backend, "--backend", {"auto", "native", "python"});
         check_choice(options.print_metadata, "--print-metadata", {"none", "summary", "frames"});
         check_choice(options.metadata_backend, "--metadata-backend", {"auto", "emdf", "sidecar"});
-        if (!options.hrtf_cache_policy.empty()) {
-            check_choice(options.hrtf_cache_policy, "--hrtf-cache-policy",
-                         {"none", "memory", "disk"});
-        }
         if (options.rosella_filterbank != 1 && options.rosella_filterbank != 2) {
             fail("--rosella-filterbank: invalid choice: " +
                  std::to_string(options.rosella_filterbank) + " (choose from 1, 2)");
@@ -625,10 +539,10 @@ int main(int argc, char** argv) {
         if (options.speaker_metadata_offset < 0) {
             fail("speaker-metadata-offset 不能为负数");
         }
+        check_choice(options.jochrtf_room, "--jochrtf-room", {"on", "off"});
         const bool hrtf_options_used =
-            !options.sofa_hrtf.empty() || !options.compiled_hrtf_cache.empty() ||
-            options.personalized_headphone_used || !options.hrtf_cache_policy.empty() ||
-            !options.hrtf_cache_dir.empty() || options.hrtf_radius_m > 0.0;
+            !options.compiled_hrtf_cache.empty() || options.personalized_headphone_used ||
+            options.jochrtf_room != "on";
         if (hrtf_options_used && !binaural_mode) {
             fail("SOFA/HRTF 选项仅与 --binaural 一起使用");
         }
@@ -645,9 +559,6 @@ int main(int argc, char** argv) {
         }
         if (options.binaural_chunk_frames <= 0) {
             fail("binaural-chunk-frames 必须大于 0");
-        }
-        if (!std::isfinite(options.hrtf_radius_m) || options.hrtf_radius_m < 0.0) {
-            fail("hrtf-radius-m 必须是正有限值");
         }
         if (options.duration_set && options.duration <= 0.0) {
             fail("duration 必须大于 0");
@@ -737,26 +648,18 @@ int main(int argc, char** argv) {
     if (options.quiet) { config.flags |= JOC_TASK_F_QUIET; }
 
     std::string hrtf_path;
-    std::string hrtf_sofa_path;
-    std::string hrtf_cache_dir;
     std::string personalized_path;
     std::string kernels_path;
-    std::string hrtf_interpolation;
-    bool hrtf_compile = false;
     if (binaural_mode) {
         try {
             const HrtfInput input = resolve_hrtf_input(options, project_directory);
             hrtf_path = input.compiled_path;
-            hrtf_sofa_path = input.sofa_path;
-            hrtf_cache_dir = input.cache_dir;
-            hrtf_interpolation = input.interpolation;
-            hrtf_compile = input.compile;
             personalized_path = input.personalized_path;
             kernels_path = find_kernels(options, arguments.empty() ? std::string()
                                                                    : arguments.front());
             if (options.rosella_filterbank_set && personalized_path.empty()) {
                 fail("--rosella-filterbank 只作用于 Rosella .personalized_headphone 输入；"
-                     "当前 SOFA/.jochrtf 路径不使用该滤波器组");
+                     "当前 .jochrtf 路径不使用该滤波器组");
             }
         } catch (const std::exception& error) {
             std::fprintf(stderr, "joc_cli: error: %s\n", error.what());
@@ -764,22 +667,9 @@ int main(int argc, char** argv) {
         }
     }
     config.hrtf_path = hrtf_path.empty() ? nullptr : hrtf_path.c_str();
-    config.hrtf_sofa_path = hrtf_sofa_path.empty() ? nullptr : hrtf_sofa_path.c_str();
-    config.hrtf_cache_dir = hrtf_cache_dir.empty() ? nullptr : hrtf_cache_dir.c_str();
     config.personalized_headphone_path =
         personalized_path.empty() ? nullptr : personalized_path.c_str();
-    config.hrtf_cache_policy = options.hrtf_cache_policy == "disk"    ? JOC_HRTF_CACHE_DISK
-                               : options.hrtf_cache_policy == "none" ? JOC_HRTF_CACHE_NONE
-                                                                    : JOC_HRTF_CACHE_MEMORY;
-    config.hrtf_radius_m = options.hrtf_radius_m;
-    config.source_reference_distance_m = options.source_reference_distance_m;
-    config.sofa_room = options.sofa_room ? 1u : 0u;
-    config.sofa_room_preset =
-        options.sofa_room_preset.empty() ? nullptr : options.sofa_room_preset.c_str();
-    config.sofa_interpolation = hrtf_interpolation == "lf_mca_zero"
-                                    ? JOC_SOFA_INTERPOLATION_MCA_ZERO
-                                    : JOC_SOFA_INTERPOLATION_LOGMAG_PHASE;
-    config.hrtf_compile = hrtf_compile ? 1u : 0u;
+    config.jochrtf_room = options.jochrtf_room == "off" ? 0u : 1u;
     config.kernels_path = kernels_path.empty() ? nullptr : kernels_path.c_str();
 
     joc_validation_issue issues[32];
