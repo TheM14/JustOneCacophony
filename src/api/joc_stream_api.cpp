@@ -50,6 +50,9 @@ joc::stream::Config to_config(const joc_stream_config& config) {
     if (config.rosella_filterbank != 0u) {
         out.rosella_filterbank = config.rosella_filterbank;
     }
+    out.source_reference_distance_m = config.source_reference_distance_m;
+    out.sofa_room = config.sofa_room != 0u;
+    if (config.sofa_room_preset != nullptr) { out.sofa_room_preset = config.sofa_room_preset; }
     return out;
 }
 

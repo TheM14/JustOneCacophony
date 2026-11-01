@@ -144,91 +144,6 @@ private:
 
 }  // namespace
 
-Status sphere_transfer(const std::vector<double>& frequencies, double radius, double head_radius,
-                       const std::vector<double>& cosines,
-                       std::vector<std::complex<double>>* out) {
-    if (out == nullptr || !(radius > head_radius) || head_radius <= 0.0) {
-        return argument_error("sphere transfer needs a source outside the head");
-    }
-    const std::size_t bands = frequencies.size();
-    out->assign(cosines.size() * bands, std::complex<double>(0.0, 0.0));
-    std::vector<std::complex<double>> x(bands);
-    std::vector<std::complex<double>> z(bands);
-    std::vector<std::complex<double>> ratio_a(bands);
-    std::vector<std::complex<double>> ratio_r(bands);
-    std::vector<std::complex<double>> product(bands, std::complex<double>(1.0, 0.0));
-    double maximum_x = 0.0;
-    for (std::size_t band = 0; band < bands; ++band) {
-        const double wave = 2.0 * kPi * frequencies[band] * head_radius / kSoundSpeed;
-        maximum_x = std::max(maximum_x, wave);
-        x[band] = std::complex<double>(wave, 0.0);
-        z[band] = std::complex<double>(wave * radius / head_radius, 0.0);
-        ratio_a[band] = x[band] / (1.0 + std::complex<double>(0.0, 1.0) * x[band]);
-        ratio_r[band] = z[band] / (1.0 + std::complex<double>(0.0, 1.0) * z[band]);
-    }
-    const double geometric = std::ceil(std::log(kScanTolerance) / std::log(head_radius / radius)) + 16.0;
-    const int order = static_cast<int>(std::max(std::ceil(maximum_x) + 32.0, geometric));
-    if (order > 4096) {
-        return argument_error("source too close to the sphere surface");
-    }
-    std::vector<double> legendre_previous(cosines.size(), 1.0);
-    std::vector<double> legendre(cosines.size(), 0.0);
-    std::vector<double> mu(cosines.size());
-    for (std::size_t row = 0; row < cosines.size(); ++row) {
-        mu[row] = std::clamp(cosines[row], -1.0, 1.0);
-        legendre[row] = mu[row];
-        for (std::size_t band = 0; band < bands; ++band) {
-            const std::complex<double> value = 1.0 / (1.0 + std::complex<double>(0.0, 1.0) * x[band]);
-            (*out)[row * bands + band] = value;
-        }
-    }
-    std::vector<std::complex<double>> term(bands);
-    for (int degree = 1; degree <= order; ++degree) {
-        for (std::size_t band = 0; band < bands; ++band) {
-            const std::complex<double> quotient =
-                std::abs(z[band]) != 0.0 ? ratio_a[band] / ratio_r[band]
-                                         : std::complex<double>(head_radius / radius, 0.0);
-            product[band] *= quotient;
-            term[band] = product[band] /
-                         ((static_cast<double>(degree) + 1.0) -
-                          x[band] * ratio_a[band]);
-        }
-        for (std::size_t row = 0; row < cosines.size(); ++row) {
-            const double factor = (2.0 * static_cast<double>(degree) + 1.0) * legendre[row];
-            for (std::size_t band = 0; band < bands; ++band) {
-                (*out)[row * bands + band] += factor * term[band];
-            }
-        }
-        // Legendre recurrence P_{n+1} = ((2n+1) mu P_n - n P_{n-1}) / (n+1).
-        for (std::size_t row = 0; row < cosines.size(); ++row) {
-            const double next =
-                ((2.0 * static_cast<double>(degree) + 1.0) * mu[row] * legendre[row] -
-                 static_cast<double>(degree) * legendre_previous[row]) /
-                (static_cast<double>(degree) + 1.0);
-            legendre_previous[row] = legendre[row];
-            legendre[row] = next;
-        }
-        for (std::size_t band = 0; band < bands; ++band) {
-            const double denominator_a =
-                (2.0 * static_cast<double>(degree) + 1.0);
-            ratio_a[band] = x[band] / (denominator_a - x[band] * ratio_a[band]);
-            ratio_r[band] = z[band] / (denominator_a - z[band] * ratio_r[band]);
-        }
-    }
-    for (std::size_t band = 0; band < bands; ++band) {
-        const std::complex<double> phase = std::exp(std::complex<double>(0.0, 1.0) * x[band]);
-        for (std::size_t row = 0; row < cosines.size(); ++row) {
-            (*out)[row * bands + band] *= phase;
-        }
-    }
-    for (const std::complex<double>& value : *out) {
-        if (!std::isfinite(value.real()) || !std::isfinite(value.imag())) {
-            return field_error("sphere series failed to converge");
-        }
-    }
-    return Status::success();
-}
-
 Status FullHrirField::build(const CanonicalHrtf& canonical, const FullHrirOptions& options) {
     method_ = options.method;
     if (std::fabs(canonical.sample_rate_hz - 48000.0) > 1e-9) {
@@ -306,30 +221,6 @@ Status FullHrirField::build(const CanonicalHrtf& canonical, const FullHrirOption
     }
     fft_size_ = fft_size;
     bins_ = fft_size / 2 + 1;
-
-    // Receiver geometry: a fixed pair, centred on the listener, one radius.
-    if (canonical.receiver_position_cartesian_m.size() < 6u) {
-        return field_error("ReceiverPosition is missing");
-    }
-    const double* left = canonical.receiver_position_cartesian_m.data();
-    const double* right = left + 3;
-    const double mean[3] = {(left[0] + right[0]) * 0.5, (left[1] + right[1]) * 0.5,
-                            (left[2] + right[2]) * 0.5};
-    if (std::sqrt(mean[0] * mean[0] + mean[1] * mean[1] + mean[2] * mean[2]) > 1e-6) {
-        return field_error("radial model requires ears centred on the listener");
-    }
-    head_radius_m_ = std::sqrt(left[0] * left[0] + left[1] * left[1] + left[2] * left[2]);
-    const double right_radius = std::sqrt(right[0] * right[0] + right[1] * right[1] +
-                                          right[2] * right[2]);
-    if (!(head_radius_m_ > 0.04 && head_radius_m_ < 0.15) ||
-        std::fabs(right_radius - head_radius_m_) > 1e-6) {
-        return field_error("unsupported receiver geometry for the radial model");
-    }
-    ear_directions_.assign(6, 0.0);
-    for (int axis = 0; axis < 3; ++axis) {
-        ear_directions_[static_cast<std::size_t>(axis)] = left[axis] / head_radius_m_;
-        ear_directions_[3u + static_cast<std::size_t>(axis)] = right[axis] / head_radius_m_;
-    }
 
     // Frequencies and phase-fit grid.
     frequencies_.resize(bins_);
@@ -531,28 +422,6 @@ Status FullHrirField::build(const CanonicalHrtf& canonical, const FullHrirOption
         }
     }
 
-    // Centre spectrum from the spherical Voronoi weights.
-    std::vector<double> areas;
-    mesh_.voronoi_areas(&areas);
-    std::vector<double> energy(bins_, 0.0);
-    for (std::size_t row = 0; row < rows; ++row) {
-        const double weight = row < areas.size() ? areas[row] : 0.0;
-        for (int ear = 0; ear < 2; ++ear) {
-            const std::size_t base = (row * 2u + static_cast<std::size_t>(ear)) * bins_;
-            for (std::size_t bin = 0; bin < bins_; ++bin) {
-                energy[bin] += weight * std::norm(physical[base + bin]);
-            }
-        }
-    }
-    centre_spectrum_.assign(bins_, std::complex<double>(0.0, 0.0));
-    for (std::size_t bin = 0; bin < bins_; ++bin) {
-        const double magnitude = std::sqrt(energy[bin] * 0.5);
-        centre_spectrum_[bin] = magnitude * std::exp(std::complex<double>(
-                                                   0.0, -omega_[bin] *
-                                                            static_cast<double>(
-                                                                recording_origin_samples_)));
-    }
-
     // Aligned spectra and the magnitude representation used by the interpolation.
     aligned_.assign(rows * 2 * bins_, std::complex<double>(0.0, 0.0));
     log_magnitude_.assign(rows * 2 * bins_, 0.0);
@@ -620,48 +489,6 @@ Status FullHrirField::build(const CanonicalHrtf& canonical, const FullHrirOption
                 }
             }
         }
-    }
-    return Status::success();
-}
-
-Status FullHrirField::radial_ratio(const double direction[3], double radius,
-                                   std::vector<std::complex<double>>* out) const {
-    if (out == nullptr) {
-        return argument_error("radial ratio output is null");
-    }
-    if (std::fabs(radius - measurement_radius_m_) < 1e-10) {
-        out->assign(2 * bins_, std::complex<double>(1.0, 0.0));
-        return Status::success();
-    }
-    if (!(radius > 0.0) || !std::isfinite(radius)) {
-        return argument_error("radial ratio needs a positive finite radius");
-    }
-    std::vector<double> cosines(2, 0.0);
-    for (int ear = 0; ear < 2; ++ear) {
-        cosines[static_cast<std::size_t>(ear)] =
-            ear_directions_[static_cast<std::size_t>(ear) * 3u] * direction[0] +
-            ear_directions_[static_cast<std::size_t>(ear) * 3u + 1u] * direction[1] +
-            ear_directions_[static_cast<std::size_t>(ear) * 3u + 2u] * direction[2];
-    }
-    std::vector<std::complex<double>> source;
-    std::vector<std::complex<double>> target;
-    Status status = sphere_transfer(frequencies_, measurement_radius_m_, head_radius_m_, cosines,
-                                    &source);
-    if (!status.ok()) {
-        return status;
-    }
-    status = sphere_transfer(frequencies_, radius, head_radius_m_, cosines, &target);
-    if (!status.ok()) {
-        return status;
-    }
-    for (const std::complex<double>& value : source) {
-        if (std::abs(value) < 1e-10) {
-            return field_error("singular radial reference response");
-        }
-    }
-    out->resize(source.size());
-    for (std::size_t index = 0; index < source.size(); ++index) {
-        (*out)[index] = target[index] / source[index];
     }
     return Status::success();
 }

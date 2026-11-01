@@ -29,7 +29,7 @@
 #include "adm/adm_metadata.h"
 #include "adm/adm_tracks.h"
 #include "binaural/binaural_runtime.h"
-#include "binaural/sofa_reference_runtime.h"
+#include "binaural/direct_sofa_runtime.h"
 #include "eac3_transport/eac3_reader.h"
 #include "emdf/emdf_parser.h"
 #include "foundation/mini_json.h"
@@ -96,8 +96,10 @@ struct Settings {
     std::string hrtf_path;
     std::string kernels_path;
     std::string hrtf_sofa_path;
-    std::string reference_config_path;
     std::uint32_t sofa_interpolation = JOC_SOFA_INTERPOLATION_LOGMAG_PHASE;
+    double source_reference_distance_m = 0.0;
+    bool sofa_room = false;
+    std::string sofa_room_preset;
     bool hrtf_compile = false;
     std::string personalized_headphone_path;
     std::string hrtf_cache_dir;
@@ -149,10 +151,10 @@ Settings normalise(const joc_task_config& raw) {
     if (raw.speaker_layout_name != nullptr) { cfg.layout = raw.speaker_layout_name; }
     if (raw.hrtf_path != nullptr) { cfg.hrtf_path = raw.hrtf_path; }
     if (raw.hrtf_sofa_path != nullptr) { cfg.hrtf_sofa_path = raw.hrtf_sofa_path; }
-    if (raw.reference_config_path != nullptr) {
-        cfg.reference_config_path = raw.reference_config_path;
-    }
     cfg.sofa_interpolation = raw.sofa_interpolation;
+    cfg.source_reference_distance_m = raw.source_reference_distance_m;
+    cfg.sofa_room = raw.sofa_room != 0u;
+    if (raw.sofa_room_preset != nullptr) { cfg.sofa_room_preset = raw.sofa_room_preset; }
     cfg.hrtf_compile = raw.hrtf_compile != 0u;
     if (raw.personalized_headphone_path != nullptr) {
         cfg.personalized_headphone_path = raw.personalized_headphone_path;
@@ -1364,7 +1366,7 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
     }
 
     ::joc::binaural::SofaBinauralRuntime binaural;
-    ::joc::binaural::SofaReferenceRuntime binaural_reference;
+    ::joc::binaural::DirectSofaRuntime sofa_direct;
     bool use_reference = false;
     ::joc::hrtf::RosellaRuntime rosella;
     const bool binaural_enabled = cfg.operation == JOC_OP_BINAURAL;
@@ -1412,32 +1414,35 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
         if (!cfg.hrtf_sofa_path.empty() && !cfg.hrtf_compile) {
             // The SOFA keeps its full HRIRs: the direct path renders through the
             // reference environment, and a .jochrtf stays an explicit input below.
-            ::joc::binaural::SofaReferenceOptions options;
-            options.mode_specified = cfg.binaural_mode != JOC_BINAURAL_MID;
-            options.mode_index = cfg.binaural_mode == JOC_BINAURAL_NEAR
-                                     ? ::joc::binaural::kProfileNear
-                                     : (cfg.binaural_mode == JOC_BINAURAL_FAR
-                                            ? ::joc::binaural::kProfileFar
-                                            : ::joc::binaural::kProfileMid);
-            options.reference_config = cfg.reference_config_path;
+            ::joc::binaural::DirectSofaOptions options;
+            options.mode = cfg.binaural_mode == JOC_BINAURAL_NEAR
+                               ? "near"
+                               : (cfg.binaural_mode == JOC_BINAURAL_FAR ? "far" : "mid");
+            options.has_reference_distance = cfg.source_reference_distance_m > 0.0;
+            options.reference_distance_m = cfg.source_reference_distance_m;
             options.interpolation =
                 cfg.sofa_interpolation == JOC_SOFA_INTERPOLATION_MCA_ZERO
                     ? ::joc::hrtf::HrirInterpolation::kMcaZero
                     : ::joc::hrtf::HrirInterpolation::kLogMagnitudePhase;
             options.has_shell_radius = cfg.hrtf_radius_m > 0.0;
             options.shell_radius_m = cfg.hrtf_radius_m;
+            options.sofa_room = cfg.sofa_room;
+            options.room_preset = cfg.sofa_room_preset;
             options.object_delay_samples = cfg.object_delay_samples;
             options.tail_seconds = cfg.tail_seconds;
-            status = binaural_reference.open(cfg.hrtf_sofa_path, options);
+            status = sofa_direct.open(cfg.hrtf_sofa_path, options);
             use_reference = status.ok();
             if (status.ok()) {
                 bus.emit(JOC_EV_HRTF_LOADED, JOC_STAGE_RENDER, JOC_LOG_INFO,
                          fmt("SOFA full-HRIR field: %zu bins, %zu directions, %zu triangles, "
-                             "latency %d samples",
-                             binaural_reference.field().fft_size(),
-                             binaural_reference.field().direction_count(),
-                             binaural_reference.field().triangle_count(),
-                             binaural_reference.latency_samples()));
+                             "latency %d samples, room %s",
+                             sofa_direct.field().fft_size(),
+                             sofa_direct.field().direction_count(),
+                             sofa_direct.field().triangle_count(),
+                             sofa_direct.latency_samples(),
+                             sofa_direct.room_active()
+                                 ? sofa_direct.room_preset().c_str()
+                                 : "off"));
             }
         } else {
             if (!cfg.hrtf_sofa_path.empty()) {
@@ -1486,7 +1491,7 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
         }
         bus.emit(JOC_EV_RENDERER_INITIALIZED, JOC_STAGE_RENDER, JOC_LOG_INFO,
                  use_reference
-                     ? "binaural runtime ready (full-HRIR SOFA reference path)"
+                     ? "binaural runtime ready (full-HRIR SOFA direct path)"
                      : "binaural runtime ready (the first 961 samples are the kernel latency)");
         }
     }
@@ -1845,7 +1850,7 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                                                 xyz[2]);
                                             if (binaural_enabled) {
                                                 if (use_reference) {
-                                                    binaural_reference.set_fixed_position(
+                                                    sofa_direct.set_fixed_position(
                                                         static_cast<int>(slot) + 1, xyz);
                                                 } else {
                                                     binaural.set_fixed_position(
@@ -2035,7 +2040,7 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                         static_cast<std::int64_t>(frame.index), frame.outer_offset,
                         static_cast<std::int64_t>(cfg.object_delay_samples));
                 } else if (use_reference) {
-                    submitted = binaural_reference.submit_frame(
+                    submitted = sofa_direct.submit_frame(
                         frame.objects16.data(),
                         frame.has_update ? &frame.update : nullptr,
                         static_cast<std::int64_t>(frame.index), frame.outer_offset,
@@ -2089,7 +2094,7 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                 if (rosella_enabled) {
                     rosella.take_output(&pending.dsp);
                 } else if (use_reference) {
-                    binaural_reference.take_output(&pending.dsp);
+                    sofa_direct.take_output(&pending.dsp);
                 } else {
                     binaural.take_output(&pending.dsp);
                 }
@@ -2132,13 +2137,13 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                              !binaural_enabled
                                  ? 0ull
                                  : (use_reference
-                                        ? binaural_reference.timeline().payload_count()
+                                        ? sofa_direct.timeline().payload_count()
                                         : binaural.timeline().payload_count())),
                          static_cast<unsigned long long>(
                              !binaural_enabled
                                  ? 0ull
                                  : (use_reference
-                                        ? binaural_reference.timeline().transition_count()
+                                        ? sofa_direct.timeline().transition_count()
                                         : binaural.timeline().transition_count()))));
         }
     }
@@ -2250,8 +2255,8 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                 drained_tail =
                     rosella.finish(rosella.finish_capacity(cfg.tail_seconds), &tail);
             } else if (use_reference) {
-                drained_tail = binaural_reference.finish(
-                    binaural_reference.finish_capacity(cfg.tail_seconds), &tail);
+                drained_tail = sofa_direct.finish(
+                    sofa_direct.finish_capacity(cfg.tail_seconds), &tail);
             } else {
                 drained_tail =
                     binaural.finish(binaural.finish_capacity(cfg.tail_seconds), &tail);
@@ -2365,12 +2370,12 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
         out->oamd_payloads =
             !binaural_enabled
                 ? out->oamd_payloads
-                : (use_reference ? binaural_reference.timeline().payload_count()
+                : (use_reference ? sofa_direct.timeline().payload_count()
                                  : binaural.timeline().payload_count());
         out->oamd_transitions =
             !binaural_enabled
                 ? out->oamd_transitions
-                : (use_reference ? binaural_reference.timeline().transition_count()
+                : (use_reference ? sofa_direct.timeline().transition_count()
                                  : binaural.timeline().transition_count());
         out->t_decode_bed = t_decode;
         out->t_render = t_render;

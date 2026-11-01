@@ -17,6 +17,9 @@
 #include "foundation/fs_utf8.h"
 #include "foundation/geometry.h"
 #include "hrtf/jochrtf.h"
+#include "binaural/point_source.h"
+#include "binaural/reference_distance.h"
+#include "binaural/shoebox_room.h"
 #include "hrtf/full_hrir_field.h"
 #include "hrtf/partitioned_convolution.h"
 #include "hrtf/sofa.h"
@@ -357,33 +360,117 @@ void test_spherical_mesh() {
     CHECK(std::fabs(largest / smallest - 1.1197648114672005) < 1e-9);
 }
 
-// Rigid-sphere radial model: values captured from the reference implementation.
-void test_sphere_transfer() {
-    const std::vector<double> frequencies = {100.0, 1000.0, 10000.0};
-    const std::vector<double> cosines = {1.0, -1.0, 0.0};
-    std::vector<std::complex<double>> transfer;
-    const joc::Status status =
-        joc::hrtf::sphere_transfer(frequencies, 1.0, 0.0875, cosines, &transfer);
-    CHECK(status.ok());
-    CHECK(transfer.size() == 9u);
-    const double expected[9][2] = {
-        {1.1168983535509718, 0.2665696486002471},
-        {-0.510805763797141, 1.6128537943222743},
-        {-2.028923793661157, -0.7781755079388825},
-        {0.8548955324773564, -0.21699922414442047},
-        {-0.8363832921619323, -0.5012251963562975},
-        {0.03287720702899299, -0.7655728018349265},
-        {0.9881471826293796, -0.01028038096534477},
-        {1.0740047354266093, 0.11688911754407418},
-        {0.9394042077254096, -0.7927884777210633},
-    };
-    for (std::size_t index = 0; index < 9u; ++index) {
-        const double real = expected[index][0];
-        const double imaginary = expected[index][1];
-        CHECK(std::fabs(transfer[index].real() - real) < 1e-9 * (1.0 + std::fabs(real)));
-        CHECK(std::fabs(transfer[index].imag() - imaginary) <
-              1e-9 * (1.0 + std::fabs(imaginary)));
+// Point-source reference: the ADM position selects a listener-frame direction and
+// a distance scaled by the mode's reference distance.
+void test_reference_distance() {
+    double near = 0.0;
+    double mid = 0.0;
+    double far = 0.0;
+    CHECK(joc::binaural::source_reference_distance("near", &near).ok());
+    CHECK(joc::binaural::source_reference_distance("mid", &mid).ok());
+    CHECK(joc::binaural::source_reference_distance("far", &far).ok());
+    CHECK(std::fabs(near - 1.00000465) < 1e-12);
+    CHECK(std::fabs(mid - 2.19327927) < 1e-12);
+    CHECK(std::fabs(far - 6.40177584) < 1e-12);
+    CHECK(!joc::binaural::source_reference_distance("wide", &near).ok());
+
+    joc::binaural::DistanceState state;
+    state.profile = "near";
+    state.physical_distance_m = 2.0;
+    state.normalized_radius = 0.5;
+    CHECK(joc::binaural::direct_level_gain(state) == 1.0);
+    CHECK(std::fabs(joc::binaural::late_send(state) - 0.042426406871192854) < 1e-15);
+    state.profile = "mid";
+    CHECK(std::fabs(joc::binaural::direct_level_gain(state) - 0.97463184619707621) < 1e-15);
+    CHECK(std::fabs(joc::binaural::late_send(state) - 0.11313708498984762) < 1e-15);
+    state.profile = "far";
+    CHECK(std::fabs(joc::binaural::late_send(state) - 0.19798989873223333) < 1e-15);
+
+    const std::array<double, 3> front = {0.0, 1.0, 0.0};
+    CHECK(joc::binaural::map_adm_position(front, "mid", &state).ok());
+    CHECK(std::fabs(state.physical_distance_m - 2.19327927) < 1e-12);
+    CHECK(std::fabs(state.direction_adm[1] - 1.0) < 1e-15);
+    const std::array<double, 3> origin = {0.0, 0.0, 0.0};
+    CHECK(joc::binaural::map_adm_position(origin, "mid", &state).ok());
+    CHECK(std::fabs(state.physical_distance_m - joc::binaural::kMinimumSourceDistanceM) < 1e-15);
+
+    double gain = 0.0;
+    CHECK(joc::binaural::inverse_distance_gain(1.2, 2.4, &gain).ok());
+    CHECK(std::fabs(gain - 0.5) < 1e-15);
+    CHECK(!joc::binaural::inverse_distance_gain(1.2, 0.0, &gain).ok());
+}
+
+void test_point_source() {
+    joc::binaural::PointSourceReference reference;
+    CHECK(reference.configure("mid", false, 0.0).ok());
+    CHECK(reference.mode() == "mid");
+    CHECK(std::fabs(reference.reference_distance_m() - 2.19327927) < 1e-12);
+
+    const std::array<double, 3> front = {0.0, 1.0, 0.0};
+    joc::binaural::PointSourcePosition position;
+    CHECK(reference.map_position(front, nullptr, &position).ok());
+    CHECK(std::fabs(position.direction[0] - 1.0) < 1e-15);
+    CHECK(std::fabs(position.direction[1]) < 1e-15);
+    CHECK(std::fabs(position.distance_m - 2.1932792700000001) < 1e-12);
+    CHECK(std::fabs(position.normalized_radius - 1.0) < 1e-15);
+
+    const std::array<double, 3> side = {-0.8, 0.2, 0.6};
+    CHECK(reference.map_position(side, nullptr, &position).ok());
+    CHECK(std::fabs(position.direction[0] - 0.19611613513818402) < 1e-12);
+    CHECK(std::fabs(position.direction[1] - 0.7844645405527361) < 1e-12);
+    CHECK(std::fabs(position.distance_m - 2.2367147592977079) < 1e-12);
+
+    const std::array<double, 3> origin = {0.0, 0.0, 0.0};
+    const std::array<double, 3> previous = {0.0, -1.0, 0.0};
+    CHECK(reference.map_position(origin, &previous, &position).ok());
+    CHECK(std::fabs(position.direction[1] + 1.0) < 1e-15);
+    CHECK(reference.map_position(origin, nullptr, &position).ok());
+    CHECK(std::fabs(position.direction[0] - 1.0) < 1e-15);
+
+    joc::binaural::PointSourceReference overridden;
+    CHECK(overridden.configure("far", true, 3.5).ok());
+    CHECK(overridden.mode() == "far");
+    CHECK(std::fabs(overridden.reference_distance_m() - 3.5) < 1e-15);
+    CHECK(!overridden.configure("far", true, 0.0).ok());
+}
+
+// Six first-order image sources of the project shoebox, against the reference.
+void test_shoebox_room() {
+    const joc::binaural::ShoeboxRoomConfig config;
+    CHECK(config.validate().ok());
+    joc::binaural::ShoeboxRoomConfig invalid;
+    invalid.listener_position_m = {0.0, 9.0, 7.0};
+    CHECK(!invalid.validate().ok());
+
+    const std::array<double, 3> direction = {0.0, 1.0, 0.0};
+    std::vector<joc::binaural::EarlyReflection> paths;
+    CHECK(joc::binaural::first_order_image_sources(direction, 2.0, 48000.0, config, &paths).ok());
+    CHECK(paths.size() == 6u);
+    const char* const walls[6] = {"left", "right", "back", "front", "floor", "ceiling"};
+    const double distances[6] = {18.110770276275, 18.110770276275, 20.0, 16.0,
+                                 14.142135623731, 14.142135623731};
+    const double delays[6] = {2252.598232627999, 2252.598232627999, 2516.749198951355,
+                              1957.471599184387, 1697.706116921310, 1697.706116921310};
+    const double gains[6] = {0.600341066264, 0.580975225417, 0.559491370220, 0.593156903749,
+                             0.507524274007, 0.546564602777};
+    for (std::size_t index = 0; index < 6u; ++index) {
+        CHECK(paths[index].wall == walls[index]);
+        CHECK(std::fabs(paths[index].path_distance_m - distances[index]) < 1e-9);
+        CHECK(std::fabs(paths[index].extra_delay_samples - delays[index]) < 1e-6);
+        CHECK(std::fabs(paths[index].reflection_gain - gains[index]) < 1e-9);
     }
+    CHECK(std::fabs(paths[0].direction_adm[0] + 0.993883734674) < 1e-9);
+    CHECK(std::fabs(paths[1].direction_adm[0] - 0.993883734674) < 1e-9);
+    CHECK(std::fabs(paths[2].direction_adm[1] + 1.0) < 1e-12);
+
+    // A source outside the shoebox is rejected instead of producing a path.
+    std::vector<joc::binaural::EarlyReflection> outside;
+    CHECK(!joc::binaural::first_order_image_sources(direction, 12.0, 48000.0, config, &outside).ok());
+
+    joc::binaural::ShoeboxRoomConfig compact;
+    compact.dimensions_m = {8.5, 11.3, 5.2};
+    compact.listener_position_m = {4.25, 5.65, 2.6};
+    CHECK(compact.validate().ok());
 }
 
 void test_dbmd_auto_trim() {
@@ -1419,7 +1506,9 @@ int main() {
     test_bed_layout_map();
     test_partitioned_convolution();
     test_spherical_mesh();
-    test_sphere_transfer();
+    test_reference_distance();
+    test_point_source();
+    test_shoebox_room();
     test_dbmd_auto_trim();
     test_int24_packing();
     test_utf8_paths();

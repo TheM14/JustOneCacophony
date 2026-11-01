@@ -92,9 +92,13 @@ set(JOC_REUSED_SOURCES
 set(JOC_INTERNAL_SOURCES
     src/adm/adm_metadata.cpp
     src/adm/adm_tracks.cpp
-    src/binaural/binaural_reference.cpp
     src/binaural/binaural_runtime.cpp
-    src/binaural/sofa_reference_runtime.cpp
+    src/binaural/direct_sofa_runtime.cpp
+    src/binaural/point_source.cpp
+    src/binaural/reference_distance.cpp
+    src/binaural/room_tables.cpp
+    src/binaural/shoebox_room.cpp
+    src/binaural/sofa_room.cpp
     src/binaural/sofa_binaural_renderer.cpp
     src/eac3_transport/eac3_reader.cpp
     src/emdf/emdf_parser.cpp

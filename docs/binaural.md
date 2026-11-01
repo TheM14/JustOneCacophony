@@ -6,55 +6,77 @@ JustOneCacophony 的双耳后端支持三种 HRTF 来源：`SimpleFreeFieldHRIR`
 杜比官方软件个性化扫描导出的 Rosella `.personalized_headphone`（JSON 解析由本项目
 自行实现，不调用杜比软件），以及 `.jochrtf`（JOC compiled HRTF cache）。
 
-SOFA 默认保留完整 HRIR，按“参考环境”直连渲染，不再编译成方向场：
+SOFA 默认保留完整 HRIR，按点声源参考直连渲染，不编译成方向场：
 
 ```text
 SOFA 完整 HRIR [M,2,N]
   -> CanonicalHrtf（48 kHz / 单 radius shell）
   -> 延迟对齐的复数频谱（200-1500 Hz 相位拟合，含 Data.Delay）
   -> 球面三角形重心插值（lf_logmag_phase 或 lf_mca_zero）
-  -> 刚性球径向修正（按参考环境距离）
+  -> 点声源参考尺度（方向 + 档位参考距离，无径向修正）
   -> 逐对象 partitioned convolution（block 128，FFT = max(2048, ≥2×support)）
-  -> 参考环境的递归房间模型
+  -> 可选项目房间（六路一阶镜像 + 共享 FDN 晚期 FIR）
   -> stereo float64（统一扣除 latency）
 ```
 
 `.jochrtf` 仍是显式输入（`--compiled-hrtf-cache`），走球谐方向场渲染；显式给出
 `--hrtf-cache-policy` / `--hrtf-cache-dir` 会回到旧的“SOFA → `.jochrtf`”编译路径。
 
-## 参考环境
+## 点声源参考尺度
 
-SOFA 直连渲染需要一个参考环境配置（`--reference-config`，默认
-`<exe>/local/binaural_reference.json`）。配置给出 Rosella `.personalized_headphone`
-模型的路径与 SHA-256、`profile_index`（2=far、3=mid，作为 level 校准锚点）、
-`room_impulse_slots`（默认 4096）与 `level_calibration_directions`（默认 128）。
-
-渲染时每个 SOFA 方向先经该模型的 distance profile 映射成参考环境中的位置：
+Near/Mid/Far 的参考距离分别为 1.00000465 / 2.19327927 / 6.40177584 m，可用
+`--source-reference-distance-m` 覆盖所选档位。对于 ADM 右/前/上坐标 `p=(x,y,z)`：
 
 ```text
-ADM position -> int16 metadata grid -> distance profile
-             -> direction（单位向量）+ 距离 scale
-             -> direct gain a = 1/sqrt(1+coupling·(h0·d)^2)（near 恒为 1）
-             -> room send = h0·d·a（near 恒为 0）
-             -> 近中心正则化：ear distance 取 max(d, minimum_distance)
+q_SOFA     = (y, -x, z) / ||p||
+d_nominal  = reference_distance_m * ||p||
+H_render   = H_selected_shell(q_SOFA)
 ```
 
-`near|mid|far` 选择该模型的三个 distance profile 之一（`--binaural-mode`），level 校准
-始终用配置里的 `profile_index` 作为锚点，因此三种模式共享同一个 level。
+参考距离只给对象坐标规定标称米制尺度，不会把测量半径为 1.2 m 的 HRIR 合成成 2.193 m
+的真值，也不改动 SOFA 测量元数据。默认直达声模式不额外应用 1/r 衰减、球头距离比值、
+人工中心响应、房间发送或目标距离传播延迟；节目增益与 SOFA 响应刻度保持不变。
 
-指向同一声道的直达声是延迟对齐后的完整 HRIR 插值结果，房间 send 只进参考环境的
-房间模型（LFE 声道不进房间）。两者的 latency 由 field（FFT/2 与 recording origin）
-和 bank（961）中的较大者决定，输出前统一扣除。
+声源与听者重合时方向没有定义，沿用该对象最后一个有效方向；没有历史时取正前方。
+有限盒外坐标保留元数据距离因子，不裁回单位盒。
+
+## 可选项目房间
+
+`--sofa-room` 默认关闭，复用项目原有的房间算法：六个一阶镜像反射，以及四路正交
+Hadamard 反馈、两级全通扩散、低通阻尼的共享 FDN 晚期。它是项目自有的听感预设，
+不是测量 BRIR 或外部标准房间，也不依赖 Rosella 房间表。
+
+启用后 Near/Mid 默认使用 `compact` 紧凑房间，Far 默认使用 `legacy` 原大房间；
+`--sofa-room-preset compact|legacy` 可显式选择。紧凑房间尺寸取自
+[Zahorik 2009 表 1 模型 9](https://pmc.ncbi.nlm.nih.gov/articles/PMC2730711/)，
+保留原镜像/FDN 算法，将晚期延迟、扩散时间与 RT60 参数按 `V/S` 比例缩短；参数与来源
+记录在资产元数据中，借用的只是文献几何，不是该论文 BRIR 算法的复现。
+
+完整 HRIR 路线对六个到达方向分别查询 HRIR，以完整频率网格上的相位斜坡实现分数采样
+延迟；反射路径相对直达路径的额外时间为 `(L_path - L_direct)/c`，保留原 HRIR 的
+`Data.Delay`。直接声、反射与晚期发送使用项目原有的增益公式。
+
+晚期 FDN 在 48 kHz 下用单位脉冲生成双声道 float64 FIR，长度截到 2×RT60：紧凑版
+37,383 点、RT60 参数约 0.3894 s，原版 81,600 点、RT60 参数 0.85 s。FIR 由
+`src/binaural/room_tables.cpp` 里的四路 Hadamard 反馈、两级全通扩散与低通阻尼在启动时
+现场渲染，不读取任何随包发布的音频资产。运行时按 1536 样本批次在 PCM 域做 FFT 卷积，
+早期反射仍使用所选 SOFA；LFE 声道不进房间。房间关闭时既不生成也不保留这些状态，
+排空时裁去批处理填充。
+
+指向同一声道的直达声是延迟对齐后的完整 HRIR 插值结果；文件任务的 latency 由 field
+（FFT/2 与 recording origin）决定，输出前统一扣除。
 
 ## 输入接口
 
-SOFA 输入直接按完整 HRIR 渲染，只需要 SOFA 与参考环境配置：
+SOFA 输入直接按完整 HRIR 渲染，只需要 SOFA 本身：
 
 ```powershell
 joc_cli input.m4a --binaural `
     --sofa-hrtf HRTF\subject.sofa `
-    --reference-config local\binaural_reference.json `
     --binaural-mode mid --sofa-interpolation lf_logmag_phase
+
+joc_cli input.m4a --binaural --sofa-hrtf HRTF\subject.sofa --sofa-room
+joc_cli input.m4a --binaural --sofa-hrtf HRTF\subject.sofa --sofa-room --sofa-room-preset legacy
 ```
 
 `.jochrtf` 输入（以及 `.personalized_headphone`）需要共享滤波器组表，两者都是只读输入：
@@ -71,7 +93,8 @@ joc_cli input.m4a --binaural `
 `lf_logmag_phase`（默认，对数幅度 + 相位）或 `lf_mca_zero`（听觉带幅度修正）。
 
 库接口使用同一组字段：文件任务用 `joc_task_config`，流式用 `joc_stream_config`，
-其中 `hrtf_sofa_path`（或 `hrtf_path`）、`reference_config_path`、`sofa_interpolation`、
+其中 `hrtf_sofa_path`（或 `hrtf_path`）、`sofa_interpolation`、`hrtf_radius_m`、
+`source_reference_distance_m`、`sofa_room`、`sofa_room_preset`、`sofa_room_asset_dir`、
 `hrtf_compile`、`kernels_path`、`binaural_mode`、`binaural_tail_seconds` 决定双耳通路。
 
 `.jochrtf` 是**输入**而不是本库的产物：从 SOFA 或测量数据编译该缓存属于工具链的职责，

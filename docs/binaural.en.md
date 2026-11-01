@@ -26,44 +26,73 @@ SOFA full HRIR [M,2,N]
 real-SH field renderer; passing `--hrtf-cache-policy` / `--hrtf-cache-dir`
 selects the legacy "SOFA -> `.jochrtf`" compile path.
 
-## Reference environment
+## Point-source reference scale
 
-Direct SOFA rendering needs a reference-environment configuration
-(`--reference-config`, default `<exe>/local/binaural_reference.json`). It names
-the Rosella `.personalized_headphone` model together with its SHA-256, the
-`profile_index` used as the level anchor (2 = far, 3 = mid), the room impulse
-slots (4096 by default) and the number of level-calibration directions (128).
-
-Every SOFA direction is first mapped into the reference reproduction through the
-model's distance profile:
+Near/Mid/Far use reference distances of 1.00000465 / 2.19327927 / 6.40177584 m;
+`--source-reference-distance-m` overrides the selected mode. For an ADM
+right/front/up position `p = (x, y, z)`:
 
 ```text
-ADM position -> int16 metadata grid -> distance profile
-             -> unit direction + distance scale
-             -> direct gain a = 1/sqrt(1+coupling*(h0*d)^2) (1 for near)
-             -> room send = h0*d*a (0 for near)
-             -> near-centre regularization: ear distance = max(d, minimum_distance)
+q_SOFA    = (y, -x, z) / ||p||
+d_nominal = reference_distance_m * ||p||
+H_render  = H_selected_shell(q_SOFA)
 ```
 
-`near|mid|far` (`--binaural-mode`) selects one of the model's three distance
-profiles; level calibration always uses the configured `profile_index` as its
-anchor, so all three modes share one level.
+The reference distance only gives object coordinates a nominal metric scale. It
+does not turn a 1.2 m measurement radius into a 2.193 m ground truth and does not
+rewrite the SOFA metadata. The default direct mode adds no 1/r attenuation, no
+head-sphere distance ratio, no synthetic centre response, no room send and no
+target-distance propagation delay; programme gain and the SOFA response scale
+are preserved.
 
-The direct path is the interpolated, delay-aligned full HRIR; the room send only
-feeds the reference room model (the LFE channel never does). Their latencies come
-from the larger of the field (FFT/2 plus the recording origin) and the bank
-(961), and are removed once before the output.
+A coincident source has no defined direction, so the object keeps its last valid
+direction, or front when there is no history. Finite positions outside the unit
+box keep their metadata distance factor and are not clamped.
+
+## Optional project room
+
+`--sofa-room` is off by default and reuses the project's own room algorithms:
+six first-order image reflections plus a shared FDN tail with a four-channel
+orthogonal Hadamard feedback matrix, two all-pass diffusers and low-pass damping.
+It is a listening preset of this project, not a measured BRIR or an external
+standard room, and it does not use the Rosella room tables.
+
+When enabled, Near/Mid default to the `compact` room and Far to the `legacy`
+room; `--sofa-room-preset compact|legacy` selects explicitly. The compact
+geometry follows
+[Zahorik 2009, Table 1 model 9](https://pmc.ncbi.nlm.nih.gov/articles/PMC2730711/),
+keeping the original image/FDN algorithm while scaling late delay, diffusion
+time and RT60 by the `V/S` ratio; the parameters and their source are recorded
+in the asset metadata. Only the geometry is borrowed, not that paper's BRIR
+algorithm.
+
+The full-HRIR route queries an HRIR for each of the six arrival directions and
+applies the fractional delay as a phase ramp on the full frequency grid; the
+extra flight time of a reflection is `(L_path - L_direct)/c`, preserving the
+original `Data.Delay`. Direct sound, reflections and the late send use the
+project's original gain formulas.
+
+The late FDN is rendered at 48 kHz with a unit impulse into a two-channel float64
+FIR cut at 2*RT60: 37,383 taps (RT60 about 0.3894 s) for the compact room and
+81,600 taps (RT60 0.85 s) for the legacy one. The FIR is produced at startup by
+the four-line Hadamard feedback loop, the two all-pass diffusers and the low-pass
+damping in `src/binaural/room_tables.cpp`; no audio asset ships with the binary.
+At runtime the same LTI system is applied by PCM-domain FFT convolution in
+1536-sample batches, the early reflections still use the selected SOFA, and the
+LFE channel never enters the room. These states are neither generated nor kept
+when the room is off, and batch padding is trimmed on flush.
 
 ## Inputs
 
-A SOFA input renders directly from its full HRIRs and only needs the SOFA file and
-the reference-environment configuration:
+A SOFA input renders directly from its full HRIRs and only needs the SOFA file:
 
 ```powershell
 joc_cli input.m4a --binaural `
     --sofa-hrtf HRTF\subject.sofa `
-    --reference-config local\binaural_reference.json `
     --binaural-mode mid --sofa-interpolation lf_logmag_phase
+
+joc_cli input.m4a --binaural --sofa-hrtf HRTF\subject.sofa --sofa-room
+joc_cli input.m4a --binaural --sofa-hrtf HRTF\subject.sofa --sofa-room --sofa-room-preset legacy
 ```
 
 A `.jochrtf` input (and `.personalized_headphone`) also needs the shared filterbank
@@ -84,7 +113,8 @@ magnitude correction).
 
 The library exposes the same fields: `joc_task_config` for a file task,
 `joc_stream_config` for streaming, where `hrtf_sofa_path` (or `hrtf_path`),
-`reference_config_path`, `sofa_interpolation`, `hrtf_compile`, `kernels_path`,
+`sofa_interpolation`, `hrtf_radius_m`, `source_reference_distance_m`, `sofa_room`,
+`sofa_room_preset`, `sofa_room_asset_dir`, `hrtf_compile`, `kernels_path`,
 `binaural_mode` and `binaural_tail_seconds` configure the binaural path.
 
 The `.jochrtf` file is an **input**, not a product of this library: compiling it from

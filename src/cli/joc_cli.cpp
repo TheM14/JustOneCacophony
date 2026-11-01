@@ -49,8 +49,10 @@ struct Options {
     std::string hrtf_cache_policy;
     std::string hrtf_cache_dir;
     double hrtf_radius_m = 0.0;   // 0 selects the single measurement shell
-    std::string reference_config;
     std::string sofa_interpolation;
+    double source_reference_distance_m = 0.0;
+    bool sofa_room = false;
+    std::string sofa_room_preset;
     double binaural_tail_seconds = 5.0;
     double binaural_tail_threshold = 1.0e-8;
     int binaural_chunk_frames = 64;
@@ -125,6 +127,9 @@ void print_usage() {
         "  --rosella-filterbank N  Rosella 模型滤波器组：1=13 taps/6 slots（默认），\n"
         "                        2=11 taps/3 slots；仅作用于个性化模型\n"
         "  --compiled-hrtf-cache PATH   直接读取 .jochrtf（高级用法，跳过 SOFA 编译）\n"
+        "  --source-reference-distance-m R  覆盖档位的点声源参考距离（米）\n"
+        "  --sofa-room           可选：为 SOFA 启用项目自有房间，默认关闭\n"
+        "  --sofa-room-preset P  房间预设 compact|legacy；默认 near/mid 用 compact、far 用 legacy\n"
         "  --hrtf-cache-policy P SOFA 编译缓存策略 none|memory|disk，默认 memory\n"
         "  --hrtf-cache-dir DIR  disk cache 目录，默认 <exe>/output/hrtf-cache\n"
         "  --hrtf-radius-m R     选择最近的 SOFA measurement-radius shell，默认 1.0 m\n"
@@ -252,7 +257,9 @@ void parse_args(const std::vector<std::string>& arguments, Options* options) {
         else if (arg == "--hrtf-cache-policy") { options->hrtf_cache_policy = require_value(arguments, &index); }
         else if (arg == "--hrtf-cache-dir") { options->hrtf_cache_dir = require_value(arguments, &index); }
         else if (arg == "--hrtf-radius-m") { options->hrtf_radius_m = to_double(require_value(arguments, &index), "--hrtf-radius-m"); }
-        else if (arg == "--reference-config") { options->reference_config = require_value(arguments, &index); }
+        else if (arg == "--source-reference-distance-m") { options->source_reference_distance_m = to_double(require_value(arguments, &index), "--source-reference-distance-m"); }
+        else if (arg == "--sofa-room") { options->sofa_room = true; }
+        else if (arg == "--sofa-room-preset") { options->sofa_room_preset = require_value(arguments, &index); }
         else if (arg == "--sofa-interpolation") { options->sofa_interpolation = require_value(arguments, &index); }
         else if (arg == "--binaural-tail-seconds") { options->binaural_tail_seconds = to_double(require_value(arguments, &index), "--binaural-tail-seconds"); }
         else if (arg == "--binaural-tail-threshold") { options->binaural_tail_threshold = to_double(require_value(arguments, &index), "--binaural-tail-threshold"); }
@@ -358,7 +365,6 @@ struct HrtfInput {
     std::string compiled_path;  // or read this .jochrtf directly
     std::string cache_dir;      // disk policy directory
     std::string personalized_path;  // Rosella .personalized_headphone
-    std::string reference_config;   // SOFA reference environment
     std::string interpolation;      // SOFA local interpolation
     bool disk = false;
     bool compile = false;
@@ -465,11 +471,6 @@ HrtfInput resolve_hrtf_input(const Options& options, const std::string& project_
     }
     input.sofa_path = sofa;
     input.disk = effective_policy == "disk";
-    input.reference_config =
-        options.reference_config.empty()
-            ? fs_utf8::from_path(fs_utf8::to_path(project_directory) / "local" /
-                                 "binaural_reference.json")
-            : options.reference_config;
     input.interpolation = options.sofa_interpolation;
     input.cache_dir = options.hrtf_cache_dir.empty() ? default_cache_dir : options.hrtf_cache_dir;
     if (!fs_utf8::exists(input.sofa_path)) {
@@ -581,6 +582,10 @@ int main(int argc, char** argv) {
         if (!options.sofa_interpolation.empty()) {
             check_choice(options.sofa_interpolation, "--sofa-interpolation",
                          {"lf_logmag_phase", "lf_mca_zero"});
+        }
+        if (!options.sofa_room_preset.empty()) {
+            check_choice(options.sofa_room_preset, "--sofa-room-preset",
+                         {"compact", "legacy"});
         }
         check_choice(options.backend, "--backend", {"auto", "native", "python"});
         check_choice(options.print_metadata, "--print-metadata", {"none", "summary", "frames"});
@@ -736,7 +741,6 @@ int main(int argc, char** argv) {
     std::string hrtf_cache_dir;
     std::string personalized_path;
     std::string kernels_path;
-    std::string hrtf_reference_config;
     std::string hrtf_interpolation;
     bool hrtf_compile = false;
     if (binaural_mode) {
@@ -745,7 +749,6 @@ int main(int argc, char** argv) {
             hrtf_path = input.compiled_path;
             hrtf_sofa_path = input.sofa_path;
             hrtf_cache_dir = input.cache_dir;
-            hrtf_reference_config = input.reference_config;
             hrtf_interpolation = input.interpolation;
             hrtf_compile = input.compile;
             personalized_path = input.personalized_path;
@@ -769,8 +772,10 @@ int main(int argc, char** argv) {
                                : options.hrtf_cache_policy == "none" ? JOC_HRTF_CACHE_NONE
                                                                     : JOC_HRTF_CACHE_MEMORY;
     config.hrtf_radius_m = options.hrtf_radius_m;
-    config.reference_config_path =
-        hrtf_reference_config.empty() ? nullptr : hrtf_reference_config.c_str();
+    config.source_reference_distance_m = options.source_reference_distance_m;
+    config.sofa_room = options.sofa_room ? 1u : 0u;
+    config.sofa_room_preset =
+        options.sofa_room_preset.empty() ? nullptr : options.sofa_room_preset.c_str();
     config.sofa_interpolation = hrtf_interpolation == "lf_mca_zero"
                                     ? JOC_SOFA_INTERPOLATION_MCA_ZERO
                                     : JOC_SOFA_INTERPOLATION_LOGMAG_PHASE;

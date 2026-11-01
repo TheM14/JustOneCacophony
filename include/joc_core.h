@@ -39,7 +39,7 @@
 #define JOC_ABI_VERSION 5u
 #define JOC_FRAME_PARAMS_VERSION 1u
 #define JOC_EMDF_INFO_VERSION 1u
-#define JOC_TASK_CONFIG_VERSION 4u
+#define JOC_TASK_CONFIG_VERSION 5u
 #define JOC_TASK_RESULT_VERSION 2u
 #define JOC_EVENT_VERSION 1u
 
@@ -440,9 +440,11 @@ typedef struct joc_task_config {
     uint32_t hrtf_cache_policy;         /* joc_hrtf_cache_policy */
     uint32_t rosella_filterbank;        /* joc_rosella_filterbank; 0 = PUBLIC */
     double hrtf_radius_m;               /* SOFA shell radius; <= 0 = automatic */
-    /* Reference environment for the direct SOFA path (config version 3). */
-    const char* reference_config_path;  /* NULL = local/binaural_reference.json */
+    /* Direct SOFA rendering (config version 5). */
     uint32_t sofa_interpolation;        /* joc_sofa_interpolation */
+    double source_reference_distance_m; /* > 0 overrides the mode's reference distance */
+    uint32_t sofa_room;                 /* non-zero enables the project room */
+    const char* sofa_room_preset;       /* "compact" or "legacy"; NULL = by mode */
     /* Nonzero keeps the legacy SOFA compile step (hrtf_cache_policy/hrtf_cache_dir
      * decide where the .jochrtf lands); zero renders the SOFA directly. */
     uint32_t hrtf_compile;

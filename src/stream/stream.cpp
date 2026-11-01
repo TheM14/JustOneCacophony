@@ -7,6 +7,7 @@
 #include "adm/adm_metadata.h"
 #include "foundation/status.h"
 #include "hrtf/jochrtf.h"
+#include "binaural/direct_sofa_runtime.h"
 #include "hrtf/rosella_model.h"
 #include "hrtf/sofa_cache.h"
 #include "joc_bitstream/bed_layout_map.h"
@@ -63,6 +64,9 @@ void Stream::reset_state() {
     }
     if (binaural_ready_) {
         binaural_.reset();
+    }
+    if (sofa_direct_ready_) {
+        sofa_direct_.reset();
     }
     if (rosella_ready_) {
         rosella_.reset();
@@ -144,25 +148,30 @@ Status Stream::create(const Config& config) {
             hrtf::Kernels kernels;
             Status status = Status::success();
             if (!config_.hrtf_sofa_path.empty()) {
-                // The .jochrtf is an internal cache: the SOFA is the user-facing input.
-                hrtf::SofaFieldRequest request;
-                request.sofa_path = config_.hrtf_sofa_path;
-                request.options.shell_radius_m = config_.hrtf_radius_m;
-                request.cache_dir = config_.hrtf_cache_dir;
-                switch (config_.hrtf_cache_policy) {
-                    case JOC_HRTF_CACHE_NONE: request.policy = hrtf::CachePolicy::None; break;
-                    case JOC_HRTF_CACHE_DISK: request.policy = hrtf::CachePolicy::Disk; break;
-                    default: request.policy = hrtf::CachePolicy::Memory; break;
+                // A SOFA renders from its full HRIRs; the .jochrtf stays the
+                // compiled input of hrtf_path.
+                binaural::DirectSofaOptions options;
+                options.mode = config_.binaural_mode == JOC_BINAURAL_NEAR
+                                   ? "near"
+                                   : (config_.binaural_mode == JOC_BINAURAL_FAR ? "far" : "mid");
+                options.has_reference_distance = config_.source_reference_distance_m > 0.0;
+                options.reference_distance_m = config_.source_reference_distance_m;
+                options.has_shell_radius = config_.hrtf_radius_m > 0.0;
+                options.shell_radius_m = config_.hrtf_radius_m;
+                options.sofa_room = config_.sofa_room != 0u;
+                options.room_preset = config_.sofa_room_preset;
+                options.object_delay_samples = config_.object_delay_samples;
+                options.tail_seconds = config_.tail_seconds;
+                status = sofa_direct_.open(config_.hrtf_sofa_path, options);
+                if (status.ok()) {
+                    sofa_direct_ready_ = true;
+                    output_channels_ = 2;
+                    return Status::success();
                 }
-                std::string cache_path;
-                status = hrtf::load_or_compile_sofa_field(request, &field, &cache_path);
-                if (!status.ok()) {
-                    return Status::fail(status.code(), stage::kRender,
-                                        "binaural setup failed: " + status.message());
-                }
-            } else {
-                status = hrtf::load_jochrtf(config_.hrtf_path, &field);
+                return Status::fail(status.code(), stage::kRender,
+                                    "binaural setup failed: " + status.message());
             }
+            status = hrtf::load_jochrtf(config_.hrtf_path, &field);
             if (status.ok()) {
                 status = config_.kernels_path.empty()
                              ? (kernels = hrtf::builtin_kernels(), Status::success())
@@ -212,6 +221,9 @@ void Stream::apply_bed_positions(const FrameMetadata& entry) {
         if (::joc::joc::bed_channel_adm_position(channel, xyz)) {
             if (binaural_ready_) {
                 binaural_.set_fixed_position(static_cast<int>(slot) + 1, xyz);
+            }
+            if (sofa_direct_ready_) {
+                sofa_direct_.set_fixed_position(static_cast<int>(slot) + 1, xyz);
             }
             if (rosella_ready_) {
                 rosella_.set_fixed_position(static_cast<int>(slot) + 1, xyz);
@@ -611,6 +623,27 @@ Status Stream::render_objects16(const std::vector<float>& objects16) {
     if (rosella_ready_) {
         return render_rosella_objects16(objects16);
     }
+    if (sofa_direct_ready_) {
+        const Status submitted =
+            sofa_direct_.submit_frame(objects16.data(),
+                                      pending_metadata_.has_update
+                                          ? &pending_metadata_.update
+                                          : nullptr,
+                                      static_cast<std::int64_t>(info_.frames_out),
+                                      pending_metadata_.outer_offset,
+                                      static_cast<std::int64_t>(config_.object_delay_samples));
+        if (!submitted.ok()) {
+            return submitted;
+        }
+        sofa_direct_.take_output(&produced_);
+        output_.reserve(output_.size() + produced_.size());
+        for (const double value : produced_) {
+            output_.push_back(static_cast<float>(value));
+        }
+        info_.frames_out++;
+        info_.samples_out += produced_.size() / 2u;
+        return Status::success();
+    }
 
     const Status submitted =
         binaural_.submit_frame(objects16.data(),
@@ -724,6 +757,19 @@ Status Stream::flush() {
     const Status objects = process_objects16_frames(true);
     if (!objects.ok()) {
         return objects;
+    }
+    if (sofa_direct_ready_) {
+        std::vector<double> tail;
+        const Status drained =
+            sofa_direct_.finish(sofa_direct_.finish_capacity(config_.tail_seconds), &tail);
+        if (!drained.ok()) {
+            return drained;
+        }
+        output_.reserve(output_.size() + tail.size());
+        for (const double value : tail) {
+            output_.push_back(static_cast<float>(value));
+        }
+        info_.samples_out += tail.size() / 2u;
     }
     if (binaural_ready_) {
         std::vector<double> tail;

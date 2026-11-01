@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "binaural/binaural_runtime.h"
+#include "binaural/direct_sofa_runtime.h"
 #include "eac3_transport/eac3_reader.h"
 #include "foundation/status.h"
 #include "hrtf/rosella_renderer.h"
@@ -37,6 +38,10 @@ struct Config {
     std::string hrtf_cache_dir;
     std::uint32_t hrtf_cache_policy = JOC_HRTF_CACHE_MEMORY;
     double hrtf_radius_m = 1.0;
+    // Direct SOFA rendering: the same fields joc_task_config carries.
+    double source_reference_distance_m = 0.0;
+    std::uint32_t sofa_room = 0;
+    std::string sofa_room_preset;
     // Filterbank of the Rosella path; the other binaural inputs ignore it.
     std::uint32_t rosella_filterbank = JOC_ROSELLA_FILTERBANK_PUBLIC;
 };
@@ -171,6 +176,7 @@ private:
     ejoc_renderer_handle rebuilder_ = nullptr;
     speaker::SpeakerStep speaker_;
     binaural::SofaBinauralRuntime binaural_;
+    binaural::DirectSofaRuntime sofa_direct_;
     hrtf::RosellaRuntime rosella_;
     std::vector<double> rosella_pending_;
     std::size_t rosella_read_offset_ = 0;
@@ -178,6 +184,7 @@ private:
     bool speaker_enabled_ = false;
     bool binaural_enabled_ = false;
     bool binaural_ready_ = false;
+    bool sofa_direct_ready_ = false;
     bool bed_positions_ready_ = false;
     bool rosella_ready_ = false;
     float gain_ = 1.0f;

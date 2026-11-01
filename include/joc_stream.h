@@ -74,6 +74,10 @@ typedef struct joc_stream_config {
     const char* hrtf_cache_dir;              /* disk cache directory for SOFA compilation */
     uint32_t hrtf_cache_policy;              /* joc_hrtf_cache_policy: 0 none, 1 memory, 2 disk */
     double hrtf_radius_m;                    /* SOFA measurement-radius shell, default 1.0 */
+    /* Direct SOFA rendering: the same fields joc_task_config carries. */
+    double source_reference_distance_m;      /* > 0 overrides the mode's reference distance */
+    uint32_t sofa_room;                      /* non-zero enables the project room */
+    const char* sofa_room_preset;            /* "compact" or "legacy"; NULL = by mode */
 } joc_stream_config;
 
 typedef struct joc_stream_buffer {
