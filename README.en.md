@@ -4,7 +4,7 @@
 
 > JustOneCacophony is an experimental/test implementation of E-AC-3 JOC for studying JOC parsing, reconstruction, rendering, and the associated mathematics.
 
-The project can extract and parse EMDF, ID14 JOC parameters, and ID11 OAMD metadata from common E-AC-3 JOC streams. It combines those data with the core PCM decoded by FFmpeg (N=5 or 7 full-band channels), reconstructs LFE plus 15 object channels, and writes ADM BWF, a WAV file for a selected speaker layout, or direct binaural stereo using a standard SOFA HRTF.
+The project can extract and parse EMDF, ID14 JOC parameters, and ID11 OAMD metadata from common E-AC-3 JOC streams. It combines those data with the core PCM decoded by FFmpeg (N=5 or 7 full-band channels), reconstructs LFE plus 15 object channels, and writes ADM BWF, a WAV file for a selected speaker layout, or binaural stereo (a Rosella personalized model, or a compiled `.jochrtf`).
 
 This is research code, not a complete, standards-compliant, or production-grade JOC decoder. It covers only the stream forms currently implemented. Unknown variants fail explicitly—because when the math goes wrong, all that may remain is the cacophony.
 
@@ -23,8 +23,8 @@ This is research code, not a complete, standards-compliant, or production-grade 
 - Render directly to `2.0`, `3.1`, `4.0`, `5.1`, `7.1`, `5.1.2`, `5.1.4`, `7.1.2`, `7.1.4`, `9.1.4`
   or `9.1.6` (`4.0` is the quad layout, a front and a back pair; see
   [Speaker layouts and channel order](#speaker-layouts-and-channel-order)).
-- Run public SOFA binaural rendering directly from `pcm16 + ID11/OAMD`, without a temporary ADM BWF.
-- Keep binaural DSP in float64/complex128: full SOFA HRIR convolution and independent reference state; the personalized route retains its existing filterbank and latency rules.
+- Run binaural rendering directly from `pcm16 + ID11/OAMD`, without a temporary ADM BWF.
+- Keep binaural DSP in float64/complex128: the personalized route retains its existing filterbank and latency rules, the `.jochrtf` route keeps its 77-band field and cross-frame state.
 - Use a shared float32/PCM24 WAV writer and explicit PCM24 clipping policy for direct outputs.
 - Implement everything in pure Python on NumPy;
 - Read or write metadata sidecars and produce metadata, timing, and output reports.
@@ -40,10 +40,10 @@ M4A / E-AC-3
   └─ LFE + 15 objects
        ├─ 25ch ADM BWF
        ├─ speaker WAV for the selected layout
-       └─ direct ID11 timeline + SOFA HRTF → binaural WAV
+       └─ direct ID11 timeline + HRTF (Rosella / .jochrtf) → binaural WAV
 ```
 
-JOC object reconstruction, speaker rendering, and the public SOFA binaural rendering follow the same mathematics: analysis QMF, parameter interpolation, the object matrix, and inverse QMF. Bitstream parsing, the OAMD timeline, and CLI behavior are in Python as well.
+JOC object reconstruction, speaker rendering, and binaural rendering follow the same mathematics: analysis QMF, parameter interpolation, the object matrix, and inverse QMF. Bitstream parsing, the OAMD timeline, and CLI behavior are in Python as well.
 
 ## Requirements
 
@@ -87,59 +87,36 @@ python main.py input.m4a --speaker-layout 5.1 --speaker-format int24
 python main.py input.m4a --speaker-layout 7.1.2 --speaker-output output.7.1.2.wav
 ```
 
-Write binaural stereo directly. SOFA and compact inputs render direct HRTFs by default;
-`--sofa-room` enables the existing project room. There is no synthetic radial head filtering. Personalized rendering
-retains its existing Near/Mid/Far modes and room processing.
-The HRTF input accepts three sources:
+Write binaural stereo directly. Two kinds of input are available:
 
 ```powershell
-# 1) Full SOFA HRIR (defaults to HRTF/binaural.sofa, or an explicit path)
+# 1) Rosella .personalized_headphone (default; HRTF/binaural.personalized_headphone)
 python main.py input.m4a --binaural
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa
-
-# 2) Rosella .personalized_headphone (defaults to HRTF/binaural.personalized_headphone)
-python main.py input.m4a --binaural --personalized-headphone
 python main.py input.m4a --binaural --personalized-headphone C:\HRTF\subject.personalized_headphone
+python main.py input.m4a --binaural --personalized-headphone --binaural-mode far --rosella-filterbank 2
 
-# 3) .jochrtf compiled cache
+# 2) .jochrtf compiled field (reserved for high-precision offline rendering)
 python main.py input.m4a --binaural --compiled-hrtf-cache C:\HRTF\subject.jochrtf
-
-# Common options
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
-  --sofa-interpolation lf_mca_zero
-python src\compile_hrtf.py C:\HRTF\subject.sofa C:\HRTF\subject.jochrtf
-python main.py input.m4a --binaural --personalized-headphone --binaural-mode near
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --source-reference-distance-m 2.193
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --sofa-room
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --sofa-room --sofa-room-preset legacy
-python main.py input.m4a --binaural --personalized-headphone `
-  --rosella-filterbank 2
+python main.py input.m4a --binaural --compiled-hrtf-cache C:\HRTF\subject.jochrtf --jochrtf-room off
+python main.py input.m4a --binaural --compiled-hrtf-cache C:\HRTF\subject.jochrtf --jochrtf-room on
 python main.py input.m4a --binaural --binaural-output output.binaural.wav
 ```
 
-With no explicit input, use `HRTF/binaural.sofa` under the project directory.
-If missing, try the original personalized default. Use `--sofa-hrtf PATH` for
-other locations. Compact input is always explicit, with no automatic export or fallback.
-
-- `.sofa` is the portable source of truth; it can hold self-scanned or any
-  generic HRTF data.
 - `.personalized_headphone` is a model produced by Dolby's official
   personalization scan; its JSON parsing is implemented by this project
-  (`src/rosella_model.py`) and does not invoke any Dolby software.
-- `.jochrtf` is an explicitly exported compact field; its format and loader/writer
-  remain available. High-precision rendering reads SOFA directly.
+  (`src/rosella_model.py`) and does not invoke any Dolby software. Near/Mid/Far
+  and the room handling are unchanged.
+- `.jochrtf` is a directional field exported offline from a SOFA. This repository
+  loads and renders it; the compiler is a separate offline tool and its output
+  loads through `--compiled-hrtf-cache`.
 
-The personalized default remains `HRTF/binaural.personalized_headphone`.
-SOFA and compact routes retain Near/Mid/Far point-source scales of approximately
-1, 2.193 and 6.402 m, default Mid. Direct-only rendering does not alter the measured
-radius, HRIR, programme gain or flight time. `--sofa-room` enables the original project
-image-source/FDN coupling. Near/Mid default to the compact room, Far to the original
-large room. `--sofa-room-preset compact|legacy` selects either explicitly; both FIR
-assets ship with the code.
-Free-field HRIR SOFA is supported; BRIR loading is not implemented yet. Future BRIR
+The `.jochrtf` route keeps Near/Mid/Far point-source scales of approximately
+1, 2.193 and 6.402 m, default Mid. It renders only the field's direct binaural
+sound by default; `--jochrtf-room on` adds the project room (six first-order image
+reflections plus an FDN tail, computed in code with no asset files).
 input will retain its recorded room and ignore the additional room switch.
 See [Binaural rendering](docs/binaural.en.md).
-Because the cache contains transformed
+Because a cache contains transformed
 HRTF data, its use and redistribution remain subject to the source dataset's
 terms. See [Binaural Rendering](docs/binaural.en.md) and
 [Third-party notices](THIRD_PARTY_NOTICES.md) for format boundaries, formulas,
@@ -151,7 +128,7 @@ Speaker and binaural output share peak analysis, the WAV writer, and clipping po
 python main.py input.m4a --speaker-layout 5.1 --speaker-format int24 --clip-action abort
 python main.py input.m4a --speaker-layout 5.1 --speaker-format int24 --clip-action float32
 python main.py input.m4a --speaker-layout 5.1 --speaker-format int24 --clip-action continue
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
+python main.py input.m4a --binaural --compiled-hrtf-cache C:\HRTF\subject.jochrtf `
   --binaural-format int24 --clip-action abort
 ```
 

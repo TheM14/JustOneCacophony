@@ -4,26 +4,6 @@
 
 This directory contains static production tables. It does not contain user HRTFs.
 
-SOFA and compact HRTF inputs render direct sound by default. Optional `--sofa-room`
-loads generated FIR assets from the original four-line FDN in `public_room.py`.
-It contains no HRTF or external-model coefficients. Early reflections use the same
-module's six-wall image model and the selected full HRIRs or compact field. Personalized rendering
-continues to use its model's room parameters.
-
-Both archives use `sofa-project-room-v1`, 48 kHz and float64. `sofa-room-compact.npz`
-contains `[2,37383]` taps and is the Near/Mid default; `sofa-room.npz` contains
-`[2,81600]` taps for the Far default and explicit original-room selection. JSON records
-FDN/geometry parameters, coefficient SHA-256 and omitted tail energy.
-
-Compact dimensions follow [model 9 in Zahorik 2009, Table 1](https://pmc.ncbi.nlm.nih.gov/articles/PMC2730711/).
-Late time scales follow the V/S ratio of the original project preset; this does not
-reproduce the paper's BRIR algorithm. Regenerate both assets with:
-
-```powershell
-python src\generate_sofa_room.py
-python src\generate_sofa_room.py --preset compact
-```
-
 `tables.npz` contains the JOC core decoding tables:
 
 ```text

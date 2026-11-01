@@ -29,11 +29,6 @@ from public_filterbank import (
     hybrid_band_center_frequencies_hz,
     project_hrir_to_hybrid_gains,
 )
-from sofa_canonical import (
-    CanonicalHrtf,
-    load_simple_free_field_hrir,
-    time_align_hrtf,
-)
 from spherical_harmonics import (
     evaluate_real_spherical_harmonics,
     fit_real_spherical_harmonics,
@@ -116,22 +111,6 @@ def sofa_to_adm_direction(position) -> np.ndarray:
     if length <= 1.0e-15:
         return np.asarray([0.0, 1.0, 0.0], dtype=np.float64)
     return result / length
-
-
-def _group_coincident(directions, gains, delays):
-    unit = np.asarray(directions, dtype=np.float64)
-    keys = np.round(unit, 10)
-    _, first, inverse = np.unique(keys, axis=0, return_index=True, return_inverse=True)
-    grouped_directions = unit[first]
-    grouped_gains = np.zeros((len(first),) + gains.shape[1:], dtype=np.complex128)
-    grouped_delays = np.zeros((len(first), 2), dtype=np.float64)
-    counts = np.bincount(inverse).astype(np.float64)
-    for measurement, group in enumerate(inverse):
-        grouped_gains[group] += gains[measurement]
-        grouped_delays[group] += delays[measurement]
-    grouped_gains /= counts[:, None, None]
-    grouped_delays /= counts[:, None]
-    return grouped_directions, grouped_gains, grouped_delays
 
 
 def _cache_key_payload(*, source_sha256: str, sample_rate_hz: float,
@@ -556,109 +535,6 @@ class SofaHrtfField:
         object.__setattr__(self, "fit_report", json.loads(
             _json_bytes(dict(self.fit_report)).decode("utf-8")))
 
-    @classmethod
-    def fit(cls, canonical: CanonicalHrtf, *, shell_radius_m: float | None = None,
-            order: int = DEFAULT_ORDER, ridge: float = DEFAULT_SH_RIDGE,
-            projection_ridge: float = DEFAULT_PROJECTION_RIDGE) -> "SofaHrtfField":
-        order = _strict_integer(order, "field order")
-        if order != DEFAULT_ORDER:
-            raise ValueError("the runtime HRTF field is fixed at fifth order")
-        if abs(float(canonical.sample_rate_hz) - TARGET_SAMPLE_RATE_HZ) > 1.0e-9:
-            raise ValueError("SOFA HRTF fields must be compiled at 48 kHz")
-        aligned = time_align_hrtf(canonical)
-        shell_target = 1.0 if shell_radius_m is None else float(shell_radius_m)
-        if not math.isfinite(shell_target) or shell_target <= 0.0:
-            raise ValueError("shell_radius_m must be positive and finite")
-        indices = canonical.shell_indices(shell_target)
-        if len(indices) < (order + 1) ** 2:
-            raise ValueError(
-                f"fifth-order SH needs at least 36 measurements on one shell, got {len(indices)}")
-        shell_radius = float(np.mean(canonical.measurement_radius_m[indices]))
-        directions = canonical.unit_directions[indices]
-        runtime_delay = np.asarray(aligned.runtime_delay_samples[indices], dtype=np.float64)
-        centers = hybrid_band_center_frequencies_hz(canonical.sample_rate_hz)
-        gains, projection_report = project_hrir_to_hybrid_gains(
-            np.asarray(canonical.hrir[indices], dtype=np.float64),
-            embedded_delay_samples=np.asarray(
-                aligned.embedded_delay_removed_samples[indices], dtype=np.float64),
-            sample_rate_hz=canonical.sample_rate_hz,
-            ridge=projection_ridge)
-
-        directions, gains, runtime_delay = _group_coincident(
-            directions, gains, runtime_delay)
-        if len(directions) < (order + 1) ** 2:
-            raise ValueError("coincident-direction merging left fewer than 36 directions")
-        weights = spherical_voronoi_weights(directions)
-        coefficients = fit_real_spherical_harmonics(
-            directions, gains, order=order, ridge=ridge, weights=weights)
-        delay_coefficients = fit_real_spherical_harmonics(
-            directions, runtime_delay, order=order, ridge=ridge, weights=weights)
-        reconstructed_aligned = evaluate_real_spherical_harmonics(
-            coefficients, directions, order=order)
-        delay_reconstructed = evaluate_real_spherical_harmonics(
-            delay_coefficients, directions, order=order)
-        reference_phase = np.exp(
-            -2j * np.pi * runtime_delay[..., None]
-            * centers[None, None, :] / canonical.sample_rate_hz)
-        reconstructed_phase = np.exp(
-            -2j * np.pi * delay_reconstructed[..., None]
-            * centers[None, None, :] / canonical.sample_rate_hz)
-        reference_transfer = np.asarray(gains * reference_phase, dtype=np.complex128)
-        reconstructed_transfer = np.asarray(
-            reconstructed_aligned * reconstructed_phase, dtype=np.complex128)
-        magnitude_reference = np.maximum(np.abs(reference_transfer), 1.0e-12)
-        relative = np.abs(reconstructed_transfer - reference_transfer) / magnitude_reference
-        magnitude_db_error = np.abs(
-            20.0 * np.log10(np.maximum(np.abs(reconstructed_transfer), 1.0e-12))
-            - 20.0 * np.log10(magnitude_reference))
-        delay_error = delay_reconstructed - runtime_delay
-        report = {
-            "format": "SOFA FIR -> public 64-QMF/77-hybrid -> ACN/N3D real SH",
-            "order": order,
-            "terms": (order + 1) ** 2,
-            "input_measurements": int(len(indices)),
-            "unique_directions": int(len(directions)),
-            "shell_radius_m": shell_radius,
-            "spherical_harmonic_ridge": float(ridge),
-            "projection": projection_report,
-            "phase_policy_version": PHASE_POLICY_VERSION,
-            "complex_relative_error_median": float(np.median(relative)),
-            "complex_relative_error_p95": float(np.percentile(relative, 95.0)),
-            "magnitude_error_db_median": float(np.median(magnitude_db_error)),
-            "magnitude_error_db_p95": float(np.percentile(magnitude_db_error, 95.0)),
-            "delay_error_samples_rms": float(np.sqrt(np.mean(delay_error * delay_error))),
-            "delay_error_samples_max": float(np.max(np.abs(delay_error))),
-            "delay_source": aligned.delay_source,
-            "precision": "float64/complex128",
-        }
-        delay_bounds = np.stack(
-            (np.min(runtime_delay, axis=0), np.max(runtime_delay, axis=0)), axis=1)
-        cache_key = compiled_hrtf_cache_key(
-            source_sha256=canonical.source_sha256,
-            sample_rate_hz=canonical.sample_rate_hz,
-            shell_radius_m=shell_radius,
-            order=order,
-            projection_ridge=float(projection_ridge),
-            sh_ridge=float(ridge),
-        )
-        display_name = Path(canonical.source_path).name if canonical.source_path else None
-        return cls(
-            source_sha256=canonical.source_sha256,
-            source_display_name=display_name,
-            sample_rate_hz=canonical.sample_rate_hz,
-            measurement_radius_m=shell_radius,
-            order=order,
-            projection_ridge=float(projection_ridge),
-            spherical_harmonic_ridge=float(ridge),
-            band_center_frequencies_hz=centers,
-            coefficients=coefficients,
-            delay_coefficients=delay_coefficients,
-            delay_bounds=delay_bounds,
-            delay_source=aligned.delay_source,
-            fit_report=report,
-            cache_key=cache_key,
-        )
-
     def evaluate_sofa(self, direction_sofa) -> FieldEvaluation:
         direction = np.asarray(direction_sofa, dtype=np.float64)
         if direction.shape != (3,) or not np.isfinite(direction).all():
@@ -928,93 +804,3 @@ class SofaHrtfField:
             "fit_report": self.fit_report,
             "precision": "float64/complex128",
         }
-
-
-def _cache_file_name(display_name: str | None, cache_key: str) -> str:
-    stem = Path(display_name).stem if display_name else "hrtf"
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._") or "hrtf"
-    return f"{safe}.{cache_key[:20]}.jochrtf"
-
-
-def compile_sofa_hrtf(
-        sofa: str | Path | CanonicalHrtf, *,
-        target_sample_rate_hz: float = TARGET_SAMPLE_RATE_HZ,
-        shell_radius_m: float = 1.0,
-        order: int = DEFAULT_ORDER,
-        projection_ridge: float = DEFAULT_PROJECTION_RIDGE,
-        sh_ridge: float = DEFAULT_SH_RIDGE,
-        cache_policy: str = "memory",
-        cache_dir: str | Path | None = None) -> SofaHrtfField:
-    """Compile SOFA in memory, optionally using a validated disposable cache."""
-    policy = str(cache_policy).strip().lower()
-    if policy not in {"none", "memory", "disk"}:
-        raise ValueError("cache_policy must be none, memory, or disk")
-    target_rate = float(target_sample_rate_hz)
-    if (not math.isfinite(target_rate)
-            or abs(target_rate - TARGET_SAMPLE_RATE_HZ) > 1.0e-9):
-        raise ValueError("the public binaural runtime currently requires 48 kHz")
-    radius = float(shell_radius_m)
-    projection_ridge = float(projection_ridge)
-    sh_ridge = float(sh_ridge)
-    if not math.isfinite(radius) or radius <= 0.0:
-        raise ValueError("shell_radius_m must be positive and finite")
-    if (not math.isfinite(projection_ridge) or projection_ridge < 0.0
-            or not math.isfinite(sh_ridge) or sh_ridge < 0.0):
-        raise ValueError("compiler ridge values must be finite and non-negative")
-    order = _strict_integer(order, "compiler order")
-    if order != DEFAULT_ORDER:
-        raise ValueError("the runtime HRTF field is fixed at fifth order")
-    if isinstance(sofa, CanonicalHrtf):
-        canonical = (sofa if abs(sofa.sample_rate_hz - target_rate) <= 1.0e-9
-                     else sofa.resampled(target_rate))
-    else:
-        canonical = load_simple_free_field_hrir(
-            sofa, target_sample_rate_hz=target_rate)
-    selected = canonical.shell_indices(radius)
-    actual_radius = float(np.mean(canonical.measurement_radius_m[selected]))
-    key = compiled_hrtf_cache_key(
-        source_sha256=canonical.source_sha256,
-        sample_rate_hz=target_rate,
-        shell_radius_m=actual_radius,
-        order=order,
-        projection_ridge=projection_ridge,
-        sh_ridge=sh_ridge,
-    )
-    cached = None
-    if policy in {"memory", "disk"}:
-        cached = _memory_cache_get(key)
-        if policy == "memory" and cached is not None:
-            return cached
-    target: Path | None = None
-    if policy == "disk":
-        directory = (DEFAULT_HRTF_CACHE_DIR if cache_dir is None
-                     else Path(cache_dir).expanduser().resolve())
-        directory.mkdir(parents=True, exist_ok=True)
-        display_name = Path(canonical.source_path).name if canonical.source_path else None
-        target = directory / _cache_file_name(display_name, key)
-        if target.is_file():
-            try:
-                field = SofaHrtfField.load(
-                    target,
-                    expected_source_sha256=canonical.source_sha256,
-                    expected_cache_key=key)
-                _memory_cache_put(key, field)
-                return field
-            except (HrtfCacheError, OSError):
-                pass
-        if cached is not None:
-            cached.save(target)
-            return cached
-    field = SofaHrtfField.fit(
-        canonical,
-        shell_radius_m=actual_radius,
-        order=order,
-        ridge=sh_ridge,
-        projection_ridge=projection_ridge)
-    if field.cache_key != key:
-        raise RuntimeError("internal compiled HRTF cache-key mismatch")
-    if target is not None:
-        field.save(target)
-    if policy in {"memory", "disk"}:
-        _memory_cache_put(key, field)
-    return field

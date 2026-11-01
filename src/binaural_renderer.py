@@ -1,4 +1,4 @@
-"""JOC frame adapter for independent SOFA and compact HRTF rendering."""
+"""JOC frame adapter for the compiled .jochrtf renderer."""
 from __future__ import annotations
 
 import math
@@ -8,11 +8,6 @@ import numpy as np
 
 from binaural_metadata import OamdPositionTimeline
 from public_filterbank import ANALYSIS_SYNTHESIS_LATENCY_SAMPLES
-from sofa_hrtf_field import (
-    DEFAULT_HRTF_CACHE_DIR,
-    DEFAULT_PROJECTION_RIDGE,
-    DEFAULT_SH_RIDGE,
-)
 
 
 SAMPLE_RATE = 48000
@@ -24,7 +19,6 @@ SOURCE_CHANNELS = 16
 OUTPUT_CHANNELS = 2
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 DEFAULT_HRTF_DIR = PROJECT_DIR / "HRTF"
-DEFAULT_SOFA_HRTF = DEFAULT_HRTF_DIR / "binaural.sofa"
 
 
 def _resolve_hrtf_file(path: str | Path, suffix: str, label: str) -> Path:
@@ -36,17 +30,12 @@ def _resolve_hrtf_file(path: str | Path, suffix: str, label: str) -> Path:
     return target
 
 
-def resolve_sofa_hrtf(path: str | Path) -> Path:
-    """Resolve an explicitly selected public SOFA source."""
-    return _resolve_hrtf_file(path, ".sofa", "SOFA HRTF")
-
-
 def resolve_compiled_hrtf_cache(path: str | Path) -> Path:
     """Resolve an explicitly selected JOC compiled HRTF cache."""
     return _resolve_hrtf_file(path, ".jochrtf", "compiled HRTF cache")
 
 
-class SofaBinauralRenderer:
+class JochrtfBinauralRenderer:
     """Render interleaved LFE plus fifteen JOC objects to stereo.
 
     The adapter owns frame buffering and sample-timed OAMD updates; the
@@ -104,46 +93,6 @@ class SofaBinauralRenderer:
         self.metadata_block_updates = 0
 
     @classmethod
-    def from_sofa(
-            cls, sofa: str | Path, *,
-            mode: str | None = None,
-            cache_policy: str | None = None,
-            cache_dir: str | Path | None = None,
-            shell_radius_m: float | None = None,
-            projection_ridge: float = DEFAULT_PROJECTION_RIDGE,
-            sh_ridge: float = DEFAULT_SH_RIDGE,
-            object_delay_samples: int = 1473,
-            tail_seconds: float = 5.0,
-            output_gain: float = 1.0,
-            chunk_frames: int = 64,
-            bed_channels=None,
-            interpolation: str = "lf_logmag_phase",
-            reference_distance_m: float | None = None,
-            sofa_room: bool = False,
-            room_preset: str | None = None) -> "SofaBinauralRenderer":
-        from sofa_direct_backend import DirectSofaBackend
-        if cache_policy not in (None, "none", "memory") or cache_dir is not None:
-            raise ValueError("SOFA renders full HRIRs; use compile_hrtf.py to export a .jochrtf")
-        if projection_ridge != DEFAULT_PROJECTION_RIDGE or sh_ridge != DEFAULT_SH_RIDGE:
-            raise ValueError("full HRIR rendering does not use projection/SH ridge parameters")
-        source = resolve_sofa_hrtf(sofa)
-        backend = DirectSofaBackend(
-            source,
-            source_count=SOURCE_CHANNELS,
-            output_gain=output_gain,
-            mode=mode,
-            shell_radius_m=shell_radius_m,
-            method=interpolation,
-            reference_distance_m=reference_distance_m, sofa_room=sofa_room, room_preset=room_preset)
-        return cls(
-            backend,
-            mode=mode,
-            object_delay_samples=object_delay_samples,
-            tail_seconds=tail_seconds,
-            chunk_frames=chunk_frames,
-            bed_channels=bed_channels)
-
-    @classmethod
     def from_compiled_cache(
             cls, cache: str | Path, *,
             mode: str | None = None,
@@ -152,16 +101,15 @@ class SofaBinauralRenderer:
             output_gain: float = 1.0,
             chunk_frames: int = 64,
             bed_channels=None,
-            reference_distance_m: float | None = None,
-            sofa_room: bool = False,
-            room_preset: str | None = None) -> "SofaBinauralRenderer":
-        from sofa_direct_backend import DirectSofaBackend
+            room: bool = False) -> "JochrtfBinauralRenderer":
+        from jochrtf_backend import JochrtfBackend
         source = resolve_compiled_hrtf_cache(cache)
-        backend = DirectSofaBackend(
+        backend = JochrtfBackend.from_compiled_cache(
             source,
             source_count=SOURCE_CHANNELS,
-            compiled=True, output_gain=output_gain, mode=mode,
-            reference_distance_m=reference_distance_m, sofa_room=sofa_room, room_preset=room_preset)
+            default_profile=mode or "mid",
+            output_gain=output_gain,
+            room=room)
         return cls(
             backend,
             mode=mode,

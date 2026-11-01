@@ -4,7 +4,7 @@
 
 > JustOneCacophony 是一个 E-AC-3 JOC 的实验性 / 测试实现，用于研究 JOC 的解析、重建、渲染以及相关数学过程。
 
-项目可以从常见 E-AC-3 JOC 码流中提取并解析 EMDF、ID14 JOC 参数和 ID11 OAMD 元数据，结合 FFmpeg 解码出的核心 PCM（N=5 或 7 个全频段通道）重建 LFE 与 15 路对象 PCM，并输出 ADM BWF、指定扬声器布局的 WAV，或使用标准 SOFA HRTF 直接输出双耳 WAV。
+项目可以从常见 E-AC-3 JOC 码流中提取并解析 EMDF、ID14 JOC 参数和 ID11 OAMD 元数据，结合 FFmpeg 解码出的核心 PCM（N=5 或 7 个全频段通道）重建 LFE 与 15 路对象 PCM，并输出 ADM BWF、指定扬声器布局的 WAV，或输出双耳 WAV（Rosella 个性化模型，或已编译的 `.jochrtf`）。
 
 这是研究代码，不是完整、标准兼容或生产级的 JOC 解码器。它只覆盖当前已实现的码流形态；遇到未知变体时会明确报错，而不是假装一切都很和谐——如果哪里算错了，它可能就真的只剩 cacophony 了。
 
@@ -20,8 +20,8 @@
 - 输出 25 声道 ADM BWF：10 声道 7.1.2 bed（除 LFE 外静音）+ 15 个对象；
 - 直接渲染 `2.0`、`3.1`、`4.0`、`5.1`、`7.1`、`5.1.2`、`5.1.4`、`7.1.2`、`7.1.4`、`9.1.4`、
   `9.1.6`（`4.0` 是 Quad 布局，前后各一对；声道排列见[扬声器布局与声道顺序](#扬声器布局与声道顺序)）；
-- 从 `pcm16 + ID11/OAMD` 直接运行公开 SOFA 双耳渲染，不生成临时 ADM BWF；
-- 双耳 DSP 全程使用 float64/complex128；SOFA保留完整HRIR、跨帧卷积和独立参考环境状态，个性化路线保留原滤波器组与延迟规则；
+- 从 `pcm16 + ID11/OAMD` 直接运行双耳渲染，不生成临时 ADM BWF；
+- 双耳 DSP 全程使用 float64/complex128；个性化路线保留原滤波器组与延迟规则，`.jochrtf` 路线保留 77 带方向场与跨帧状态；
 - 直接输出统一支持 float32 或 PCM24 WAV，并在 PCM24 削波前提供明确处理策略；
 - 全程使用 NumPy 的纯 Python 实现；
 - 读取或写入 metadata sidecar，并生成元数据、运行时间和输出摘要。
@@ -37,10 +37,10 @@ M4A / E-AC-3
   └─ LFE + 15 objects
        ├─ 25ch ADM BWF
        ├─ 指定布局的扬声器 WAV
-       └─ ID11 直接时间轴 + SOFA HRTF → 双耳 WAV
+       └─ ID11 直接时间轴 + HRTF（Rosella / .jochrtf）→ 双耳 WAV
 ```
 
-JOC 对象重建、扬声器渲染与公开 SOFA 双耳渲染使用同一组数学过程：analysis QMF、
+JOC 对象重建、扬声器渲染与双耳渲染使用同一组数学过程：analysis QMF、
 参数插值、对象矩阵、inverse QMF。位流解析、OAMD 时间轴和命令行逻辑同样在 Python 中。
 
 ## 环境
@@ -85,46 +85,33 @@ python main.py input.m4a --speaker-layout 5.1 --speaker-format int24
 python main.py input.m4a --speaker-layout 7.1.2 --speaker-output output.7.1.2.wav
 ```
 
-直接输出双耳渲染 WAV。SOFA与压缩输入默认仅渲染所选HRTF的直达声，可用`--sofa-room`启用项目自有房间；不做球头径向合成。个性化路线保持原Near/Mid/Far及房间处理。HRTF 输入支持三种来源：
+直接输出双耳渲染 WAV。双耳有两条输入：
 
 ```powershell
-# 1) 完整SOFA HRIR（默认 HRTF/binaural.sofa，可显式指定）
+# 1) Rosella .personalized_headphone（默认，缺省取 HRTF/binaural.personalized_headphone）
 python main.py input.m4a --binaural
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa
-
-# 2) Rosella .personalized_headphone（缺省取 HRTF/binaural.personalized_headphone）
-python main.py input.m4a --binaural --personalized-headphone
 python main.py input.m4a --binaural --personalized-headphone C:\HRTF\subject.personalized_headphone
+python main.py input.m4a --binaural --personalized-headphone --binaural-mode far --rosella-filterbank 2
 
-# 3) .jochrtf 编译缓存
+# 2) .jochrtf 编译缓存（保留项：高精度离线渲染用）
 python main.py input.m4a --binaural --compiled-hrtf-cache C:\HRTF\subject.jochrtf
-
-# 常用选项
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
-  --sofa-interpolation lf_mca_zero
-python src\compile_hrtf.py C:\HRTF\subject.sofa C:\HRTF\subject.jochrtf
-python main.py input.m4a --binaural --personalized-headphone --binaural-mode near
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --source-reference-distance-m 2.193
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --sofa-room
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa --sofa-room --sofa-room-preset legacy
-python main.py input.m4a --binaural --personalized-headphone `
-  --rosella-filterbank 2
+python main.py input.m4a --binaural --compiled-hrtf-cache C:\HRTF\subject.jochrtf --jochrtf-room off
+python main.py input.m4a --binaural --compiled-hrtf-cache C:\HRTF\subject.jochrtf --jochrtf-room on
 python main.py input.m4a --binaural --binaural-output output.binaural.wav
 ```
 
-三者都不指定时先选择项目目录下的 `HRTF/binaural.sofa`；
-缺失时尝试原个性化默认文件。其他位置通过 `--sofa-hrtf PATH` 显式指定。
-`.jochrtf` 只显式选择，不自动生成或回退。
-
-- `.sofa` 是可移植的 source of truth；可以是自行扫描或任何来源的通用 HRTF 数据。
 - `.personalized_headphone` 是杜比官方软件个性化扫描得到的模型，其 JSON 解析由
-  本项目自行实现（`src/rosella_model.py`），不调用杜比软件。
-- `.jochrtf` 是从SOFA显式离线导出的轻量方向场，原格式及读写器保留；高精度路线直接读取SOFA。
+  本项目自行实现（`src/rosella_model.py`），不调用杜比软件；Near/Mid/Far 与房间
+  处理保持原行为。
+- `.jochrtf` 是从 SOFA 离线导出的方向场，本仓库负责加载与渲染；编译器是独立
+  的离线工具，产出的缓存用 `--compiled-hrtf-cache` 加载。
 
-个性化默认模型仍为 `HRTF/binaural.personalized_headphone`。SOFA与压缩路线沿用Near约1 m、Mid约2.193 m、Far约6.402 m的点声源参考尺度，默认Mid。
-默认不改变测量半径、HRIR、节目增益或传播延迟；开启`--sofa-room`后，使用原项目镜像早反射及FDN房间耦合。Near/Mid默认采用紧凑房间，Far默认采用原大房间；`--sofa-room-preset compact|legacy`可显式选择。两套晚期FIR均随代码提供。
-当前支持自由场HRIR SOFA，BRIR尚未接入；后续BRIR会直接使用文件内房间响应并忽略额外房间开关。细节见[双耳渲染](docs/binaural.md)。cache 含有源 HRTF 的变换数据，使用与再分发
-仍受源数据许可约束；格式边界、计算公式、状态、时间轴及发布注意事项见
+`.jochrtf` 路线沿用 Near 约 1 m、Mid 约 2.193 m、Far 约 6.402 m 的点声源参考尺度，
+默认 Mid。默认只输出方向场的双耳直达声；`--jochrtf-room on` 启用项目自有房间
+（六路一阶镜像早反射 + FDN 晚期，直接在代码里计算，不读取资产文件）。
+
+cache 含有源 HRTF 的变换数据，使用与再分发仍受源数据许可约束；
+格式边界、计算公式、状态、时间轴及发布注意事项见
 [双耳渲染](docs/binaural.md) 和 [第三方通知](THIRD_PARTY_NOTICES.md)。
 
 扬声器和双耳输出共享峰值检查、writer 与削波策略。在非交互环境请求 PCM24 且可能削波时，需要显式选择处理方式：
@@ -133,7 +120,7 @@ python main.py input.m4a --binaural --binaural-output output.binaural.wav
 python main.py input.m4a --speaker-layout 5.1 --speaker-format int24 --clip-action abort
 python main.py input.m4a --speaker-layout 5.1 --speaker-format int24 --clip-action float32
 python main.py input.m4a --speaker-layout 5.1 --speaker-format int24 --clip-action continue
-python main.py input.m4a --binaural --sofa-hrtf C:\HRTF\subject.sofa `
+python main.py input.m4a --binaural --compiled-hrtf-cache C:\HRTF\subject.jochrtf `
   --binaural-format int24 --clip-action abort
 ```
 
