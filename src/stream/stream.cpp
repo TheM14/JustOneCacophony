@@ -59,6 +59,8 @@ void Stream::reset_state() {
         speaker_.state.reset();
         speaker_.output.clear();
         speaker_.last_had_payload = false;
+        // Back to the initial controls; the next trim element replaces them.
+        speaker_.controls_ready = false;
     }
     if (binaural_ready_) {
         binaural_.reset();

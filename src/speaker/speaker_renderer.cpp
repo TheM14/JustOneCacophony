@@ -1,5 +1,6 @@
 #define EJOC_BUILD_DLL
 #include "eac3joc_core.h"
+#include "speaker/speaker_trim.h"
 #include "speaker_layouts.h"
 
 #include <algorithm>
@@ -216,6 +217,7 @@ public:
                 const std::uint8_t* region_indices,
                 const std::uint8_t* height_enabled,
                 const double* object_gains,
+                const ejoc_speaker_controls* controls,
                 double* output) noexcept {
         error_[0] = '\0';
         if (!input || !output) {
@@ -227,10 +229,20 @@ public:
         if (metadata_count && (!metadata_offsets || !ramp_durations || !positions_q15)) {
             return fail("metadata arrays are null while metadata_count is nonzero");
         }
+        if (!validate_controls(controls)) {
+            return -1;
+        }
         if (!validate_metadata(sample_count, metadata_count, metadata_offsets,
                                positions_q15, region_indices, object_gains)) {
             return -1;
         }
+
+        // A caller that passes no controls gets warp 0, no trim and no balance.
+        ejoc_speaker_controls fallback{};
+        fallback.struct_size = sizeof(fallback);
+        fallback.struct_version = EJOC_SPEAKER_CONTROLS_VERSION;
+        fallback.trim_mode = EJOC_SPEAKER_TRIM_DISABLED;
+        const ejoc_speaker_controls& active = controls != nullptr ? *controls : fallback;
 
         std::fill(output, output + static_cast<std::size_t>(sample_count) * layout_->channel_count, 0.0);
         const bool has_lfe = (layout_->speaker_bitfield & 0x4u) != 0;
@@ -239,14 +251,14 @@ public:
         for (std::size_t block = 0; block < total_blocks; ++block) {
             while (event < metadata_count && aligned_block(metadata_offsets[event]) == block) {
                 apply_event(event, ramp_durations, positions_q15, region_indices,
-                            height_enabled, object_gains);
+                            height_enabled, object_gains, active);
                 ++event;
             }
             mix_block(input, output, block, has_lfe);
         }
         while (event < metadata_count && aligned_block(metadata_offsets[event]) == total_blocks) {
             apply_event(event, ramp_durations, positions_q15, region_indices,
-                        height_enabled, object_gains);
+                        height_enabled, object_gains, active);
             ++event;
         }
         if (event != metadata_count) {
@@ -266,6 +278,42 @@ private:
     int fail(const char* message) noexcept {
         std::snprintf(error_.data(), error_.size(), "%s", message);
         return -1;
+    }
+
+    bool validate_controls(const ejoc_speaker_controls* controls) noexcept {
+        if (controls == nullptr) {
+            return true;
+        }
+        if (controls->struct_size != sizeof(ejoc_speaker_controls)) {
+            fail("speaker controls struct_size mismatch");
+            return false;
+        }
+        if (controls->struct_version != EJOC_SPEAKER_CONTROLS_VERSION) {
+            fail("unknown speaker controls struct_version");
+            return false;
+        }
+        if (controls->warp_mode > 1u) {
+            fail("speaker rendering implements warp modes 0/1 only");
+            return false;
+        }
+        if (controls->trim_mode > EJOC_SPEAKER_TRIM_EXPLICIT) {
+            fail("unknown speaker trim mode");
+            return false;
+        }
+        for (const double level :
+             {controls->centre_db, controls->surround_db, controls->height_db}) {
+            if (!std::isfinite(level)) {
+                fail("trim level is not finite");
+                return false;
+            }
+        }
+        for (const double balance : {controls->listener_balance, controls->overhead_balance}) {
+            if (!std::isfinite(balance) || balance < -1.0 || balance > 1.0) {
+                fail("balance is not finite or outside [-1, 1]");
+                return false;
+            }
+        }
+        return true;
     }
 
     bool validate_metadata(const std::uint32_t sample_count,
@@ -318,13 +366,28 @@ private:
                       const std::uint8_t region_index,
                       const bool enable_height,
                       const double object_gain,
+                      const ejoc_speaker_controls& controls,
+                      const bool bypass_trim,
                       ChannelGains& output) const noexcept {
         output.fill(0.0);
         const auto& region = layout_->regions[region_index];
         const double u = static_cast<double>(position[0]) / kQ15Scale;
         const double v = static_cast<double>(position[1]) / kQ15Scale;
-        const double w = static_cast<double>(position[2]) / kQ15Scale;
-        const double floor_v = clamp(std::ldexp(v, floor_y_exponent_), 0.0, 1.0);
+        const double w = std::max(static_cast<double>(position[2]) / kQ15Scale, 0.0);
+        const int shift = controls.warp_mode == 1u ? floor_y_exponent_ : 0;
+        double floor_v = clamp(std::ldexp(v, shift), 0.0, 1.0);
+        double top_v = clamp(v, 0.0, 1.0);
+        double trim_v = v;
+        if (controls.trim_mode == EJOC_SPEAKER_TRIM_EXPLICIT && !bypass_trim) {
+            // Warp feeds the floor coordinate only: the height and trim
+            // coordinates see the balance map on the original Y.
+            floor_v = joc::speaker::apply_balance(floor_v, w, controls.listener_balance,
+                                                  controls.overhead_balance);
+            top_v = joc::speaker::apply_balance(top_v, w, controls.listener_balance,
+                                                controls.overhead_balance);
+            trim_v = joc::speaker::apply_balance(v, w, controls.listener_balance,
+                                                 controls.overhead_balance);
+        }
         PointGains floor{};
         plane_gains(region, region.axis0_groups, region.axis0_group_count,
                     u, floor_v, region.mode, floor);
@@ -332,7 +395,7 @@ private:
         if (region.mode == 3) {
             PointGains height{};
             plane_gains(region, region.axis1_groups, region.axis1_group_count,
-                        u, v, 3, height);
+                        u, top_v, 3, height);
             const double z = enable_height ? clamp(w, 0.0, kQ15Max) : 0.0;
             if (z >= kQ15Max) {
                 point = height;
@@ -345,13 +408,24 @@ private:
                 }
             }
         }
-        const double y_term = clamp(v / 0.6, 0.0, 1.0);
-        const double z_term = clamp((w - 0.2) / 0.8, 0.0, 1.0);
-        const double amount = clamp(y_term + z_term, 0.0, 1.0);
-        const double gain = std::pow(10.0, attenuation_db_ * amount / 20.0) * object_gain;
+        double gain = object_gain;
+        if (!bypass_trim) {
+            if (controls.trim_mode == EJOC_SPEAKER_TRIM_AUTOMATIC) {
+                gain *= position_gain(trim_v, w);
+            } else if (controls.trim_mode == EJOC_SPEAKER_TRIM_EXPLICIT) {
+                gain *= joc::speaker::explicit_position_gain(controls, u, trim_v, w);
+            }
+        }
         for (std::size_t index = 0; index < region.point_count; ++index) {
             output[region.points[index].speaker_id] = point[index] * gain;
         }
+    }
+
+    double position_gain(const double v, const double w) const noexcept {
+        const double y_term = clamp(v / 0.6, 0.0, 1.0);
+        const double z_term = clamp((w - 0.2) / 0.8, 0.0, 1.0);
+        const double amount = clamp(y_term + z_term, 0.0, 1.0);
+        return std::pow(10.0, attenuation_db_ * amount / 20.0);
     }
 
     void apply_event(const std::size_t event,
@@ -359,7 +433,8 @@ private:
                      const std::uint16_t* positions_q15,
                      const std::uint8_t* region_indices,
                      const std::uint8_t* height_enabled,
-                     const double* object_gains) noexcept {
+                     const double* object_gains,
+                     const ejoc_speaker_controls& controls) noexcept {
         const std::uint32_t blocks = ramp_blocks(ramp_durations[event]);
         for (std::size_t object = 0; object < kObjects; ++object) {
             const std::size_t object_event = event * kObjects + object;
@@ -367,8 +442,9 @@ private:
             const std::uint8_t region = region_indices ? region_indices[object_event] : 0;
             const bool height = !height_enabled || height_enabled[object_event] != 0;
             const double object_gain = object_gains ? object_gains[object_event] : 1.0;
+            const bool bypass = controls.trim_bypass[object + 1] != 0u;
             ChannelGains next{};
-            render_point(position, region, height, object_gain, next);
+            render_point(position, region, height, object_gain, controls, bypass, next);
             for (std::size_t channel = 0; channel < layout_->channel_count; ++channel) {
                 const double difference = next[channel] - current_[object][channel];
                 target_[object][channel] = next[channel];
@@ -482,6 +558,7 @@ int EJOC_CALL ejoc_speaker_renderer_process(
     const uint8_t* region_indices,
     const uint8_t* height_enabled,
     const double* object_gains,
+    const ejoc_speaker_controls* controls,
     double* output_interleaved) {
     if (!handle) {
         return -1;
@@ -489,7 +566,7 @@ int EJOC_CALL ejoc_speaker_renderer_process(
     return static_cast<ejoc::speaker::Renderer*>(handle)->process(
         objects16_interleaved, sample_count, metadata_count,
         metadata_offsets, ramp_durations, positions_q15,
-        region_indices, height_enabled, object_gains, output_interleaved);
+        region_indices, height_enabled, object_gains, controls, output_interleaved);
 }
 
 }  // extern "C"

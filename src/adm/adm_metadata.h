@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "foundation/status.h"
+#include "oamd/oamd_parser.h"
 
 namespace joc::adm {
 
@@ -34,10 +35,16 @@ enum class BinauralMode : std::uint32_t { Off = 0, Near = 1, Far = 2, Mid = 3, U
 
 bool binaural_mode_from_name(const char* name, BinauralMode* out);
 
-std::string build_axml(const std::vector<Track>& tracks, double duration_sec, std::uint32_t rate);
+// ``trim`` is the OAMD trim element of the programme; when it is present the
+// AXML carries the Dolby master-file block (content info, trim records, warp
+// mode) and the dbmd chunk carries the per-configuration records and the warp
+// code.
+std::string build_axml(const std::vector<Track>& tracks, double duration_sec, std::uint32_t rate,
+                       const oamd::OamdTrim* trim = nullptr);
 
 std::string build_chna();
 
-Status build_dbmd(std::uint32_t object_count, BinauralMode mode, std::string* out);
+Status build_dbmd(std::uint32_t object_count, BinauralMode mode, std::string* out,
+                  const oamd::OamdTrim* trim = nullptr);
 
 }  // namespace joc::adm

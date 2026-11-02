@@ -10,20 +10,23 @@ struct FrozenLayout {
     const char* name;
     std::uint32_t out_ch_config;
     std::uint32_t speaker_bitfield;
+    std::uint32_t surround_channels;
+    std::uint32_t height_channels;
+    bool carries_trim;
 };
 
 constexpr FrozenLayout kLayouts[kLayoutCount] = {
-    {"2.0", 0, 1},
-    {"3.1", 3, 7},
-    {"4.0", 0xFF, 9},
-    {"5.1", 7, 15},
-    {"7.1", 11, 31},
-    {"5.1.2", 13, 1039},
-    {"5.1.4", 14, 2575},
-    {"7.1.2", 15, 1055},
-    {"7.1.4", 16, 2591},
-    {"9.1.4", 19, 2719},
-    {"9.1.6", 20, 3743},
+    {"2.0", 0, 1, 0, 0, true},
+    {"3.1", 3, 7, 0, 0, true},
+    {"4.0", 0xFF, 9, 2, 0, true},
+    {"5.1", 7, 15, 2, 0, true},
+    {"7.1", 11, 31, 4, 0, true},
+    {"5.1.2", 13, 1039, 2, 2, true},
+    {"5.1.4", 14, 2575, 2, 4, true},
+    {"7.1.2", 15, 1055, 4, 2, false},
+    {"7.1.4", 16, 2591, 4, 4, false},
+    {"9.1.4", 19, 2719, 4, 4, false},
+    {"9.1.6", 20, 3743, 4, 6, false},
 };
 
 void fill(const FrozenLayout& source, LayoutInfo* out) {
@@ -31,6 +34,9 @@ void fill(const FrozenLayout& source, LayoutInfo* out) {
     out->out_ch_config = source.out_ch_config;
     out->speaker_bitfield = source.speaker_bitfield;
     out->channel_count = ejoc_speaker_layout_channel_count(source.speaker_bitfield);
+    out->surround_channels = source.surround_channels;
+    out->height_channels = source.height_channels;
+    out->carries_trim = source.carries_trim;
 }
 
 }  // namespace

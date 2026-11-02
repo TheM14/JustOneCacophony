@@ -26,8 +26,29 @@ Status step(SpeakerStep* context, const std::vector<float>& objects16_planar,
         static_cast<std::size_t>(JOC_FRAME_SAMPLES) * context->layout.channel_count, 0.0);
 
     context->last_had_payload = update != nullptr;
+    if (!context->controls_ready) {
+        const Status status =
+            parameters_from_oamd(nullptr, context->layout, &context->controls);
+        if (!status.ok()) {
+            if (error != nullptr) {
+                *error = status.message();
+            }
+            return status;
+        }
+        context->controls_ready = true;
+    }
     std::uint32_t ramp = 0;
     if (update != nullptr) {
+        if (update->has_trim) {
+            const Status status = parameters_from_oamd(&update->trim, context->layout,
+                                                        &context->controls);
+            if (!status.ok()) {
+                if (error != nullptr) {
+                    *error = status.message();
+                }
+                return status;
+            }
+        }
         context->state.apply(*update);
         ramp = update->ramp_duration_samples;
         context->last_block_offset = update->block_offset_samples;
@@ -53,7 +74,7 @@ Status step(SpeakerStep* context, const std::vector<float>& objects16_planar,
         context->handle, context->interleaved.data(), JOC_FRAME_SAMPLES, event_count,
         event_count != 0u ? &offset : nullptr, event_count != 0u ? &ramp : nullptr,
         event_count != 0u ? &positions[0][0] : nullptr, nullptr, nullptr, nullptr,
-        context->output.data());
+        &context->controls, context->output.data());
     if (result != 0) {
         const char* message = ejoc_speaker_renderer_last_error(context->handle);
         const std::string text =

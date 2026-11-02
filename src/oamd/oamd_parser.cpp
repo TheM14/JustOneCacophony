@@ -15,6 +15,13 @@ constexpr int kRampDurationIndex[16] = {32,  64,   128,  256,  320,  480,
                                         1000, 1001, 1024, 1600, 1601, 1602,
                                         1920, 2000, 2002, 2048};
 constexpr std::uint32_t kObjectElementId = 1;
+// ETSI TS 103 420 Table 12 trim levels, 4-bit index, dB; index 15 is the
+// minimum (-36 dB), not silence.
+constexpr double kTrimLut[16] = {6.0,   3.0,   1.5,   0.75, -0.75, -1.5,
+                                 -3.0,  -4.5,  -6.0,  -7.5, -9.0,  -10.5,
+                                 -12.0, -13.5, -15.0, -36.0};
+// bal3d_y is coded as (code + 1) / 16, so the magnitude never reaches 0.
+constexpr double kBalanceStep = 16.0;
 constexpr int kIsfObjectCounts[6] = {4, 8, 10, 14, 15, 30};
 constexpr int kStandardBedChannelCount[10] = {2, 1, 1, 2, 2, 2, 2, 2, 2, 1};
 
@@ -329,6 +336,72 @@ Status parse_object_element(bits::BitReader& reader, std::uint32_t object_count,
     return Status::success();
 }
 
+// trim_element(): one programme-wide record per payload.  The first bit of each
+// configuration is b_default_trim; b_disable_trim and the value record follow
+// only when that bit is clear.
+Status parse_trim_element(bits::BitReader& reader, std::uint32_t object_count, OamdTrim* out) {
+    OamdTrim trim;
+    trim.warp_mode = reader.read(2);
+    reader.read(2);  // reserved
+    trim.global_trim_mode = reader.read(2);
+    if (reader.failed()) {
+        return syntax("OAMD trim element header truncated");
+    }
+    if (trim.global_trim_mode == 2u) {
+        for (int config = 0; config < kTrimConfigs; ++config) {
+            TrimConfig& record = trim.configs[config];
+            if (reader.read(1) != 0u) {
+                record.kind = TrimConfigKind::kDefault;
+                continue;
+            }
+            if (reader.read(1) != 0u) {
+                record.kind = TrimConfigKind::kDisabled;
+                continue;
+            }
+            record.kind = TrimConfigKind::kExplicit;
+            const std::uint32_t presence = reader.read(5);
+            record.presence = static_cast<std::uint8_t>(presence);
+            if ((presence & 0x01u) != 0u) {
+                record.centre = kTrimLut[reader.read(4) & 0x0Fu];
+            }
+            if ((presence & 0x02u) != 0u) {
+                record.surround = kTrimLut[reader.read(4) & 0x0Fu];
+            }
+            if ((presence & 0x04u) != 0u) {
+                record.height = kTrimLut[reader.read(4) & 0x0Fu];
+            }
+            if ((presence & 0x08u) != 0u) {
+                const double sign = reader.read(1) != 0u ? 1.0 : -1.0;
+                record.balance_overhead =
+                    (static_cast<double>(reader.read(4)) + 1.0) / kBalanceStep * sign;
+            }
+            if ((presence & 0x10u) != 0u) {
+                const double sign = reader.read(1) != 0u ? 1.0 : -1.0;
+                record.balance_listener =
+                    (static_cast<double>(reader.read(4)) + 1.0) / kBalanceStep * sign;
+            }
+            if (reader.failed()) {
+                return syntax("OAMD trim configuration " + std::to_string(config) +
+                              " truncated");
+            }
+        }
+    }
+    if (reader.read(1) != 0u) {
+        for (std::uint32_t index = 0; index < object_count; ++index) {
+            const bool bypass = reader.read(1) != 0u;
+            if (index < static_cast<std::uint32_t>(kMaxSlots)) {
+                trim.disable_per_object[index] = bypass;
+            }
+        }
+    }
+    if (reader.failed()) {
+        return syntax("OAMD trim bypass table truncated");
+    }
+    trim.object_count = object_count;
+    *out = trim;
+    return Status::success();
+}
+
 }  // namespace
 
 int q_of(int k, int n) {
@@ -374,6 +447,85 @@ Status parse_id11_bed_assignments(const std::uint8_t* payload, std::size_t paylo
         return status;
     }
     *out = program.bed_assignments;
+    return Status::success();
+}
+
+Status parse_trim(const std::uint8_t* payload, std::size_t payload_size, OamdTrim* out,
+                  bool* present) {
+    if (payload == nullptr || out == nullptr || present == nullptr) {
+        return Status::fail(JOC_ERR_INVALID_ARGUMENT, stage::kOamd, "null payload or output");
+    }
+    *present = false;
+    if (payload_size == 0) {
+        return variant("header_truncated", "OAMD payload is empty");
+    }
+    bits::BitReader reader(payload, payload_size);
+    std::uint32_t version = reader.read(2);
+    if (reader.failed()) {
+        return variant("header_truncated", "OAMD payload cannot hold the 2-bit version");
+    }
+    if (version == 3u) {
+        version += reader.read(3);
+        if (reader.failed()) {
+            return syntax("OAMD version extension truncated");
+        }
+    }
+    std::uint32_t object_count_bits = reader.read(5);
+    if (object_count_bits == 0x1Fu) {
+        object_count_bits += reader.read(7);
+    }
+    if (reader.failed()) {
+        return syntax("OAMD object count truncated");
+    }
+    const std::uint32_t object_count = object_count_bits + 1u;
+    ProgramInfo program;
+    const Status program_status = parse_program_assignment(reader, &program);
+    if (!program_status.ok()) {
+        return program_status;
+    }
+    const std::uint32_t alternate_present = reader.read(1);
+    std::uint32_t element_count = reader.read(4);
+    if (element_count == 0xFu) {
+        element_count += reader.read(5);
+    }
+    if (reader.failed()) {
+        return syntax("OAMD element count truncated");
+    }
+    for (std::uint32_t ordinal = 0; ordinal < element_count; ++ordinal) {
+        const std::uint32_t element_id = reader.read(4);
+        std::uint32_t size_field = 0;
+        if (!variable_bits_max(reader, 4, 4, &size_field)) {
+            return syntax("OAMD element header truncated at ordinal " + std::to_string(ordinal));
+        }
+        const std::uint32_t size_bytes = size_field + 1u;
+        const std::size_t region_start = reader.position();
+        const std::size_t region_end = region_start + static_cast<std::size_t>(size_bytes) * 8u;
+        if (region_end > reader.limit()) {
+            return variant("element_bounds",
+                           "element " + std::to_string(ordinal) + " (id " +
+                               std::to_string(element_id) + ") declares " +
+                               std::to_string(size_bytes) + " bytes, beyond the payload");
+        }
+        if (alternate_present != 0u) {
+            reader.read(4);
+        }
+        reader.read(1);
+        if (reader.failed()) {
+            return syntax("OAMD element control fields truncated at ordinal " +
+                          std::to_string(ordinal));
+        }
+        if (element_id == kTrimElementId) {
+            const Status parsed = parse_trim_element(reader, object_count, out);
+            if (!parsed.ok()) {
+                return parsed;
+            }
+            *present = true;
+            return Status::success();
+        }
+        if (!reader.skip(region_end - reader.position())) {
+            return syntax("OAMD element skip past payload end");
+        }
+    }
     return Status::success();
 }
 
@@ -470,6 +622,20 @@ Status parse_id11_verbose(const std::uint8_t* payload, std::size_t payload_size,
             }
             if (trace != nullptr) {
                 trace->parsed_end_bit = static_cast<std::uint32_t>(reader.position());
+            }
+            if (reader.position() < region_end) {
+                reader.set_limit_bits(reader.limit());
+                reader.skip(region_end - reader.position());
+            }
+        } else if (element_id == kTrimElementId) {
+            OamdTrim trim;
+            const Status parsed = parse_trim_element(reader, object_count, &trim);
+            if (!parsed.ok()) {
+                return parsed;
+            }
+            if (!out->has_trim) {
+                out->trim = trim;
+                out->has_trim = true;
             }
             if (reader.position() < region_end) {
                 reader.set_limit_bits(reader.limit());

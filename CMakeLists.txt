@@ -123,6 +123,7 @@ set(JOC_INTERNAL_SOURCES
     src/oamd/oamd_parser.cpp
     src/speaker/speaker_layout_lookup.cpp
     src/speaker/speaker_step.cpp
+    src/speaker/speaker_trim.cpp
     src/stream/stream.cpp
     src/task/task.cpp
     src/telemetry/event_bus.cpp

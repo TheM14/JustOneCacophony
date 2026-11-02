@@ -23,7 +23,7 @@ extern "C" {
 #endif
 
 enum {
-    EJOC_ABI_VERSION = 2,
+    EJOC_ABI_VERSION = 3,
     EJOC_FRAME_SAMPLES = 1536,
     EJOC_TIMESLOTS = 24,
     EJOC_SUBBANDS = 64,
@@ -35,6 +35,7 @@ enum {
     EJOC_MAX_PARAMETER_BANDS = 23,
     EJOC_SPEAKER_BLOCK_SAMPLES = 32,
     EJOC_SPEAKER_COORDINATES = 3,
+    EJOC_SPEAKER_CONTROLS_VERSION = 1,
     EJOC_BINAURAL_BLOCK_SAMPLES = 512,
     EJOC_BINAURAL_INPUT_CHANNELS = 16,
     EJOC_BINAURAL_OUTPUT_CHANNELS = 2,
@@ -123,6 +124,44 @@ metadata_offsets must be nondecreasing and <= sample_count. sample_count must
 be a multiple of EJOC_SPEAKER_BLOCK_SAMPLES. State and unfinished ramps are
 preserved across calls.
 */
+
+/*
+Per-object speaker controls taken from OAMD metadata: warp mode, trim mode,
+the three trim levels and the two front-back balances.  trim_bypass is indexed
+by object slot (1..15); slot 0 carries the LFE and is unused.
+
+warp_mode 0 leaves the floor Y coordinate unchanged; mode 1 maps it through
+clamp(2Y, 0, 1).  warp modes 2 and 3 have no speaker implementation and are
+rejected by the caller that builds this structure.
+
+trim_mode selects where the gain comes from: automatic applies the layout
+position compensation, disabled applies no trim, and explicit applies the
+position-dependent trim from centre_db / surround_db / height_db.  A bypassed
+object keeps its warp but loses the balance and the trim gain.
+
+Controls may change between calls; each call's metadata events use the
+controls passed with that call.  A null pointer means warp 0, no trim and no
+balance.
+*/
+typedef enum ejoc_speaker_trim_mode {
+    EJOC_SPEAKER_TRIM_AUTOMATIC = 0,
+    EJOC_SPEAKER_TRIM_DISABLED = 1,
+    EJOC_SPEAKER_TRIM_EXPLICIT = 2
+} ejoc_speaker_trim_mode;
+
+typedef struct ejoc_speaker_controls {
+    uint32_t struct_size;
+    uint32_t struct_version;
+    uint32_t warp_mode;
+    uint32_t trim_mode;              /* ejoc_speaker_trim_mode */
+    double centre_db;
+    double surround_db;              /* positive values are treated as zero */
+    double height_db;                /* positive values are treated as zero */
+    double listener_balance;         /* [-1, 1] */
+    double overhead_balance;         /* [-1, 1] */
+    uint8_t trim_bypass[EJOC_MAX_OBJECTS + 1]; /* per object slot, slot 0 unused */
+} ejoc_speaker_controls;
+
 EJOC_API uint32_t EJOC_CALL ejoc_speaker_layout_channel_count(uint32_t speaker_bitfield);
 EJOC_API ejoc_speaker_renderer_handle EJOC_CALL ejoc_speaker_renderer_create(uint32_t speaker_bitfield);
 EJOC_API void EJOC_CALL ejoc_speaker_renderer_destroy(ejoc_speaker_renderer_handle handle);
@@ -139,6 +178,7 @@ EJOC_API int EJOC_CALL ejoc_speaker_renderer_process(
     const uint8_t* region_indices,
     const uint8_t* height_enabled,
     const double* object_gains,
+    const ejoc_speaker_controls* controls,
     double* output_interleaved);
 
 EJOC_API ejoc_binaural_renderer_handle EJOC_CALL ejoc_binaural_renderer_create(void);

@@ -313,6 +313,91 @@ int probe_config_idx(const std::string& path) {
     return config;
 }
 
+// Reads the programme trim element from the leading audio frames, without
+// rendering them.  The ADM master metadata carries it, and the reference scans
+// the first 64 audio frames for it.
+Status probe_atmos_trim(const std::string& path, std::uint64_t max_frames,
+                        oamd::OamdTrim* trim, bool* present) {
+    *present = false;
+    std::ifstream input = fs_utf8::open_input(path);
+    if (!input) {
+        return Status::success();
+    }
+    ::joc::eac3::FrameReader reader;
+    std::vector<char> chunk(1u << 16);
+    std::vector<::joc::eac3::Frame> group;
+    std::uint64_t frames = 0;
+    auto scan_group = [&]() -> bool {
+        for (const ::joc::eac3::Frame& frame : group) {
+            bool has_joc = false;
+            ::joc::emdf::Container container;
+            if (!::joc::emdf::find_joc_emdf_optional(
+                     frame.data, frame.size, &has_joc, &container,
+                     &::joc::joc::score_container_as_joc, nullptr)
+                     .ok() ||
+                !has_joc) {
+                continue;
+            }
+            const ::joc::emdf::Payload* payload = container.find(::joc::emdf::kIdOamd);
+            if (payload == nullptr) {
+                continue;
+            }
+            std::vector<std::uint8_t> bytes;
+            if (!::joc::emdf::extract_payload_bytes(frame.data, frame.size, *payload, &bytes)
+                     .ok()) {
+                continue;
+            }
+            oamd::OamdUpdate update;
+            if (!oamd::parse_id11(bytes.data(), bytes.size(), &update).ok() ||
+                !update.has_trim) {
+                continue;
+            }
+            *trim = update.trim;
+            *present = true;
+            return true;
+        }
+        group.clear();
+        return false;
+    };
+    bool done = false;
+    while (!done) {
+        input.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+        const std::streamsize got = input.gcount();
+        if (got > 0) {
+            reader.push(reinterpret_cast<const std::uint8_t*>(chunk.data()),
+                        static_cast<std::size_t>(got));
+        } else {
+            reader.finish();
+            done = true;
+        }
+        for (;;) {
+            ::joc::eac3::Frame frame;
+            const ::joc::eac3::FrameReader::Next state = reader.next(&frame);
+            if (state != ::joc::eac3::FrameReader::Next::Ok) {
+                break;
+            }
+            bool repeats = false;
+            for (const ::joc::eac3::Frame& prior : group) {
+                if (prior.same_stream(frame)) {
+                    repeats = true;
+                    break;
+                }
+            }
+            if (repeats) {
+                ++frames;
+                if (scan_group() || frames >= max_frames) {
+                    return Status::success();
+                }
+            }
+            group.push_back(frame);
+        }
+    }
+    if (!group.empty()) {
+        scan_group();
+    }
+    return Status::success();
+}
+
 // Rendered PCM is spooled to a float32 file so the output format can be decided
 // once the peak is known, which is what makes --clip-action possible; the
 // reference CLI spools for the same reason.
@@ -1311,6 +1396,13 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
 
     ::joc::speaker::SpeakerStep speaker;
     bool bed_positions_ready = false;
+    // The ADM master metadata carries the programme's trim element, scanned
+    // from the leading frames before rendering starts.
+    ::joc::oamd::OamdTrim adm_trim;
+    bool adm_trim_present = false;
+    if (cfg.operation == JOC_OP_ADM_BWF) {
+        probe_atmos_trim(eac3_path, 64, &adm_trim, &adm_trim_present);
+    }
     const bool speaker_enabled = cfg.operation == JOC_OP_SPEAKER;
     if (speaker_enabled) {
         if (!::joc::speaker::layout_by_name(cfg.layout.c_str(), &speaker.layout)) {
@@ -1322,6 +1414,21 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
         if (speaker.handle == nullptr) {
             return finalize_with_error(JOC_ERR_RENDER_FAILED, "render",
                                        "cannot create the speaker renderer");
+        }
+        // The reference seeds the initial controls from the leading frames, so
+        // the first trim element is in effect before its own event arrives.
+        ::joc::oamd::OamdTrim initial_trim;
+        bool has_initial_trim = false;
+        probe_atmos_trim(eac3_path, 64, &initial_trim, &has_initial_trim);
+        if (has_initial_trim) {
+            const Status seeded = ::joc::speaker::parameters_from_oamd(
+                &initial_trim, speaker.layout, &speaker.controls);
+            if (!seeded.ok()) {
+                ejoc_speaker_renderer_destroy(speaker.handle);
+                speaker.handle = nullptr;
+                return finalize_with_error(seeded.code(), "render", seeded.message());
+            }
+            speaker.controls_ready = true;
         }
         bus.emit(JOC_EV_RENDERER_INITIALIZED, JOC_STAGE_RENDER, JOC_LOG_INFO,
                  fmt("speaker renderer: %s, %u channels", speaker.layout.name,
@@ -2107,13 +2214,16 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
         } else {
             const double duration_sec =
                 static_cast<double>(processed) * static_cast<std::int64_t>(JOC_FRAME_SAMPLES) / 48000.0;
-            const std::string axml = ::joc::adm::build_axml(tracks, duration_sec, 48000);
+            const std::string axml =
+                ::joc::adm::build_axml(tracks, duration_sec, 48000,
+                                       adm_trim_present ? &adm_trim : nullptr);
             const std::string chna = ::joc::adm::build_chna();
             std::string dbmd;
             const ::joc::adm::BinauralMode mode =
                 static_cast<::joc::adm::BinauralMode>(cfg.adm_binaural_mode);
-            const Status dbmd_status =
-                ::joc::adm::build_dbmd(::joc::io::AdmBwfWriter::kChannels, mode, &dbmd);
+            const Status dbmd_status = ::joc::adm::build_dbmd(
+                ::joc::io::AdmBwfWriter::kChannels, mode, &dbmd,
+                adm_trim_present ? &adm_trim : nullptr);
             if (!dbmd_status.ok()) {
                 failure = dbmd_status.message();
             } else {

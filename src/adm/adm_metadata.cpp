@@ -54,6 +54,67 @@ std::uint8_t checksum(const std::string& segment) {
     return static_cast<std::uint8_t>((~sum + 1) & 0xFF);
 }
 
+// OAMD trim element warp mode as the dbmd, DAMF and AXML warp field carry it:
+// 0 normal, 1 warping, 2 downmix_pl2x, 3 downmix_loro.
+std::uint32_t trim_warp_mode(const oamd::OamdTrim* trim) {
+    if (trim == nullptr) {
+        return 0;
+    }
+    return std::min<std::uint32_t>(trim->warp_mode, 3u);
+}
+
+// Trim records carry the balance as a sign bit plus a 7-bit magnitude on a
+// 1/127 grid.
+std::uint8_t balance_byte(double value) {
+    const long long magnitude =
+        std::min<long long>(pynum::py_round(std::fabs(value) * 127.0), 127);
+    return static_cast<std::uint8_t>(static_cast<unsigned>(magnitude) |
+                                     (value < 0.0 ? 0x80u : 0x00u));
+}
+
+void append_trim_records(const oamd::OamdTrim& trim, std::string* out) {
+    out->append("<DolbyTrimModeSetup>");
+    for (int index = 0; index < oamd::kTrimConfigs; ++index) {
+        const oamd::TrimConfig& record = trim.configs[index];
+        if (record.kind == oamd::TrimConfigKind::kAbsent) {
+            continue;
+        }
+        out->append("<records><type>");
+        out->append(std::to_string(index));
+        out->append("</type>");
+        if (record.kind == oamd::TrimConfigKind::kDefault) {
+            out->append("</records>");
+            continue;
+        }
+        const bool explicit_record = record.kind == oamd::TrimConfigKind::kExplicit;
+        const double centre = explicit_record ? record.centre : 0.0;
+        const double surround = explicit_record ? record.surround : 0.0;
+        const double height = explicit_record ? record.height : 0.0;
+        const double overhead = explicit_record ? record.balance_overhead : 0.0;
+        const double listener = explicit_record ? record.balance_listener : 0.0;
+        out->append("<centerTrim>" + pynum::format_fixed(centre, 6) + "</centerTrim>");
+        out->append("<surroundTrim>" + pynum::format_fixed(surround, 6) + "</surroundTrim>");
+        out->append("<heightTrim>" + pynum::format_fixed(height, 6) + "</heightTrim>");
+        out->append("<balanceOverhead>" + pynum::format_fixed(overhead, 6) +
+                    "</balanceOverhead>");
+        out->append("<balanceListener>" + pynum::format_fixed(listener, 6) +
+                    "</balanceListener>");
+        out->append("</records>");
+    }
+    out->append("</DolbyTrimModeSetup>");
+}
+
+void append_atmos_master_block(const oamd::OamdTrim& trim, std::string* out) {
+    const std::string warp = std::to_string(trim_warp_mode(&trim));
+    out->append("<DolbyAtmosMasterFile><DolbyMasterContentInfo><render_warp_mode>");
+    out->append(warp);
+    out->append("</render_warp_mode></DolbyMasterContentInfo>");
+    append_trim_records(trim, out);
+    out->append("<DolbyWarpMode>");
+    out->append(warp);
+    out->append("</DolbyWarpMode></DolbyAtmosMasterFile>");
+}
+
 }  // namespace
 
 std::string ts(double seconds) {
@@ -102,7 +163,8 @@ std::string build_chna() {
     return out;
 }
 
-Status build_dbmd(std::uint32_t object_count, BinauralMode mode, std::string* out) {
+Status build_dbmd(std::uint32_t object_count, BinauralMode mode, std::string* out,
+                  const oamd::OamdTrim* trim) {
     if (out == nullptr) {
         return Status::fail(JOC_ERR_INVALID_ARGUMENT, stage::kOutput, "null output");
     }
@@ -136,6 +198,10 @@ Status build_dbmd(std::uint32_t object_count, BinauralMode mode, std::string* ou
     segment9[106] = 0x01;
     segment9[111] = 0x22;
     segment9[112] = static_cast<char>(0xFF);
+    // at[152]: the low three bits are the warp code, the other bits belong to
+    // the template's packed fields.
+    segment9[152] = static_cast<char>(
+        (static_cast<unsigned char>(segment9[152]) & 0xF8u) | trim_warp_mode(trim));
     out->push_back(9);
     put_u16(out, 248);
     out->append(segment9);
@@ -152,12 +218,35 @@ Status build_dbmd(std::uint32_t object_count, BinauralMode mode, std::string* ou
         segment10[i] = static_cast<char>(0x84);
     }
     // Nine 15-byte configuration trims start at byte 7; the first byte of each
-    // carries the auto-trim flag in bit 0 (1 = automatic, 0 = manual).  The
-    // default is automatic, so a freshly rendered master opens with automatic
-    // trims in the renderer.
-    for (std::size_t layout = 0; layout < 9; ++layout) {
-        const std::size_t flag = 7u + 15u * layout;
-        segment10[flag] = static_cast<char>(static_cast<unsigned char>(segment10[flag]) | 0x01u);
+    // carries the auto-trim flag in bit 0 (1 = automatic, 0 = manual).  A
+    // configuration without an explicit record stays automatic, so a freshly
+    // rendered master opens with automatic trims in the renderer.
+    for (std::size_t layout = 0; layout < static_cast<std::size_t>(oamd::kTrimConfigs);
+         ++layout) {
+        const std::size_t base = 7u + 15u * layout;
+        const oamd::TrimConfig* record =
+            trim != nullptr ? &trim->configs[layout] : nullptr;
+        const bool manual = record != nullptr &&
+                            (record->kind == oamd::TrimConfigKind::kExplicit ||
+                             record->kind == oamd::TrimConfigKind::kDisabled);
+        if (!manual) {
+            segment10[base] =
+                static_cast<char>(static_cast<unsigned char>(segment10[base]) | 0x01u);
+            continue;
+        }
+        segment10[base] = static_cast<char>(static_cast<unsigned char>(segment10[base]) & 0xFEu);
+        const bool explicit_record = record->kind == oamd::TrimConfigKind::kExplicit;
+        const double levels[3] = {explicit_record ? record->centre : 0.0,
+                                  explicit_record ? record->surround : 0.0,
+                                  explicit_record ? record->height : 0.0};
+        for (std::size_t index = 0; index < 3; ++index) {
+            const float stored = static_cast<float>(levels[index]);
+            std::memcpy(&segment10[base + 1u + 4u * index], &stored, sizeof(stored));
+        }
+        const double overhead = explicit_record ? record->balance_overhead : 0.0;
+        const double listener = explicit_record ? record->balance_listener : 0.0;
+        segment10[base + 13u] = static_cast<char>(balance_byte(overhead));
+        segment10[base + 14u] = static_cast<char>(balance_byte(listener));
     }
     const std::size_t object_modes = 4u + 2u + 1u + 9u * 15u + object_count;
     for (std::uint32_t i = 10; i < std::min<std::uint32_t>(object_count, 10u + kObjectCount); ++i) {
@@ -176,7 +265,8 @@ Status build_dbmd(std::uint32_t object_count, BinauralMode mode, std::string* ou
     return Status::success();
 }
 
-std::string build_axml(const std::vector<Track>& tracks, double duration_sec, std::uint32_t rate) {
+std::string build_axml(const std::vector<Track>& tracks, double duration_sec, std::uint32_t rate,
+                       const oamd::OamdTrim* trim) {
     const double scale = static_cast<double>(rate);
     std::string out;
     out.reserve(64u * 1024u);
@@ -332,6 +422,9 @@ std::string build_axml(const std::vector<Track>& tracks, double duration_sec, st
         out += "<audioTrackFormatIDRef>AT_0003" + hex4(0x1001 + i) +
                "_01</audioTrackFormatIDRef>";
         out += "</audioStreamFormat>";
+    }
+    if (trim != nullptr) {
+        append_atmos_master_block(*trim, &out);
     }
     out += "</audioFormatExtended></format></coreMetadata>";
     out += "</ebuCoreMain>";

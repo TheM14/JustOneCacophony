@@ -17,6 +17,38 @@ inline constexpr int kAxes = 3;
 inline constexpr int kNQ12 = 62;
 inline constexpr int kNQ3 = 15;
 inline constexpr int kQ15Scale = 32768;
+inline constexpr std::uint32_t kTrimElementId = 2;
+inline constexpr int kTrimConfigs = 9;
+
+// One of the nine per-configuration trim records of the OAMD trim element.
+// ``kAbsent`` means the configuration carries no data (the element only
+// carries explicit records when global_trim_mode is 2).
+enum class TrimConfigKind : std::uint8_t {
+    kAbsent = 0,
+    kDefault,
+    kDisabled,
+    kExplicit,
+};
+
+struct TrimConfig {
+    TrimConfigKind kind = TrimConfigKind::kAbsent;
+    std::uint8_t presence = 0;  // b_*_trim_present bits of an explicit record
+    double centre = 0.0;        // dB
+    double surround = 0.0;      // dB
+    double height = 0.0;        // dB
+    double balance_overhead = 0.0;  // bal3d_y_tb, [-1, 1]
+    double balance_listener = 0.0;  // bal3d_y_lis, [-1, 1]
+};
+
+// Programme calibration carried by the OAMD trim element: warp mode, global
+// trim mode, the nine configuration records and the per-object bypass flags.
+struct OamdTrim {
+    std::uint32_t warp_mode = 0;
+    std::uint32_t global_trim_mode = 0;
+    TrimConfig configs[kTrimConfigs];
+    std::uint32_t object_count = 0;
+    bool disable_per_object[kMaxSlots] = {};
+};
 
 // (the reference's None), i.e. hold the previous position.
 struct SlotUpdate {
@@ -39,6 +71,11 @@ struct OamdUpdate {
     bool content_bed = false;
     bool content_isf = false;
     bool content_dynamic = false;
+    // Trim element of this payload.  The element describes the programme, so
+    // ``has_trim`` only marks the payloads that carry it; a payload without it
+    // keeps whatever controls the caller already holds.
+    OamdTrim trim;
+    bool has_trim = false;
 };
 
 class OamdState {
@@ -83,6 +120,13 @@ private:
 int q_of(int k, int n);
 
 Status parse_id11(const std::uint8_t* payload, std::size_t payload_size, OamdUpdate* out);
+
+// Parses only the trim element of a payload.  ``out`` receives the first trim
+// element found; ``*present`` is false when the payload carries none.  decode
+// paths that need the OAMD calibration but no object state can use this
+// without requiring an object element.
+Status parse_trim(const std::uint8_t* payload, std::size_t payload_size, OamdTrim* out,
+                  bool* present);
 
 struct BedAssignment {
     bool lfe_only = false;

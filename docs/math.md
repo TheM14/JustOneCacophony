@@ -450,7 +450,9 @@ v_{\mathrm{floor}}=
 \mathrm{clamp}(2v,0,1).
 $$
 
-其他布局使用 $v_{\mathrm{floor}}=v$。
+`warp_mode=0` 或其他布局使用 $v_{\mathrm{floor}}=v$。高度层不做该缩放。
+未携带 warp 元数据时采用 0；命令行不提供覆盖选项。2/3 保留为未实现，报错而不回退。
+有 front/back balance 时，先求这里的分支坐标，再应用 §12.3 的 balance。
 
 ### 10.3 高度层
 
@@ -470,6 +472,9 @@ $$
 $$
 
 ## 11. 布局位置补偿
+
+本节是 trim 为 automatic 时的逐对象增益。disabled 取 1；explicit 改用 §12.2，
+不能把 automatic 增益与 explicit trim 再乘一遍。
 
 令 $N_h$ 为相关高度扬声器数，$N_f$ 为相关附加水平扬声器数：
 
@@ -516,7 +521,133 @@ G_{\mathrm{pos}}
 \mathbf G_{\mathrm{point}}.
 $$
 
-## 12. OAMD 时间对齐与增益斜坡
+## 12. OAMD trim 与前后平衡
+
+### 12.1 配置选择
+
+OAMD trim element 把节目的校准数据分成九个配置，由目标布局的附加水平扬声器数
+$N_f$ 与高度扬声器数 $N_h$ 选定：
+
+$$
+\kappa_f(N)=
+\begin{cases}
+0, & N=0,\\
+1, & N\in\{2,3\},\\
+2, & \text{其他},
+\end{cases}
+\qquad
+\kappa_h(N)=
+\begin{cases}
+0, & N=0,\\
+1, & N=2,\\
+2, & \text{其他}.
+\end{cases}
+$$
+
+$$
+c_{\mathrm{trim}}=\kappa_f(N_f)+3\,\kappa_h(N_h).
+$$
+
+九个配置依次为“no / some / many 附加水平 × no / some / many 高度”。
+
+trim 与前后平衡只在七种布局下施加：2.0、3.1、4.0、5.1、5.1.2、5.1.4、7.1。
+更宽的布局（7.1.2、7.1.4、9.1.4、9.1.6）取 $g_t=1$、$b=0$。
+
+warp、trim 和 balance 均从 OAMD 元数据读取。各参数的取值与作用为：
+
+| 参数 | 取值或单位 | 行为 |
+|---|---|---|
+| `warp_mode` | 0 / 1 | 选择 §10.2 的地面 Y 映射；2/3 暂不支持，遇到时明确报错 |
+| `global_trim_mode` | 0 / 1 / 2 | automatic / disabled / 按目标布局配置选择；3 为保留值，明确报错 |
+| $T_s$、$T_h$ | dB | 显式 surround、height trim 参数，正值按 0 处理 |
+| $T_c$ | dB | 显式 centre trim 参数，保留符号 |
+| $b_{\mathrm{lis}}$、$b_{\mathrm{tb}}$ | $[-1,1]$，步长 $1/16$ | 听音平面、顶部的前后 balance |
+| 逐对象 trim bypass | 布尔值 | 关闭该对象的 balance 和 trim 增益，保留 warp |
+
+全局模式为 2 时，所选配置的 default 或 disabled 标志分别采用 automatic 或 disabled；
+缺失配置采用 automatic，其他配置使用其显式参数。automatic 使用 §11 的位置补偿，
+disabled 使用单位增益，explicit 使用 §12.2，三种模式互斥。
+
+初始没有 trim element 时采用 `warp_mode=0`、automatic trim。后续 payload 不含该
+element 时保持上一组控制；出现新 element 时，在对应元数据事件边界更新。命令行不提供
+warp 覆盖选项。
+
+### 12.2 逐对象电平
+
+centre、surround、height 是位置相关 trim 函数的参数，不是混音后各输出声道的固定增益。
+令 $y_t$ 为原始 Y 经 balance 后的坐标，$z=\max(w,0)$：
+
+$$
+a_s=\mathrm{clamp}(2y_t,0,1)(1-z),\qquad a_h=z,
+$$
+
+$$
+a_c=1-\mathrm{clamp}\bigl(10\max(|z|-0.05,\ y_t-0.05,\ |u-0.5|-0.05),0,1\bigr).
+$$
+
+explicit 状态下，surround/height 参数上限为 0 dB，centre 保留有符号电平：
+
+$$
+D=a_s\min(T_s,0)+a_h\min(T_h,0)+a_cT_c,\qquad g_t=10^{D/20}.
+$$
+
+同一个 $g_t$ 乘该对象的整条声像增益向量，然后才累加不同对象。automatic 使用 §11；
+disabled 或逐对象 trim bypass 取 $g_t=1$。LFE 仍直接通过。
+增益求值、声像插值和对象累加均使用 float64。
+
+### 12.3 前后平衡
+
+每个配置还携带两个前后平衡量：$b_{\mathrm{lis}}$ 作用于听音平面，
+$b_{\mathrm{tb}}$ 作用于顶部。二者按 $1/16$ 网格量化，只在显式配置下非零。
+
+记 $n=\mathrm{round}(16\,|b|)$、$s=n/18$，单层映射为
+
+$$
+B_b(y)=
+\begin{cases}
+y, & y\le 0.05\ \text{或}\ y\ge 0.95,\\[2pt]
+(1+s)y-0.05s, & 0.05<y<0.5,\ b>0,\\[2pt]
+(1-s)(y-0.5)+0.5+0.45s, & 0.5\le y<0.95,\ b>0,\\[2pt]
+(1-s)y+0.05s, & 0.05<y<0.5,\ b<0,\\[2pt]
+(1+s)(y-0.5)+0.5-0.45s, & 0.5\le y<0.95,\ b<0.
+\end{cases}
+$$
+
+它把 $[0.05,0.95]$ 单调映到自身：两端不动，$y=0.5$ 处两段取值相同，斜率分别为
+$1+s$ 与 $1-s$。首尾各 $5\%$ 的墙区以及 $b=0$ 的情形都原样通过，因此映射不会
+越界，也无需额外钳位。
+
+高度 $w$ 把两层混合起来：
+
+$$
+y'=(1-w)\,B_{b_{\mathrm{lis}}}(y)+w\,B_{b_{\mathrm{tb}}}(y).
+$$
+
+前后轴 $y$ 的取向见 §9，$0$ 为前、$1$ 为后；$x$ 与 $z$ 不变。
+
+### 12.4 施加位置
+
+记 §12.3 的高度混合 balance 映射为 $B_z(y)$，§10.2 的 warp 映射为 $W(y)$。
+普通点对象的实际分支顺序为
+
+$$
+y_f=B_z(W(y)),\qquad y_h=B_z(y),\qquad y_t=B_z(y).
+$$
+
+地面和高度声像分别使用 $y_f,y_h$，trim 函数使用 $y_t$。最后组合
+
+$$
+g_{o,c}=G_{\mathrm{object}}\,g_t(u,y_t,z)\,P_c(u,y_f,y_h,z).
+$$
+
+因此可概括为 warp → balance → trim 与声像增益合成，但不能让所有阶段共用一个
+已经 warp 的 Y。balance 仅在 explicit 且未逐对象 bypass 时启用；warp 不受 trim
+状态或 trim bypass 控制。源坐标保持原值，ADM 与 binaural 不预烘焙此变换。
+
+地面坐标依次经过 warp、balance，再用于地面声像；顶部坐标和 trim 求值坐标只经过
+balance。trim 标量乘到该对象的整条声像增益向量后，再累加到输出声道。LFE 直接通过。
+
+## 13. OAMD 时间对齐与增益斜坡
 
 OAMD 更新的编码位置为
 
@@ -572,7 +703,7 @@ $$
 
 如果中途没有新的 metadata 更新，该过程等价于总长度 $KB$ 的逐样本线性斜坡。
 
-## 13. 最终扬声器混音
+## 14. 最终扬声器混音
 
 对目标输出声道 $c$：
 
@@ -604,9 +735,10 @@ y_{24}[n]=
 \right).
 $$
 
-## 14. 公式适用范围
+## 15. 公式适用范围
 
 - JOC 矩阵部分同时描述 dense MTX 与 sparse IDX/VEC 两条差分语法。
 - 扬声器声像部分描述普通点对象；extent、spread、divergence 等模式需要额外模型。
 - 多个 OAMD position block 必须按其时间顺序调度。
 - limiter 属于独立后处理，不包含在上述混音公式中。
+- trim 与前后平衡只作用于扬声器渲染；双耳渲染不读取它们。
