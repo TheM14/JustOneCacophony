@@ -23,8 +23,74 @@ def ts(seconds):
 def esc(v):
     return (str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
 
-def build_axml(obj_tracks, duration_sec):
-    """obj_tracks: [(name, [(rtime, x, y, z, dur), ...]) ×15]"""
+def _fmt_float(value):
+    return f"{float(value):.6f}"
+
+
+def _trim_records(atmos_meta):
+    """把 OAMD trim element 展开成 DolbyTrimModeSetup 的 records。
+
+    ``configs`` 每项有三种形态：
+      * ``{"default": True}``  —— 交给渲染器推导，不写任何值子元素；
+      * ``{"disabled": True}`` —— 该配置不施加 trim，写全 0；
+      * 含 centre/surround/height/bal3d_y_tb/bal3d_y_lis 的显式配置。
+    缺省字段一律补 0。
+    """
+    lines = ["<DolbyTrimModeSetup>"]
+    for index, record in enumerate(atmos_meta.get("configs") or ()):
+        if record is None:
+            continue
+        lines.append("<records>")
+        lines.append(f"<type>{index}</type>")
+        if isinstance(record, dict) and not record.get("default"):
+            if record.get("disabled"):
+                values = {"centerTrim": 0.0, "surroundTrim": 0.0,
+                          "heightTrim": 0.0, "balanceOverhead": 0.0,
+                          "balanceListener": 0.0}
+            else:
+                values = {
+                    "centerTrim": record.get("centre", 0.0),
+                    "surroundTrim": record.get("surround", 0.0),
+                    "heightTrim": record.get("height", 0.0),
+                    "balanceOverhead": record.get("bal3d_y_tb", 0.0),
+                    "balanceListener": record.get("bal3d_y_lis", 0.0),
+                }
+            for name, value in values.items():
+                lines.append(f"<{name}>{_fmt_float(value)}</{name}>")
+        lines.append("</records>")
+    lines.append("</DolbyTrimModeSetup>")
+    return lines
+
+
+def _warp_xml_value(atmos_meta):
+    """OAMD 的 warp_mode → ADM ``DolbyWarpMode`` 取值。
+
+    warp_mode 选择下混/渲染模式，四档依次为 Direct render、Direct render
+    with room balance、Dolby Pro Logic IIx、Standard (Lo/Ro)，ADM 沿用同一
+    编号，因此直接照搬码流值。
+    """
+    return max(0, min(3, int(atmos_meta.get("warp_mode", 0))))
+
+
+def _atmos_master_block(atmos_meta):
+    """Dolby 扩展容器：内容信息 + trim 记录 + warp。"""
+    lines = ["<DolbyAtmosMasterFile>"]
+    warp = _warp_xml_value(atmos_meta)
+    lines.append("<DolbyMasterContentInfo>")
+    lines.append(f"<render_warp_mode>{warp}</render_warp_mode>")
+    lines.append("</DolbyMasterContentInfo>")
+    lines.extend(_trim_records(atmos_meta))
+    lines.append(f"<DolbyWarpMode>{warp}</DolbyWarpMode>")
+    lines.append("</DolbyAtmosMasterFile>")
+    return lines
+
+
+def build_axml(obj_tracks, duration_sec, atmos_meta=None):
+    """obj_tracks: [(name, [(rtime, x, y, z, dur), ...]) ×15]
+
+    ``atmos_meta`` 为 ``oamd_bits.parse_trim`` 的结果；给出时把 trim 与 warp
+    写进 ADM。
+    """
     w = []
     a = w.append
     a('<?xml version="1.0" encoding="utf-8"?>')
@@ -131,6 +197,8 @@ def build_axml(obj_tracks, duration_sec):
         a(f'<audioPackFormatIDRef>AP_0003{0x1001 + i:04x}</audioPackFormatIDRef>')
         a(f'<audioTrackFormatIDRef>AT_0003{0x1001 + i:04x}_01</audioTrackFormatIDRef>')
         a('</audioStreamFormat>')
+    if atmos_meta:
+        w.extend(_atmos_master_block(atmos_meta))
     a('</audioFormatExtended></format></coreMetadata>')
     a('</ebuCoreMain>')
     return ''.join(w).encode('utf-8')

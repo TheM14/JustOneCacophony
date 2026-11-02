@@ -32,6 +32,10 @@ JOC_BINAURAL_MODES = {
 JOC_BINAURAL_MODE_DEFAULT = "unspecified"
 
 def q_to_adm_xyz(q1, q2, q3):
+    """OAMD 的 q1/q2/q3 编码 → ADM 笛卡尔坐标。
+
+    posX/posY 为 62 级量化，posZ 为 15 级；ADM 的 Y 轴与 OAMD 编码方向相反。
+    """
     posX = min(1.0, round(q1 * 62 / 32767.0) / 62.0)
     posY = min(1.0, round(q2 * 62 / 32767.0) / 62.0)
     posZ = round(q3 * 15 / 32767.0) / 15.0
@@ -195,8 +199,22 @@ def _checksum(seg):
         s += b
     return (~s + 1) & 0xFF
 
-def build_dbmd(object_count=25, joc_binaural_mode=4):
-    """仅覆盖 segment 10 中 JOC object slots 10..24 的 mode 低 3 bit。"""
+def _balance_byte(value):
+    """trim 记录里的 balance 字段：bit7 为符号，bit0-6 为幅度。
+
+    bal3d_y 的取值落在 [0, 1]，7 bit 幅度即该区间上的定点表示，步长 1/127。
+    """
+    value = float(value)
+    magnitude = min(int(round(abs(value) * 127.0)), 127)
+    return magnitude | (0x80 if value < 0 else 0)
+
+
+def build_dbmd(object_count=25, joc_binaural_mode=4, atmos_meta=None):
+    """segment 10：9 个 trim 配置 + 逐轨 bypass + JOC object slots 10..24 的 mode。
+
+    含显式值的配置写成显式记录（3 个 float32 + 2 个 balance 字节），其余保持
+    自动标志。
+    """
     mode = operator.index(joc_binaural_mode)
     if mode not in JOC_BINAURAL_MODES.values():
         raise ValueError(f"invalid JOC binaural render mode: {mode}")
@@ -230,7 +248,30 @@ def build_dbmd(object_count=25, joc_binaural_mode=4):
     # default is automatic, so a freshly rendered master opens with automatic
     # trims in the renderer.
     for layout in range(9):
-        ob[7 + 15 * layout] |= 1
+        base = 7 + 15 * layout
+        record = None
+        if atmos_meta is not None:
+            configs = atmos_meta.get("configs") or ()
+            if layout < len(configs):
+                record = configs[layout]
+        explicit = isinstance(record, dict) and not record.get("default")
+        if not explicit:
+            ob[base] |= 1                 # bit0 = 1：由渲染器推导
+            continue
+        ob[base] &= 0xFE                  # bit0 = 0：显式
+        if record.get("disabled"):
+            trims = (0.0, 0.0, 0.0)
+            bal3d_y_tb = bal3d_y_lis = 0.0
+        else:
+            trims = (record.get("centre", 0.0), record.get("surround", 0.0),
+                     record.get("height", 0.0))
+            bal3d_y_tb = record.get("bal3d_y_tb", 0.0)
+            bal3d_y_lis = record.get("bal3d_y_lis", 0.0)
+        for index, value in enumerate(trims):
+            offset = base + 1 + 4 * index
+            ob[offset:offset + 4] = struct.pack("<f", float(value))
+        ob[base + 13] = _balance_byte(bal3d_y_tb)
+        ob[base + 14] = _balance_byte(bal3d_y_lis)
     object_modes = 4 + 2 + 1 + 9 * 15 + object_count
     for i in range(10, min(object_count, 10 + N_OBJ)):
         ob[object_modes + i] = (ob[object_modes + i] & 0xF8) | mode

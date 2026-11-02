@@ -18,6 +18,13 @@ RAMP_DURATION_INDEX = (
     1024, 1600, 1601, 1602, 1920, 2000, 2002, 2048,
 )
 OBJECT_ELEMENT_ID = 1
+TRIM_ELEMENT_ID = 2
+# Table 12 of ETSI TS 103 420：trim 电平表，4 bit 索引，单位 dB。
+# 索引 15 的 -36 dB 是最小值（并非静音）。
+TRIM_LUT = (6.0, 3.0, 1.5, 0.75, -0.75, -1.5, -3.0, -4.5,
+            -6.0, -7.5, -9.0, -10.5, -12.0, -13.5, -15.0, -36.0)
+# bal3d_y 的编码为 (code + 1) / 16，幅度落在 [1/16, 1]，取不到 0。
+BALANCE_STEP = 16
 # 5.6.0.11 Table 11b：ISF 类型 → 对象数。
 ISF_OBJECT_COUNTS = (4, 8, 10, 14, 15, 30)
 # 5.6.1.1.4 Table 12：10 bit 标准 bed 掩码。array position 9（RC_L/RC_R）是 channel
@@ -371,6 +378,118 @@ def _parse_object_element(reader, element, raw_payload, retain_spatial=False):
     }
 
 
+def _parse_trim_element(reader, object_count, raw_payload):
+    """``trim_element``：全局 trim/warp 配置，每个 payload 出现一次。
+
+    该 element 描述整段节目的渲染校准意图，不随 block 变化，因此解析结果应当
+    在 payload 之间保持，而不是逐帧重算。
+    """
+    trim = {
+        "warp_mode": reader.read(2),
+        "reserved": reader.read(2),
+        "global_trim_mode": reader.read(2),
+        "configs": [None] * 9,
+        "disable_per_obj": None,
+    }
+    # global_trim_mode == 2 才携带 9 个配置的显式数据；其余取值表示内容
+    # 把 trim 交给渲染器自行推导（auto）。
+    if trim["global_trim_mode"] == 2:
+        for config in range(9):
+            if reader.read(1):                       # b_default_trim
+                trim["configs"][config] = {"default": True}
+                continue
+            if reader.read(1):                       # b_disable_trim
+                trim["configs"][config] = {"disabled": True}
+                continue
+            present = reader.read(5)
+            entry = {"present": present}
+            if present & 0x01:
+                entry["centre"] = TRIM_LUT[reader.read(4)]
+            if present & 0x02:
+                entry["surround"] = TRIM_LUT[reader.read(4)]
+            if present & 0x04:
+                entry["height"] = TRIM_LUT[reader.read(4)]
+            if present & 0x08:
+                sign = 1.0 if reader.read(1) else -1.0
+                entry["bal3d_y_tb"] = (
+                    (reader.read(4) + 1) / BALANCE_STEP * sign)
+            if present & 0x10:
+                sign = 1.0 if reader.read(1) else -1.0
+                entry["bal3d_y_lis"] = (
+                    (reader.read(4) + 1) / BALANCE_STEP * sign)
+            trim["configs"][config] = entry
+    if reader.read(1):                               # b_disable_trim_per_obj
+        trim["disable_per_obj"] = [bool(reader.read(1))
+                                   for _ in range(object_count)]
+    return trim
+
+
+def parse_trim(bits_one):
+    """独立解析一个 OAMD payload 的 trim element。
+
+    返回 ``None`` 表示该 payload 不含 trim element。异常统一转成
+    ``UnsupportedVariantError``，与其它解析入口一致。
+    """
+    bits, raw_payload = _payload_bits(bits_one)
+    try:
+        version = bits[0] << 1 | bits[1]
+    except IndexError:
+        raise UnsupportedVariantError(
+            "oamd", "header_truncated", "OAMD payload 不足以容纳 header",
+            details={"payload_bits": len(bits),
+                     "payload": bytes_descriptor(raw_payload)}) from None
+    reader = _BitReader(bits, 2)
+    try:
+        if version == 3:
+            version += reader.read(3)
+        object_count_bits = reader.read(5)
+        if object_count_bits == 0x1F:
+            object_count_bits += reader.read(7)
+        object_count = object_count_bits + 1
+        program = _parse_program_assignment(reader, raw_payload)
+    except UnsupportedVariantError:
+        raise
+    except ValueError as exc:
+        raise _syntax_error(
+            "header_truncated", "OAMD header 字段越界或不完整",
+            raw_payload, exc, payload_bits=len(bits)) from exc
+    alternate_present = bool(reader.read(1))
+    try:
+        element_count = reader.read(4)
+    except ValueError as exc:
+        raise _syntax_error(
+            "element_count_truncated", "OAMD element 数量字段不完整",
+            raw_payload, exc) from exc
+    for ordinal in range(element_count):
+        header_start = reader.position
+        try:
+            element_id = reader.read(4)
+            size_bytes = _variable_bits_max(reader, 4, 4) + 1
+        except ValueError as exc:
+            raise _syntax_error(
+                "element_header_truncated", "OAMD element header 不完整",
+                raw_payload, exc,
+                element_ordinal=ordinal, header_start_bit=header_start) from exc
+        region_start = reader.position
+        region_end = region_start + size_bytes * 8
+        if region_end > reader.limit:
+            raise UnsupportedVariantError(
+                "oamd", "element_bounds",
+                "OAMD element 声明长度超过 payload 边界",
+                details={"element_ordinal": ordinal, "element_id": element_id,
+                         "size_bytes": size_bytes,
+                         "payload": bytes_descriptor(raw_payload)})
+        if alternate_present:
+            reader.read(4)
+        reader.read(1)
+        if element_id == TRIM_ELEMENT_ID:
+            trim = _parse_trim_element(reader, object_count, raw_payload)
+            trim["object_count"] = object_count
+            return trim
+        reader.position = region_end
+    return None
+
+
 def _parse_elements(reader, alternate_present, object_count, program, raw_payload, retain_spatial=False):
     """5.5.4 ``oa_element_md()`` 目录；对象 element 按结构解析，其余按声明长度跳过。"""
     try:
@@ -453,8 +572,13 @@ def _parse_elements(reader, alternate_present, object_count, program, raw_payloa
             element["object_element"] = object_element
             # 个别编码器声明的 oa_element_size 比实际内容短；以结构解析结果为准。
             reader.position = max(region_end, reader.position)
+        elif element_id == TRIM_ELEMENT_ID:
+            element["trim_element"] = _parse_trim_element(
+                reader, object_count, raw_payload)
+            element["parsed_end_bit"] = reader.position
+            reader.position = max(region_end, reader.position)
         else:
-            # trim / extended / 未知 element：按声明长度整体跳过（5.5.4）。
+            # extended / 未知 element：按声明长度整体跳过（5.5.4）。
             element["parsed_end_bit"] = region_end
             reader.position = region_end
         elements.append(element)

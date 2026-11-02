@@ -3,7 +3,7 @@ import math
 
 from adm_atmos import q_to_adm_xyz
 from bed_layout import bed_object_positions
-from oamd_bits import JocFieldState, frame_update
+from oamd_bits import JocFieldState, frame_update, parse_trim
 from variant_error import UnsupportedVariantError
 
 # 元数据更新时刻按渲染器处理块对齐，与 Dolby 的 processing_block_size 及
@@ -191,6 +191,23 @@ def _expand_events(events, total_samples, rate, update_block_samples,
         return _expand_events_dense64(events, total_samples, rate, update_block_samples,
                                       object_delay_samples, object_index)
     raise ValueError(f"未知 trajectory_mode: {trajectory_mode}")
+
+def read_atmos_meta(index, frames=None, max_scan=64):
+    """从 OAMD payload 读取 trim/warp 配置。
+
+    trim element 描述整段节目的校准意图，跨帧恒定，因此扫到第一帧含 trim 的
+    payload 即可。返回 ``None`` 表示该节目没有 trim element。
+    """
+    rows = index.rows if frames is None else frames
+    for row in rows[:max_scan]:
+        subs = index.subpayloads(row)
+        if not subs or 11 not in subs:
+            continue
+        meta = parse_trim(subs[11])
+        if meta is not None:
+            return meta
+    return None
+
 
 def build_adm_tracks(index, frames=None, rate=48000, frame_samples=1536,
                      update_block_samples=METADATA_BLOCK_SAMPLES,

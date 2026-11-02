@@ -71,13 +71,14 @@ class StreamingMaster:
     """
 
     def __init__(self, out_path, duration_sec, rate=48000, block_samples=131072,
-                 joc_binaural_mode=4):
+                 joc_binaural_mode=4, atmos_meta=None):
         if block_samples < 1536:
             raise ValueError("block_samples must be at least one E-AC-3 frame")
         self.out_path = os.fspath(out_path)
         self.duration_sec = float(duration_sec)
         self.rate = int(rate)
         self.joc_binaural_mode = joc_binaural_mode
+        self.atmos_meta = atmos_meta
         self._sink = adm_atmos.Sink25(self.out_path, 25, self.rate)
         self._buffer = np.empty((int(block_samples), 25), dtype=np.float32)
         self._used = 0
@@ -113,10 +114,12 @@ class StreamingMaster:
             from . import adm_serializer
         except ImportError:
             import adm_serializer
-        axml = adm_serializer.build_axml(kf_tracks, self.duration_sec)
+        axml = adm_serializer.build_axml(kf_tracks, self.duration_sec,
+                                         atmos_meta=self.atmos_meta)
         chna = adm_atmos.build_chna()
         dbmd = adm_atmos.build_dbmd(
-            25, joc_binaural_mode=self.joc_binaural_mode)
+            25, joc_binaural_mode=self.joc_binaural_mode,
+            atmos_meta=self.atmos_meta)
         trajectory_blocks = sum(len(track[1]) for track in kf_tracks)
         self.metadata_info = {
             "axml_bytes": len(axml),

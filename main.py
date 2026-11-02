@@ -844,9 +844,11 @@ def main(argv=None):
                     f"samples={binaural_clip_info['kept_samples']}")
         else:
             timings["create_binaural_renderer"] = 0.0
+            atmos_meta = oamd_tracks.read_atmos_meta(index)
             master = adm_assemble.StreamingMaster(
                 output, duration_sec, rate=RATE,
-                joc_binaural_mode=adm_atmos.JOC_BINAURAL_MODES[args.binaural_mode])
+                joc_binaural_mode=adm_atmos.JOC_BINAURAL_MODES[args.binaural_mode],
+                atmos_meta=atmos_meta)
             try:
                 render_seconds, renderer_backend, render_breakdown = timed_call(
                     timings, "render_and_stream", variant_call,
