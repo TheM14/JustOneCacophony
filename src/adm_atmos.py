@@ -209,6 +209,18 @@ def _balance_byte(value):
     return magnitude | (0x80 if value < 0 else 0)
 
 
+def warp_mode(atmos_meta):
+    """OAMD trim element 的 ``warp_mode`` → 下混模式码。
+
+    dbmd 的 warp 字段、ADM 的 ``DolbyWarpMode`` 和 DAMF 的 ``WarpMode`` 共用
+    一套编号：0 normal、1 warping、2 downmix_pl2x、3 downmix_loro，4 表示未
+    指定。来源只有 2 bit 的 OAMD 字段，因此取值落在 0..3。
+    """
+    if not atmos_meta:
+        return 0
+    return max(0, min(3, int(atmos_meta.get("warp_mode", 0))))
+
+
 def build_dbmd(object_count=25, joc_binaural_mode=4, atmos_meta=None):
     """segment 10：9 个 trim 配置 + 逐轨 bypass + JOC object slots 10..24 的 mode。
 
@@ -233,6 +245,9 @@ def build_dbmd(object_count=25, joc_binaural_mode=4, atmos_meta=None):
     at[103] = 0x03
     at[106] = 0x01
     at[111] = 0x22; at[112] = 0xFF
+    # at[152] 高 2 位是 bed_distribution、低 3 位是 warp；这里只写 warp，
+    # 其余位保持模板原值。
+    at[152] = (at[152] & 0xF8) | warp_mode(atmos_meta)
     out.append(9); out += struct.pack("<H", 248); out += bytes(at)
     out.append(_checksum(at))
     ob = bytearray(5 + 262 + object_count)

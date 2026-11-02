@@ -443,14 +443,16 @@ $$
 $$
 
 对于只有一对水平环绕、没有独立 side/rear 两对的布局（5.1 系列，以及 4.0 这类
-只有一对后置声道的布局），纵向坐标使用
+只有一对后置声道的布局），仅在 OAMD `warp_mode=1` 时，纵向坐标使用
 
 $$
 v_{\mathrm{floor}}=
 \mathrm{clamp}(2v,0,1).
 $$
 
-其他布局使用 $v_{\mathrm{floor}}=v$。
+`warp_mode=0` 或其他布局使用 $v_{\mathrm{floor}}=v$。高度层不做该缩放。
+未携带 warp 元数据时采用 0；命令行不提供覆盖选项。2/3 保留为未实现，报错而不回退。
+有 front/back balance 时，先求这里的分支坐标，再应用 §12.3 的 balance。
 
 ### 10.3 高度层
 
@@ -470,6 +472,9 @@ $$
 $$
 
 ## 11. 布局位置补偿
+
+本节是 trim 为 automatic 时的逐对象增益。disabled 取 1；explicit 改用 §12.2，
+不能把 automatic 增益与 explicit trim 再乘一遍。
 
 令 $N_h$ 为相关高度扬声器数，$N_f$ 为相关附加水平扬声器数：
 
@@ -546,38 +551,54 @@ $$
 九个配置依次为“no / some / many 附加水平 × no / some / many 高度”。
 
 trim 与前后平衡只在七种布局下施加：2.0、3.1、4.0、5.1、5.1.2、5.1.4、7.1。
-更宽的布局（7.1.2、7.1.4、9.1.4、9.1.6）不施加，取 $G_c=1$、$b=0$。
+更宽的布局（7.1.2、7.1.4、9.1.4、9.1.6）取 $g_t=1$、$b=0$。
 
-### 12.2 组电平
+warp、trim 和 balance 均从 OAMD 元数据读取。各参数的取值与作用为：
 
-每个配置给 centre、surround、height 三个组各一个电平 $T_g$（dB）。只有显式配置
-施加静态电平：
+| 参数 | 取值或单位 | 行为 |
+|---|---|---|
+| `warp_mode` | 0 / 1 | 选择 §10.2 的地面 Y 映射；2/3 暂不支持，遇到时明确报错 |
+| `global_trim_mode` | 0 / 1 / 2 | automatic / disabled / 按目标布局配置选择；3 为保留值，明确报错 |
+| $T_s$、$T_h$ | dB | 显式 surround、height trim 参数，正值按 0 处理 |
+| $T_c$ | dB | 显式 centre trim 参数，保留符号 |
+| $b_{\mathrm{lis}}$、$b_{\mathrm{tb}}$ | $[-1,1]$，步长 $1/16$ | 听音平面、顶部的前后 balance |
+| 逐对象 trim bypass | 布尔值 | 关闭该对象的 balance 和 trim 增益，保留 warp |
+
+全局模式为 2 时，所选配置的 default 或 disabled 标志分别采用 automatic 或 disabled；
+缺失配置采用 automatic，其他配置使用其显式参数。automatic 使用 §11 的位置补偿，
+disabled 使用单位增益，explicit 使用 §12.2，三种模式互斥。
+
+初始没有 trim element 时采用 `warp_mode=0`、automatic trim。后续 payload 不含该
+element 时保持上一组控制；出现新 element 时，在对应元数据事件边界更新。命令行不提供
+warp 覆盖选项。
+
+### 12.2 逐对象电平
+
+centre、surround、height 是位置相关 trim 函数的参数，不是混音后各输出声道的固定增益。
+令 $y_t$ 为原始 Y 经 balance 后的坐标，$z=\max(w,0)$：
 
 $$
-T_g=
-\begin{cases}
-\text{记录值}, & \text{显式},\
-0, & \text{禁用},\
-0, & \text{自动}.
-\end{cases}
+a_s=\mathrm{clamp}(2y_t,0,1)(1-z),\qquad a_h=z,
 $$
 
-自动配置不带静态组增益：它描述的衰减量已由 §11 的位置补偿按对象逐个施加，再乘
-一次会重复计算。
-
-声道 $c$ 的静态增益为
-
 $$
-G_c=10^{T_{g(c)}/20},
+a_c=1-\mathrm{clamp}\bigl(10\max(|z|-0.05,\ y_t-0.05,\ |u-0.5|-0.05),0,1\bigr).
 $$
 
-$g(c)$ 由声道标签决定：中置归 centre，侧、后、宽归 surround，顶部归 height，左右
-与 LFE 不参与，取 $G_c=1$。
+explicit 状态下，surround/height 参数上限为 0 dB，centre 保留有符号电平：
+
+$$
+D=a_s\min(T_s,0)+a_h\min(T_h,0)+a_cT_c,\qquad g_t=10^{D/20}.
+$$
+
+同一个 $g_t$ 乘该对象的整条声像增益向量，然后才累加不同对象。automatic 使用 §11；
+disabled 或逐对象 trim bypass 取 $g_t=1$。LFE 仍直接通过。
+增益求值、声像插值和对象累加均使用 float64。
 
 ### 12.3 前后平衡
 
 每个配置还携带两个前后平衡量：$b_{\mathrm{lis}}$ 作用于听音平面，
-$b_{\mathrm{tb}}$ 作用于顶上层层。二者按 $1/16$ 网格量化，只在显式配置下非零。
+$b_{\mathrm{tb}}$ 作用于顶部。二者按 $1/16$ 网格量化，只在显式配置下非零。
 
 记 $n=\mathrm{round}(16\,|b|)$、$s=n/18$，单层映射为
 
@@ -606,15 +627,25 @@ $$
 
 ### 12.4 施加位置
 
-前后平衡在声像之前作用于对象坐标的第二个分量：
+记 §12.3 的高度混合 balance 映射为 $B_z(y)$，§10.2 的 warp 映射为 $W(y)$。
+普通点对象的实际分支顺序为
 
 $$
-y_o\longmapsto y_o',
+y_f=B_z(W(y)),\qquad y_h=B_z(y),\qquad y_t=B_z(y).
 $$
 
-组增益则乘在声像结果上，即 §14 混音式中的 $g_{o,c}$ 替换为 $G_c\,g_{o,c}$。
+地面和高度声像分别使用 $y_f,y_h$，trim 函数使用 $y_t$。最后组合
 
-warp 不参与上述任何一步：它是下混模式的选择位，只影响下混路径，不改变对象坐标。
+$$
+g_{o,c}=G_{\mathrm{object}}\,g_t(u,y_t,z)\,P_c(u,y_f,y_h,z).
+$$
+
+因此可概括为 warp → balance → trim 与声像增益合成，但不能让所有阶段共用一个
+已经 warp 的 Y。balance 仅在 explicit 且未逐对象 bypass 时启用；warp 不受 trim
+状态或 trim bypass 控制。源坐标保持原值，ADM 与 binaural 不预烘焙此变换。
+
+地面坐标依次经过 warp、balance，再用于地面声像；顶部坐标和 trim 求值坐标只经过
+balance。trim 标量乘到该对象的整条声像增益向量后，再累加到输出声道。LFE 直接通过。
 
 ## 13. OAMD 时间对齐与增益斜坡
 

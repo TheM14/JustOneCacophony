@@ -2,11 +2,11 @@
 
 [中文版](README.md)
 
-> JustOneCacophony is an experimental/test implementation of E-AC-3 JOC for studying JOC parsing, reconstruction, rendering, and the associated mathematics.
+> JustOneCacophony implements E-AC-3 JOC parsing, object reconstruction and rendering.
 
 The project can extract and parse EMDF, ID14 JOC parameters, and ID11 OAMD metadata from common E-AC-3 JOC streams. It combines those data with the core PCM decoded by FFmpeg (N=5 or 7 full-band channels), reconstructs LFE plus 15 object channels, and writes ADM BWF, a WAV file for a selected speaker layout, or binaural stereo (a Rosella personalized model, or a compiled `.jochrtf`).
 
-This is research code, not a complete, standards-compliant, or production-grade JOC decoder. It covers only the stream forms currently implemented. Unknown variants fail explicitly—because when the math goes wrong, all that may remain is the cacophony.
+It covers the currently implemented stream forms. Unknown variants fail explicitly.
 
 ## Current features
 
@@ -225,12 +225,12 @@ path:
 
 - `1` (default): the public bank, 13-tap hybrid / 6-slot high-band delay,
   961 samples of latency;
-- `2`: the Rosella bank captured from the reference renderer, 11-tap hybrid /
+- `2`: the 11-tap Rosella bank, 11-tap hybrid /
   3-slot high-band delay, 448 samples of latency.
 
 The option only applies to the Rosella model; the SOFA and `.jochrtf` paths
 reject it. See [Rosella filterbank](docs/rosella_filterbank.en.md) for the
-parameters, buffers, latency and validation of both banks.
+parameters, buffers and latency of both banks.
 
 For all options:
 
@@ -238,7 +238,7 @@ For all options:
 python main.py --help
 ```
 
-Without `-o`, output still goes to `output/` at the repository root. The directory move intentionally preserves this behavior.
+Without `-o`, output goes to `output/` at the repository root.
 
 ## Speaker layouts and channel order
 
@@ -312,7 +312,7 @@ See the [mathematical notes](docs/math.en.md) for the equations used by the deco
 - The extra pair's identity follows TS 103 420 Table 47/Table 48 ($k=1\to$Lb/Rb, $k\in\{2,4\}\to$Tfl/Tfr, $N=5,7,7,5,7$); Annex E.3 requires a dependent-substream `chanmap`, when present, to indicate one of the Table 47 configurations, so `*_5_1_2top_*` (chanmap says Lts/Rts) does not satisfy that "shall". Such material is tolerated with a diagnostic instead of being refused.
 - An audio frame with no JOC EMDF at all (for example when the encoder wrote none for the first frame) emits silent object channels and is recorded in the `[diagnostics]` line and the JSON report's `diagnostics` field.
 - The speaker and SOFA binaural paths currently cover ordinary point objects; extent, spread, diffuse, divergence, channel lock, and similar controls are outside the supported scope.
-- OAMD trim elements are boundary-checked and skipped; warp, balance, and trim parameters are not applied to raw object trajectories or speaker rendering.
+- Speaker rendering reads warp 0/1, trims and front/back balance from OAMD, with no CLI warp override. Modes 2/3 are explicitly unsupported. Source trajectories and binaural remain free of these speaker controls; see [mathematics §12](docs/math.en.md) for parameters and evaluation order.
 - Multi-data-point streams, uncommon band configurations, and unusual OAMD scheduling have less coverage than common 12-band, single-data-point material.
 - `joc_clipgain` is folded into the **analysis-side scalar** (`scalar = 1/16 x g`, with `g` from the
   `x:3 | y:5` field), so the x16 at the output cancels the 1/16 and the clamp sits **after** the gain.

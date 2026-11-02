@@ -2,11 +2,11 @@
 
 [English](README.en.md)
 
-> JustOneCacophony 是一个 E-AC-3 JOC 的实验性 / 测试实现，用于研究 JOC 的解析、重建、渲染以及相关数学过程。
+> JustOneCacophony 实现 E-AC-3 JOC 的解析、对象重建与渲染。
 
 项目可以从常见 E-AC-3 JOC 码流中提取并解析 EMDF、ID14 JOC 参数和 ID11 OAMD 元数据，结合 FFmpeg 解码出的核心 PCM（N=5 或 7 个全频段通道）重建 LFE 与 15 路对象 PCM，并输出 ADM BWF、指定扬声器布局的 WAV，或输出双耳 WAV（Rosella 个性化模型，或已编译的 `.jochrtf`）。
 
-这是研究代码，不是完整、标准兼容或生产级的 JOC 解码器。它只覆盖当前已实现的码流形态；遇到未知变体时会明确报错，而不是假装一切都很和谐——如果哪里算错了，它可能就真的只剩 cacophony 了。
+当前覆盖已实现的码流形态；遇到未知变体时明确报错。
 
 ## 当前功能
 
@@ -193,11 +193,11 @@ outer subpayload offset 与 block offset 落到绝对 sample timeline，再加�
 `--rosella-filterbank 1|2` 选择 `.personalized_headphone` 路径使用的滤波器组：
 
 - `1`（默认）：公开滤波器组，13-tap hybrid / 6-slot 高频延迟，961 samples 延迟；
-- `2`：从参考渲染器捕获的 Rosella 滤波器组，11-tap hybrid / 3-slot 高频延迟，
+- `2`：11-tap Rosella 滤波器组，11-tap hybrid / 3-slot 高频延迟，
   448 samples 延迟。
 
 该选项只作用于 Rosella 模型；SOFA 与 `.jochrtf` 路径给出时报错。两套实现的参数、
-缓冲、延迟与验证见 [Rosella 滤波器组](docs/rosella_filterbank.md)。
+缓冲与延迟见 [Rosella 滤波器组](docs/rosella_filterbank.md)。
 
 更多参数可查看：
 
@@ -205,7 +205,7 @@ outer subpayload offset 与 block offset 落到绝对 sample timeline，再加�
 python main.py --help
 ```
 
-未指定 `-o` 时，输出仍写入仓库根目录的 `output/`。这是文件移动后特意保持的原有行为。
+未指定 `-o` 时，输出写入仓库根目录的 `output/`。
 
 ## 扬声器布局与声道顺序
 
@@ -274,7 +274,7 @@ JustOneCacophony/
 - 额外那一对的身份以 TS 103 420 Table 47/Table 48 为准（$k=1\to$Lb/Rb，$k\in\{2,4\}\to$Tfl/Tfr，$N=5,7,7,5,7$）；Annex E.3 规定依赖子流的 `chanmap`（若存在）**应**指明 Table 47 的某种配置，因此 `*_5_1_2top_*`（chanmap 写 Lts/Rts）属于不满足 "shall" 的素材，我们按"记诊断 + 继续解码"容错处理。
 - 音频帧内没有任何 JOC EMDF 时（例如编码器未写首帧元数据），该帧的对象通道静音，并在 stderr 的 `[diagnostics]` 与 JSON 报告的 `diagnostics` 里记一笔。
 - 扬声器与 SOFA 双耳路径当前只覆盖普通点对象；extent、spread、diffuse、divergence、channel lock 等对象控制不在支持范围内。
-- OAMD trim element 会按声明边界校验并跳过；warp、balance 和 trim 参数不应用于当前原始对象轨迹或扬声器渲染。
+- 扬声器渲染从 OAMD 元数据读取 warp 0/1、trim 和 front/back balance；命令行不提供 warp 覆盖。warp 2/3 暂未实现，遇到时明确报错。原始对象轨迹与 binaural 不预烘焙这些扬声器控制，参数和顺序见 [数学说明 §12](docs/math.md)。
 - 多数据点、少见参数带配置和特殊 OAMD 调度的覆盖度低于常见 12-band、单数据点素材。
 - `joc_clipgain` 在**分析端**并入分析标量：`标量 = 1/16 × g`（`g = 1 + (y/32)·2^(x−4)`），出口的
   ×16 抵消 1/16，净效果是 `×g`，clamp 因此处在增益**之后**。标量按帧保存两个槽（上一帧值 → 本帧值），

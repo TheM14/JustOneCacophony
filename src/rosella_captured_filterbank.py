@@ -1,16 +1,8 @@
-"""Captured Rosella 64-QMF / 77-hybrid filterbank.
+"""Rosella 64-QMF / 77-hybrid filterbank with an 11-tap hybrid analysis.
 
-The Rosella headphone renderer selects its analysis and synthesis callbacks
-during preparation, after initialization.  The callbacks it actually runs are
-this bank: a 640-coefficient QMF prototype, an 11-tap hybrid analysis with a
-3-slot high-band delay, and a 448-sample analysis/synthesis latency.  The shared
-public bank lives in ``rosella_filterbank.py`` and differs in every one of those
-parameters (13-tap hybrid, 6-slot delay, 961-sample latency).
-
-The tables are the float32 values the C++ core compiles in as
-``src/hrtf/rosella_filterbank_tables.h``; ``data/rosella_captured_kernels.npz``
-holds the same numbers.  State is float64/complex128, like the rest of the
-reference implementation.
+Uses a 640-coefficient QMF prototype, a 3-slot high-band delay and a 448-sample
+analysis/synthesis latency. Tables in ``data/rosella_captured_kernels.npz`` are
+loaded as float64/complex128; processing state uses the same precision.
 """
 from __future__ import annotations
 
@@ -30,7 +22,7 @@ HYBRID_DELAY = 3
 HYBRID_LOW_BANDS = 16
 ANALYSIS_SYNTHESIS_LATENCY_SAMPLES = 448
 
-# The captured renderer's hybrid band order: destination[k] = low[HYBRID_ORDER[k]].
+# Hybrid band order: destination[k] = low[HYBRID_ORDER[k]].
 HYBRID_ORDER = (0, 7, 1, 6, 2, 9, 3, 4, 10, 5, 11, 15, 8, 12, 13, 14)
 
 # Bands 1 and 3 are conjugated after the permutation.
@@ -65,7 +57,7 @@ def _load_tables(path_string: str) -> dict[str, np.ndarray]:
 
 def load_kernel_tables(path: str | Path = DEFAULT_CAPTURED_KERNEL_DATA
                        ) -> dict[str, np.ndarray]:
-    """Load and cache the captured Rosella kernel tables."""
+    """Load and cache the 11-tap Rosella bank's kernel tables."""
     return _load_tables(str(Path(path).expanduser().resolve()))
 
 

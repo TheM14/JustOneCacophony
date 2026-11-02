@@ -5,12 +5,10 @@ The Rosella renderer can run either bank:
 ``PUBLIC_FILTERBANK`` (1)
     The shared public bank of ``rosella_filterbank.py``: a 13-tap hybrid
     analysis, a 6-slot high-band delay and 961 samples of analysis/synthesis
-    latency.  This is the bank the reference implementation has always used.
+    latency.
 
 ``CAPTURED_FILTERBANK`` (2)
-    The bank the reference headphone renderer actually runs, captured from it:
-    an 11-tap hybrid analysis, a 3-slot high-band delay and 448 samples of
-    latency.
+    An 11-tap hybrid analysis, a 3-slot high-band delay and 448 samples of latency.
 
 Both banks expose the same four stateful stages, so the choice changes the
 coefficients, the high-band delay, the history layout and the latency together.

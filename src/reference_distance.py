@@ -16,7 +16,7 @@ class DistanceState:
 
 
 class ReferenceDistanceProfileV1:
-    """Reference behavior, not a claim about any external public standard."""
+    """Near/Mid/Far distance presets with energy-normalized dry/room mixing."""
 
     DISTANCE_M = {
         "near": 1.00000465,
@@ -24,10 +24,8 @@ class ReferenceDistanceProfileV1:
         "far": 6.40177584,
     }
     MINIMUM_DISTANCE_M = 0.10
-    # Distance profiles in the reference renderer are presentation presets,
-    # not an instruction to attenuate already-authored programme PCM by 1/r.
-    # Use an energy-normalized dry/room crossfade instead.  The coefficient is
-    # an explicit project calibration target.
+    # Distance presets use an energy-normalized dry/room crossfade without
+    # applying 1/r attenuation to the programme PCM.
     ROOM_ENERGY_COUPLING_PER_M2 = 0.01318359375
     PUBLIC_ROOM_CALIBRATION_GAIN = 1.4
     # Public, project-owned room coupling; it is not a SOFA or Dolby constant.

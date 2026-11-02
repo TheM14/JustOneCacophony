@@ -446,14 +446,16 @@ $$
 $$
 
 For layouts with one horizontal surround pair rather than separate side and rear pairs (the 5.1
-family, and 4.0, which carries one rear pair only), the longitudinal coordinate is
+family, and 4.0, which carries one rear pair only), OAMD `warp_mode=1` uses
 
 $$
 v_{\mathrm{floor}}=
 \mathrm{clamp}(2v,0,1).
 $$
 
-Other layouts use $v_{\mathrm{floor}}=v$.
+Warp 0 and other layouts use $v_{\mathrm{floor}}=v$. The height layer is not scaled.
+An absent warp indication uses 0; no CLI override is provided. Modes 2/3 are
+explicitly unsupported rather than mapped to 0/1. Balance follows this scaling.
 
 ### 10.3 Height layer
 
@@ -473,6 +475,9 @@ $$
 $$
 
 ## 11. Layout-dependent position compensation
+
+This is the per-object gain for automatic trim. Disabled trim uses unity;
+explicit trim uses §12.2 instead, without multiplying automatic compensation again.
 
 Let $N_h$ be the number of relevant height speakers and $N_f$ the number of relevant additional horizontal speakers:
 
@@ -552,35 +557,53 @@ speakers by no / some / many height speakers".
 
 Trim and front-back balance apply to seven layouts only: 2.0, 3.1, 4.0, 5.1,
 5.1.2, 5.1.4 and 7.1.  Wider layouts (7.1.2, 7.1.4, 9.1.4, 9.1.6) are left
-untrimmed, with $G_c=1$ and $b=0$.
+untrimmed, with $g_t=1$ and $b=0$.
 
-### 12.2 Group levels
+Warp, trim and balance controls are read from OAMD metadata:
 
-Each configuration supplies one level $T_g$ in dB for the centre, surround and
-height groups. Only an explicit configuration contributes a static level:
+| Parameter | Value or unit | Behavior |
+|---|---|---|
+| `warp_mode` | 0 / 1 | Selects the floor Y mapping in §10.2; modes 2/3 are unsupported and rejected |
+| `global_trim_mode` | 0 / 1 / 2 | Automatic / disabled / per-layout configuration; reserved value 3 is rejected |
+| $T_s$, $T_h$ | dB | Explicit surround and height trim, with positive values treated as zero |
+| $T_c$ | dB | Signed explicit centre trim |
+| $b_{\mathrm{lis}}$, $b_{\mathrm{tb}}$ | $[-1,1]$, step $1/16$ | Listener-plane and overhead front-back balance |
+| Per-object trim bypass | Boolean | Disables the object's balance and trim gain while retaining warp |
+
+With global mode 2, the selected configuration's default or disabled flag
+chooses automatic or disabled trim. A missing configuration uses automatic;
+otherwise its explicit parameters apply. Automatic uses §11, disabled uses
+unity, and explicit uses §12.2. These modes are mutually exclusive.
+
+Without an initial trim element, warp is 0 and trim is automatic. A later
+payload without that element retains the previous controls; a new element
+updates them at the corresponding metadata event boundary. The CLI has no
+warp override.
+
+### 12.2 Per-object levels
+
+Centre, surround and height levels parameterize a position-dependent object
+gain; they are not fixed gains applied to the output channels after mixing.
+For original Y after balance $y_t$ and $z=\max(w,0)$:
 
 $$
-T_g=
-\begin{cases}
-\text{coded value}, & \text{explicit},\
-0, & \text{disabled},\
-0, & \text{automatic}.
-\end{cases}
+a_s=\mathrm{clamp}(2y_t,0,1)(1-z),\quad a_h=z,
 $$
 
-An automatic configuration carries no static group gain: the attenuation it
-describes is already applied per object by the position compensation of §11,
-and multiplying it in a second time would count it twice.
-
-The static gain of channel $c$ is
-
 $$
-G_c=10^{T_{g(c)}/20},
+a_c=1-\mathrm{clamp}\bigl(10\max(|z|-0.05,y_t-0.05,|u-0.5|-0.05),0,1\bigr).
 $$
 
-where $g(c)$ follows the channel label: centre maps to centre, side, rear and
-wide map to surround, top maps to height, and left, right and LFE stay at
-$G_c=1$.
+Explicit trim uses
+
+$$
+D=a_s\min(T_s,0)+a_h\min(T_h,0)+a_cT_c,\qquad g_t=10^{D/20}.
+$$
+
+The scalar multiplies the object's whole panning vector before accumulation.
+Automatic trim uses §11; disabled trim or per-object bypass uses unity. LFE
+passes through. Gain evaluation, panning interpolation and object accumulation
+use float64.
 
 ### 12.3 Front-back balance
 
@@ -618,18 +641,28 @@ $1$ at the back wall; $x$ and $z$ are unchanged.
 
 ### 12.4 Where it is applied
 
-The balance acts on the second component of the object position before
-panning:
+Let $B_z(y)$ denote the balance map of §12.3 and $W(y)$ the warp map of §10.2.
+The ordinary point-object path keeps three coordinates:
 
 $$
-y_o\longmapsto y_o',
+y_f=B_z(W(y)),\qquad y_h=B_z(y),\qquad y_t=B_z(y).
 $$
 
-while the group gain multiplies the panning result, that is $g_{o,c}$ in the
-mix formula of §14 becomes $G_c\,g_{o,c}$.
+Floor and height panning use $y_f,y_h$; trim evaluation uses $y_t$. The final gain is
 
-Warp takes no part in either step: it selects a downmix mode, affects only the
-downmix path, and leaves object coordinates untouched.
+$$
+g_{o,c}=G_{\mathrm{object}}\,g_t(u,y_t,z)\,P_c(u,y_f,y_h,z).
+$$
+
+Warp precedes balance, followed by trim/pan gain composition, but not every
+stage shares a warped Y. Balance requires explicit trim without object bypass;
+warp remains independent of trim state and bypass. Source positions are kept
+unchanged for ADM and binaural.
+
+Floor coordinates pass through warp and then balance before floor panning.
+Height and trim coordinates pass through balance alone. The trim scalar
+multiplies the object's entire panning vector before accumulation into output
+channels. LFE passes through.
 
 ## 13. OAMD time alignment and gain ramps
 

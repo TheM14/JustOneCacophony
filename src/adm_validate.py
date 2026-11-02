@@ -173,8 +173,8 @@ def main():
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("files", nargs="+")
-    ap.add_argument("--axml-file", default=None, help="用该文件内容替换 wav 内 axml（对照实验）")
-    ap.add_argument("--chna-file", default=None, help="用该文件内容替换 wav 内 chna（对照实验）")
+    ap.add_argument("--axml-file", default=None, help="用该文件内容替换 wav 内 axml")
+    ap.add_argument("--chna-file", default=None, help="用该文件内容替换 wav 内 chna")
     a = ap.parse_args()
     ax_o = open(a.axml_file, "rb").read() if a.axml_file else None
     ch_o = open(a.chna_file, "rb").read() if a.chna_file else None

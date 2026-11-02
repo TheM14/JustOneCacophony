@@ -12,15 +12,17 @@ FRAME_SAMPLES = 1536
 
 
 def create_speaker_renderer(layout: str | SpeakerLayout, bed_channels=None,
-                            trim_meta=None):
+                            trim_meta=None, *, parameters=None):
     """Create a stateful speaker renderer and return ``(renderer, info)``."""
     target = get_speaker_layout(layout) if isinstance(layout, str) else layout
     renderer = PythonSpeakerRenderer(target, bed_channels=bed_channels,
-                                     trim_meta=trim_meta)
+                                     trim_meta=trim_meta, parameters=parameters)
     return renderer, {
         "name": "python",
         "layout": target.name,
         "bed_objects": len(getattr(renderer, "bed_targets", {}) or {}),
+        "initial_warp_mode": renderer.parameters.warp_mode,
+        "initial_trim_mode": renderer.parameters.trim_mode,
     }
 
 

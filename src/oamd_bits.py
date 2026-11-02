@@ -391,8 +391,8 @@ def _parse_trim_element(reader, object_count, raw_payload):
         "configs": [None] * 9,
         "disable_per_obj": None,
     }
-    # global_trim_mode == 2 才携带 9 个配置的显式数据；其余取值表示内容
-    # 把 trim 交给渲染器自行推导（auto）。
+    # global_trim_mode: 0 自动、1 禁用、2 按配置显式指定、3 保留。
+    # 只有 2 才携带下面九个配置的显式数据。
     if trim["global_trim_mode"] == 2:
         for config in range(9):
             if reader.read(1):                       # b_default_trim
@@ -731,7 +731,7 @@ def frame_update(bits_one, *, retain_spatial=False):
         x, y, z = position
         out[(slot, "q1")] = q_of(x, N_Q12) if 0 <= x <= N_Q12 else None
         out[(slot, "q2")] = q_of(y, N_Q12) if 0 <= y <= N_Q12 else None
-        # Preserve legacy nonnegative height unless signed spatial output is requested.
+        # Clamp negative height to zero unless signed spatial output is requested.
         out[(slot, "q3")] = q_of(z, N_Q3) if (0 <= z <= N_Q3 or retain_spatial and -N_Q3 <= z < 0) else (
             0 if z < 0 else None)
 
@@ -773,7 +773,7 @@ def frame_update_values(bits_one):
 
 
 class JocFieldState:
-    """未更新/非法窗保持旧值；slot0 q1/q2 的 DLL 初值为中心 16384。"""
+    """未更新/非法窗保持旧值；slot0 q1/q2 初始为中心 16384。"""
 
     def __init__(self):
         self.q = {(obj, field): 0 for obj in range(16)

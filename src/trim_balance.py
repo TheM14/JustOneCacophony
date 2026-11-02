@@ -24,6 +24,11 @@ the axis and it leaves the two walls untouched.  See ``front_back``.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+import math
+
+from variant_error import UnsupportedVariantError
+
 # Layouts that carry trim and front-back balance semantics, by their compact
 # names: 2.0, 3.1, 4.0, 5.1, 5.1.2, 5.1.4 and 7.1.  Wider layouts leave the
 # programme untrimmed.
@@ -47,6 +52,93 @@ HEIGHT_LABELS = ("Ltf", "Rtf", "Ltr", "Rtr", "Ltm", "Rtm")
 BALANCE_STEPS = 16
 # Front-back balance keeps a 5 percent wall band at each end and leaves it unmapped.
 WALL = 0.05
+
+
+@dataclass(frozen=True)
+class SpeakerRenderParameters:
+    """Codec-independent, per-layout speaker controls; balances are in [-1,1].
+
+    Warp 2/3 intentionally have no rendering implementation yet. An absent
+    warp indication uses normal (0); no CLI override is provided.
+    """
+    warp_mode: int = 0
+    trim_mode: str = "automatic"
+    surround_db: float = 0.0
+    height_db: float = 0.0
+    centre_db: float = 0.0
+    listener_balance: float = 0.0
+    overhead_balance: float = 0.0
+    disable_per_object: tuple[bool, ...] = ()
+
+    def __post_init__(self):
+        if self.warp_mode in (2, 3):
+            raise UnsupportedVariantError(
+                "speaker", "warp_mode_not_implemented",
+                "Speaker rendering implements warp modes 0/1 only; 2/3 are reserved in E-AC-3 JOC",
+                details={"warp_mode": self.warp_mode})
+        if self.warp_mode not in (0, 1):
+            raise ValueError(f"invalid warp mode: {self.warp_mode!r}")
+        if self.trim_mode not in ("automatic", "disabled", "explicit"):
+            raise ValueError(f"invalid trim mode: {self.trim_mode!r}")
+        for value in (self.surround_db, self.height_db, self.centre_db):
+            if not math.isfinite(value):
+                raise ValueError("trim levels must be finite")
+        for value in (self.listener_balance, self.overhead_balance):
+            if not math.isfinite(value) or not -1.0 <= value <= 1.0:
+                raise ValueError("balance must be finite and in [-1,1]")
+
+    def bypasses(self, object_index):
+        return (0 <= object_index < len(self.disable_per_object)
+                and self.disable_per_object[object_index])
+
+
+def parameters_from_oamd(atmos_meta, layout):
+    """Adapt OAMD calibration to one layout, without changing source positions.
+
+    A config's default/disabled flag overrides global custom mode. Missing
+    custom configuration falls back to automatic.
+    """
+    meta = atmos_meta or {}
+    common = dict(warp_mode=meta.get("warp_mode", 0),
+                  disable_per_object=tuple(meta.get("disable_per_obj") or ()))
+    if not _supported(layout):
+        return SpeakerRenderParameters(**common, trim_mode="disabled")
+    mode = meta.get("global_trim_mode", 0)
+    if mode == 1:
+        return SpeakerRenderParameters(**common, trim_mode="disabled")
+    if mode not in (0, 1, 2):
+        raise UnsupportedVariantError(
+            "speaker", "trim_mode_not_implemented", "Reserved OAMD global trim mode",
+            details={"global_trim_mode": mode})
+    record = _record(meta, layout) if mode == 2 else None
+    if not isinstance(record, dict) or record.get("default"):
+        return SpeakerRenderParameters(**common)
+    if record.get("disabled"):
+        return SpeakerRenderParameters(**common, trim_mode="disabled")
+    # Surround/height are attenuation-only. Centre retains its signed level.
+    return SpeakerRenderParameters(
+        **common, trim_mode="explicit",
+        surround_db=min(float(record.get("surround", 0.0)), 0.0),
+        height_db=min(float(record.get("height", 0.0)), 0.0),
+        centre_db=float(record.get("centre", 0.0)),
+        listener_balance=float(record.get("bal3d_y_lis", 0.0)),
+        overhead_balance=float(record.get("bal3d_y_tb", 0.0)))
+
+
+def explicit_position_gain(parameters, x, y, z):
+    """Position-dependent *object* trim, evaluated at balance(original Y).
+
+    Surround fades in over Y=0..0.5 and out towards Z=1; height fades in
+    with Z. Centre trim is local to the front-centre region. The resulting
+    scalar multiplies the object's entire speaker gain vector, before mixing.
+    """
+    surround = min(max(2.0 * y, 0.0), 1.0) * (1.0 - z)
+    centre = 1.0 - min(max(10.0 * max(
+        abs(z) - WALL, y - WALL, abs(x - 0.5) - WALL), 0.0), 1.0)
+    db = (surround * min(parameters.surround_db, 0.0)
+          + z * min(parameters.height_db, 0.0)
+          + centre * parameters.centre_db)
+    return 10.0 ** (db / 20.0)
 
 
 def _height_class(count):
@@ -106,7 +198,10 @@ def group_levels_db(atmos_meta, layout):
 
 
 def channel_gains(atmos_meta, layout):
-    """Per-channel linear gain for the layout, in channel order."""
+    """Legacy diagnostic group levels, not the speaker rendering operation.
+
+    Rendering uses explicit_position_gain per object before accumulation.
+    """
     levels = group_levels_db(atmos_meta, layout)
     gains = []
     for label in getattr(layout, "channels", ()):

@@ -12,9 +12,10 @@ from typing import Iterable
 
 import numpy as np
 
-from oamd_bits import JocFieldState, frame_update
+from oamd_bits import JocFieldState, frame_update, parse_trim
 from speaker_layouts import RegionGeometry, SpeakerLayout, get_speaker_layout
-from trim_balance import apply_balance, balance_layers, channel_gains
+from trim_balance import (SpeakerRenderParameters, apply_balance,
+                          explicit_position_gain, parameters_from_oamd)
 
 Q15_SCALE = 32768.0
 Q15_MAX = 32767.0 / Q15_SCALE
@@ -35,9 +36,9 @@ def bed_object_targets(bed_channels) -> dict[int, tuple[float, float, float]]:
 
 
 def _all_object_targets(layout: SpeakerLayout, state: JocFieldState,
-                        bed_targets=None, balance=(0.0, 0.0)) -> np.ndarray:
+                        bed_targets=None, parameters=None) -> np.ndarray:
     bed_targets = bed_targets or {}
-    listener, overhead = balance
+    parameters = parameters or parameters_from_oamd(None, layout)
     result = np.zeros((15, layout.channel_count), dtype=np.float64)
     for object_index in range(1, 16):
         fixed = bed_targets.get(object_index)
@@ -47,9 +48,9 @@ def _all_object_targets(layout: SpeakerLayout, state: JocFieldState,
             u = state.q[(object_index, "q1")] / Q15_SCALE
             v = state.q[(object_index, "q2")] / Q15_SCALE
             w = state.q[(object_index, "q3")] / Q15_SCALE
-            v = apply_balance(v, w, listener, overhead)
         result[object_index - 1] = render_point_gains(
-            layout, u, v, w, standard_order=False)
+            layout, u, v, w, standard_order=False, parameters=parameters,
+            bypass_trim=parameters.bypasses(object_index))
     return result
 
 
@@ -175,16 +176,30 @@ def _plane_gains(region: RegionGeometry, coordinates: np.ndarray, groups,
 
 def render_point_gains(layout: str | SpeakerLayout, u: float, v: float, w: float,
                        *, region_index: int = 0, enable_height: bool = True,
-                       object_gain: float = 1.0, standard_order: bool = True) -> np.ndarray:
+                       object_gain: float = 1.0, standard_order: bool = True,
+                       parameters: SpeakerRenderParameters | None = None,
+                       bypass_trim: bool = False) -> np.ndarray:
     """Render one point object to a target speaker layout using float64."""
     target = get_speaker_layout(layout) if isinstance(layout, str) else layout
+    controls = parameters or parameters_from_oamd(None, target)
     region = target.regions[int(region_index)]
     coordinates = _coordinates(region)
-    floor_v = min(max(math.ldexp(float(v), floor_y_exponent(target.speaker_bitfield)), 0.0), 1.0)
+    v, w = float(v), max(float(w), 0.0)
+    floor_v = min(max(math.ldexp(v, floor_y_exponent(
+        target.speaker_bitfield, controls.warp_mode == 1)), 0.0), 1.0)
+    top_v = min(max(v, 0.0), 1.0)
+    trim_v = v
+    if controls.trim_mode == "explicit" and not bypass_trim:
+        # Apply warp -> balance for floor, balance(original Y) for
+        # top and trim. These coordinates must not be collapsed into one Y.
+        listener, overhead = controls.listener_balance, controls.overhead_balance
+        floor_v = apply_balance(floor_v, w, listener, overhead)
+        top_v = apply_balance(top_v, w, listener, overhead)
+        trim_v = apply_balance(v, w, listener, overhead)
     floor = _plane_gains(region, coordinates, region.axis0_groups, u, floor_v, region.mode)
     point_gains = floor
     if region.mode == 3:
-        top = _plane_gains(region, coordinates, region.axis1_groups, u, float(v), 3)
+        top = _plane_gains(region, coordinates, region.axis1_groups, u, top_v, 3)
         height = min(max(float(w) if enable_height else 0.0, 0.0), Q15_MAX)
         if height >= Q15_MAX:
             point_gains = top
@@ -192,7 +207,12 @@ def render_point_gains(layout: str | SpeakerLayout, u: float, v: float, w: float
             floor_weight, height_weight = equal_power_pair(height)
             point_gains = floor * floor_weight + top * height_weight
     internal = np.zeros(target.channel_count, dtype=np.float64)
-    gain = position_gain(target.speaker_bitfield, v, w) * float(object_gain)
+    gain = float(object_gain)
+    if not bypass_trim:
+        if controls.trim_mode == "automatic":
+            gain *= position_gain(target.speaker_bitfield, trim_v, w)
+        elif controls.trim_mode == "explicit":
+            gain *= explicit_position_gain(controls, u, trim_v, w)
     for point_gain, speaker_id in zip(point_gains, region.speaker_ids):
         internal[speaker_id] = point_gain * gain
     if standard_order:
@@ -213,18 +233,20 @@ class PythonSpeakerRenderer:
     """Stateful float64 speaker renderer."""
 
     def __init__(self, layout: str | SpeakerLayout, block_size: int = 32,
-                 bed_channels=None, trim_meta=None):
+                 bed_channels=None, trim_meta=None, *, parameters=None):
         self.layout = get_speaker_layout(layout) if isinstance(layout, str) else layout
         self.block_size = int(block_size)
         if self.block_size <= 0:
             raise ValueError("block_size must be positive")
         self.bed_targets = bed_object_targets(bed_channels)
-        self.trim_gains = np.asarray(channel_gains(trim_meta, self.layout),
-                                     dtype=np.float64)
-        self.balance = balance_layers(trim_meta, self.layout)
+        if parameters is not None and trim_meta is not None:
+            raise ValueError("pass normalized parameters or OAMD trim_meta, not both")
+        self._parameters_override = parameters
+        self._initial_parameters = parameters or parameters_from_oamd(trim_meta, self.layout)
         self.reset()
 
     def reset(self):
+        self.parameters = self._initial_parameters
         channels = self.layout.channel_count
         self._state = JocFieldState()
         self._current = np.zeros((15, channels), dtype=np.float64)
@@ -235,9 +257,13 @@ class PythonSpeakerRenderer:
 
     def _apply_payload(self, payload):
         update = frame_update(payload)
+        if self._parameters_override is None:
+            trim = parse_trim(payload)
+            if trim is not None:
+                self.parameters = parameters_from_oamd(trim, self.layout)
         self._state.apply(update["values"])
         new_target = _all_object_targets(self.layout, self._state, self.bed_targets,
-                                         self.balance)
+                                         self.parameters)
         blocks = ramp_block_count(update["ramp_duration_samples"], self.block_size)
         difference = new_target - self._current
         significant = np.abs(difference) >= GAIN_SNAP_THRESHOLD
@@ -306,7 +332,6 @@ class PythonSpeakerRenderer:
 
         for payload in events_by_block.get(total_blocks, ()):
             self._apply_payload(payload)
-        output *= self.trim_gains[None, :]
         if standard_order:
             return output[:, list(self.layout.internal_to_standard)]
         return output
@@ -321,9 +346,11 @@ class PythonSpeakerRenderer:
 
 def render_objects16(objects16: np.ndarray, payload_events: Iterable[tuple[int, bytes]],
                      layout: str | SpeakerLayout, *, block_size: int = 32,
-                     standard_order: bool = True, output: np.ndarray | None = None) -> np.ndarray:
+                     standard_order: bool = True, output: np.ndarray | None = None,
+                     trim_meta=None, parameters=None) -> np.ndarray:
     """Render a complete interleaved LFE + 15 object stream."""
-    renderer = PythonSpeakerRenderer(layout, block_size=block_size)
+    renderer = PythonSpeakerRenderer(layout, block_size=block_size,
+                                     trim_meta=trim_meta, parameters=parameters)
     return renderer.process(objects16, payload_events, standard_order=standard_order, output=output)
 
 def payload_events_from_index(index, frame_count: int, *, frame_samples: int = 1536,
