@@ -14,6 +14,7 @@ import numpy as np
 
 from oamd_bits import JocFieldState, frame_update
 from speaker_layouts import RegionGeometry, SpeakerLayout, get_speaker_layout
+from trim_balance import apply_balance, balance_layers, channel_gains
 
 Q15_SCALE = 32768.0
 Q15_MAX = 32767.0 / Q15_SCALE
@@ -34,8 +35,9 @@ def bed_object_targets(bed_channels) -> dict[int, tuple[float, float, float]]:
 
 
 def _all_object_targets(layout: SpeakerLayout, state: JocFieldState,
-                        bed_targets=None) -> np.ndarray:
+                        bed_targets=None, balance=(0.0, 0.0)) -> np.ndarray:
     bed_targets = bed_targets or {}
+    listener, overhead = balance
     result = np.zeros((15, layout.channel_count), dtype=np.float64)
     for object_index in range(1, 16):
         fixed = bed_targets.get(object_index)
@@ -45,6 +47,7 @@ def _all_object_targets(layout: SpeakerLayout, state: JocFieldState,
             u = state.q[(object_index, "q1")] / Q15_SCALE
             v = state.q[(object_index, "q2")] / Q15_SCALE
             w = state.q[(object_index, "q3")] / Q15_SCALE
+            v = apply_balance(v, w, listener, overhead)
         result[object_index - 1] = render_point_gains(
             layout, u, v, w, standard_order=False)
     return result
@@ -210,12 +213,15 @@ class PythonSpeakerRenderer:
     """Stateful float64 speaker renderer."""
 
     def __init__(self, layout: str | SpeakerLayout, block_size: int = 32,
-                 bed_channels=None):
+                 bed_channels=None, trim_meta=None):
         self.layout = get_speaker_layout(layout) if isinstance(layout, str) else layout
         self.block_size = int(block_size)
         if self.block_size <= 0:
             raise ValueError("block_size must be positive")
         self.bed_targets = bed_object_targets(bed_channels)
+        self.trim_gains = np.asarray(channel_gains(trim_meta, self.layout),
+                                     dtype=np.float64)
+        self.balance = balance_layers(trim_meta, self.layout)
         self.reset()
 
     def reset(self):
@@ -230,7 +236,8 @@ class PythonSpeakerRenderer:
     def _apply_payload(self, payload):
         update = frame_update(payload)
         self._state.apply(update["values"])
-        new_target = _all_object_targets(self.layout, self._state, self.bed_targets)
+        new_target = _all_object_targets(self.layout, self._state, self.bed_targets,
+                                         self.balance)
         blocks = ramp_block_count(update["ramp_duration_samples"], self.block_size)
         difference = new_target - self._current
         significant = np.abs(difference) >= GAIN_SNAP_THRESHOLD
@@ -299,6 +306,7 @@ class PythonSpeakerRenderer:
 
         for payload in events_by_block.get(total_blocks, ()):
             self._apply_payload(payload)
+        output *= self.trim_gains[None, :]
         if standard_order:
             return output[:, list(self.layout.internal_to_standard)]
         return output

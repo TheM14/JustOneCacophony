@@ -519,7 +519,119 @@ G_{\mathrm{pos}}
 \mathbf G_{\mathrm{point}}.
 $$
 
-## 12. OAMD time alignment and gain ramps
+## 12. OAMD trim and front-back balance
+
+### 12.1 Configuration selection
+
+The OAMD trim element splits a programme's calibration data into nine
+configurations, chosen by the target layout's additional horizontal speaker
+count $N_f$ and height speaker count $N_h$:
+
+$$
+\kappa_f(N)=
+\begin{cases}
+0, & N=0,\\
+1, & N\in\{2,3\},\\
+2, & \text{otherwise},
+\end{cases}
+\qquad
+\kappa_h(N)=
+\begin{cases}
+0, & N=0,\\
+1, & N=2,\\
+2, & \text{otherwise}.
+\end{cases}
+$$
+
+$$
+c_{\mathrm{trim}}=\kappa_f(N_f)+3\,\kappa_h(N_h).
+$$
+
+The nine configurations enumerate "no / some / many additional horizontal
+speakers by no / some / many height speakers".
+
+Trim and front-back balance apply to seven layouts only: 2.0, 3.1, 4.0, 5.1,
+5.1.2, 5.1.4 and 7.1.  Wider layouts (7.1.2, 7.1.4, 9.1.4, 9.1.6) are left
+untrimmed, with $G_c=1$ and $b=0$.
+
+### 12.2 Group levels
+
+Each configuration supplies one level $T_g$ in dB for the centre, surround and
+height groups. Only an explicit configuration contributes a static level:
+
+$$
+T_g=
+\begin{cases}
+\text{coded value}, & \text{explicit},\
+0, & \text{disabled},\
+0, & \text{automatic}.
+\end{cases}
+$$
+
+An automatic configuration carries no static group gain: the attenuation it
+describes is already applied per object by the position compensation of §11,
+and multiplying it in a second time would count it twice.
+
+The static gain of channel $c$ is
+
+$$
+G_c=10^{T_{g(c)}/20},
+$$
+
+where $g(c)$ follows the channel label: centre maps to centre, side, rear and
+wide map to surround, top maps to height, and left, right and LFE stay at
+$G_c=1$.
+
+### 12.3 Front-back balance
+
+Each configuration also carries two front-back balance values:
+$b_{\mathrm{lis}}$ for the listener plane and $b_{\mathrm{tb}}$ for the overhead
+layer. Both are quantised to a $1/16$ grid and are non-zero only in an explicit
+configuration.
+
+Writing $n=\mathrm{round}(16\,|b|)$ and $s=n/18$, the single-layer map is
+
+$$
+B_b(y)=
+\begin{cases}
+y, & y\le 0.05\ \text{or}\ y\ge 0.95,\\[2pt]
+(1+s)y-0.05s, & 0.05<y<0.5,\ b>0,\\[2pt]
+(1-s)(y-0.5)+0.5+0.45s, & 0.5\le y<0.95,\ b>0,\\[2pt]
+(1-s)y+0.05s, & 0.05<y<0.5,\ b<0,\\[2pt]
+(1+s)(y-0.5)+0.5-0.45s, & 0.5\le y<0.95,\ b<0.
+\end{cases}
+$$
+
+It maps $[0.05,0.95]$ monotonically onto itself: the two walls stay fixed, the
+two halves meet at $y=0.5$, and their slopes are $1+s$ and $1-s$. The 5 percent
+wall bands and the case $b=0$ pass through unchanged, so the map never leaves
+the interval and needs no extra clamp.
+
+The height $w$ blends the two layers:
+
+$$
+y'=(1-w)\,B_{b_{\mathrm{lis}}}(y)+w\,B_{b_{\mathrm{tb}}}(y).
+$$
+
+The front-back axis $y$ is oriented as in §9, with $0$ at the front wall and
+$1$ at the back wall; $x$ and $z$ are unchanged.
+
+### 12.4 Where it is applied
+
+The balance acts on the second component of the object position before
+panning:
+
+$$
+y_o\longmapsto y_o',
+$$
+
+while the group gain multiplies the panning result, that is $g_{o,c}$ in the
+mix formula of §14 becomes $G_c\,g_{o,c}$.
+
+Warp takes no part in either step: it selects a downmix mode, affects only the
+downmix path, and leaves object coordinates untouched.
+
+## 13. OAMD time alignment and gain ramps
 
 The coded position of an OAMD update is
 
@@ -575,7 +687,7 @@ $$
 
 If no new metadata update intervenes, this is equivalent to a sample-wise linear ramp of total length $KB$.
 
-## 13. Final speaker mix
+## 14. Final speaker mix
 
 For target output channel $c$:
 
@@ -607,9 +719,11 @@ y_{24}[n]=
 \right).
 $$
 
-## 14. Scope of the formulas
+## 15. Scope of the formulas
 
 - The JOC matrix section covers both the dense MTX and the sparse IDX/VEC differential syntax.
 - The speaker-panning section describes ordinary point objects; extent, spread, divergence, and similar modes require additional models.
 - Multiple OAMD position blocks must be scheduled in time order.
 - A limiter is separate post-processing and is not included in the mixing equations above.
+- Trim and front-back balance apply to speaker rendering only;
+  binaural rendering reads neither of them.

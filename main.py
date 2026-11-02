@@ -699,8 +699,10 @@ def main(argv=None):
             timings["create_binaural_renderer"] = 0.0
             layout = get_speaker_layout(args.speaker_layout)
             speaker_name = speaker_layout_display_name(layout)
+            speaker_meta = oamd_tracks.read_atmos_meta(index)
             speaker_decoder, speaker_backend_info = create_speaker_renderer(
-                layout, bed_channels=getattr(index, "bed_channels", ()))
+                layout, bed_channels=getattr(index, "bed_channels", ()),
+                trim_meta=speaker_meta)
             print(f"[speaker] layout={speaker_name} backend={speaker_backend_info['name']} "
                   f"channels={layout.channel_count}", flush=True)
             spool = SpeakerPcmSpool(

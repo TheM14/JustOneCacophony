@@ -11,10 +11,12 @@ from speaker_renderer import PythonSpeakerRenderer, payload_events_from_index, r
 FRAME_SAMPLES = 1536
 
 
-def create_speaker_renderer(layout: str | SpeakerLayout, bed_channels=None):
+def create_speaker_renderer(layout: str | SpeakerLayout, bed_channels=None,
+                            trim_meta=None):
     """Create a stateful speaker renderer and return ``(renderer, info)``."""
     target = get_speaker_layout(layout) if isinstance(layout, str) else layout
-    renderer = PythonSpeakerRenderer(target, bed_channels=bed_channels)
+    renderer = PythonSpeakerRenderer(target, bed_channels=bed_channels,
+                                     trim_meta=trim_meta)
     return renderer, {
         "name": "python",
         "layout": target.name,
