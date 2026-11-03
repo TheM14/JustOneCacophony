@@ -58,8 +58,9 @@ WALL = 0.05
 class SpeakerRenderParameters:
     """Codec-independent, per-layout speaker controls; balances are in [-1,1].
 
-    Warp 2/3 intentionally have no rendering implementation yet. An absent
-    warp indication uses normal (0); no CLI override is provided.
+    Warp 0 renders directly, 1 scales floor Y, and 2/3 render through an
+    expanded surround layout before PLIIx/Lo/Ro folding. An absent warp
+    indication uses normal (0); no CLI override is provided.
     """
     warp_mode: int = 0
     trim_mode: str = "automatic"
@@ -71,12 +72,7 @@ class SpeakerRenderParameters:
     disable_per_object: tuple[bool, ...] = ()
 
     def __post_init__(self):
-        if self.warp_mode in (2, 3):
-            raise UnsupportedVariantError(
-                "speaker", "warp_mode_not_implemented",
-                "Speaker rendering implements warp modes 0/1 only; 2/3 are reserved in E-AC-3 JOC",
-                details={"warp_mode": self.warp_mode})
-        if self.warp_mode not in (0, 1):
+        if self.warp_mode not in (0, 1, 2, 3):
             raise ValueError(f"invalid warp mode: {self.warp_mode!r}")
         if self.trim_mode not in ("automatic", "disabled", "explicit"):
             raise ValueError(f"invalid trim mode: {self.trim_mode!r}")

@@ -274,7 +274,7 @@ JustOneCacophony/
 - 额外那一对的身份以 TS 103 420 Table 47/Table 48 为准（$k=1\to$Lb/Rb，$k\in\{2,4\}\to$Tfl/Tfr，$N=5,7,7,5,7$）；Annex E.3 规定依赖子流的 `chanmap`（若存在）**应**指明 Table 47 的某种配置，因此 `*_5_1_2top_*`（chanmap 写 Lts/Rts）属于不满足 "shall" 的素材，我们按"记诊断 + 继续解码"容错处理。
 - 音频帧内没有任何 JOC EMDF 时（例如编码器未写首帧元数据），该帧的对象通道静音，并在 stderr 的 `[diagnostics]` 与 JSON 报告的 `diagnostics` 里记一笔。
 - 扬声器与 SOFA 双耳路径当前只覆盖普通点对象；extent、spread、diffuse、divergence、channel lock 等对象控制不在支持范围内。
-- 扬声器渲染从 OAMD 元数据读取 warp 0/1、trim 和 front/back balance；命令行不提供 warp 覆盖。warp 2/3 暂未实现，遇到时明确报错。原始对象轨迹与 binaural 不预烘焙这些扬声器控制，参数和顺序见 [数学说明 §12](docs/math.md)。
+- 扬声器渲染从 OAMD 元数据读取 warp、trim 和 front/back balance；命令行不提供 warp 覆盖。通用渲染参数支持 warp 0/1，以及先渲染到 7.1.x 再按 PLIIx 或 Standard（Lo/Ro）折回 5.1.x 的 warp 2/3；校准参数始终按最终目标布局选择。原始对象轨迹与 binaural 不预处理这些扬声器控制，参数和顺序见 [数学说明 §12](docs/math.md)。
 - 多数据点、少见参数带配置和特殊 OAMD 调度的覆盖度低于常见 12-band、单数据点素材。
 - `joc_clipgain` 在**分析端**并入分析标量：`标量 = 1/16 × g`（`g = 1 + (y/32)·2^(x−4)`），出口的
   ×16 抵消 1/16，净效果是 `×g`，clamp 因此处在增益**之后**。标量按帧保存两个槽（上一帧值 → 本帧值），

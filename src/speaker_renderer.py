@@ -7,6 +7,7 @@ writes a lower-precision output format.
 from __future__ import annotations
 
 from collections import defaultdict
+from functools import lru_cache
 import math
 from typing import Iterable
 
@@ -182,11 +183,81 @@ def render_point_gains(layout: str | SpeakerLayout, u: float, v: float, w: float
     """Render one point object to a target speaker layout using float64."""
     target = get_speaker_layout(layout) if isinstance(layout, str) else layout
     controls = parameters or parameters_from_oamd(None, target)
+    source = _surround_fold_layout(target) if controls.warp_mode in (2, 3) else target
+    # Geometry may expand to 7.1.x; calibration always uses the final layout.
+    internal = _render_point_gains(source, u, v, w, region_index=region_index,
+                                   enable_height=enable_height, object_gain=object_gain,
+                                   parameters=controls, bypass_trim=bypass_trim,
+                                   compensation_bitfield=target.speaker_bitfield)
+    if source is not target:
+        internal = _surround_fold_matrix(source.speaker_bitfield, target.speaker_bitfield,
+                                         controls.warp_mode) @ internal
+    if standard_order:
+        return internal[list(target.internal_to_standard)]
+    return internal
+
+
+@lru_cache(maxsize=16)
+def _surround_fold_layout(target: SpeakerLayout) -> SpeakerLayout:
+    """Add a rear pair for one-pair surround layouts, keeping the height layer."""
+    if not floor_y_exponent(target.speaker_bitfield):
+        return target
+    expanded = {"51": "71", "512": "712", "514": "714"}
+    if target.name in expanded:
+        return get_speaker_layout(expanded[target.name])
+    if target.name != "40":
+        raise ValueError(f"unsupported surround fold layout: {target.name}")
+    # 4.0 expands to six full-band speakers without adding centre or LFE.
+    base = get_speaker_layout("71")
+    regions = []
+    speaker_ids = {0: 0, 1: 1, 4: 2, 5: 3, 6: 4, 7: 5}
+    for region in base.regions:
+        kept = [i for i, speaker in enumerate(region.speaker_ids) if speaker in speaker_ids]
+        indices = {old: new for new, old in enumerate(kept)}
+        def groups(items):
+            return tuple(tuple(indices[i] for i in group if i in indices)
+                         for group in items if any(i in indices for i in group))
+        regions.append(RegionGeometry(
+            tuple(region.coordinates_q15[i] for i in kept),
+            tuple(speaker_ids[region.speaker_ids[i]] for i in kept),
+            groups(region.axis0_groups), groups(region.axis1_groups), region.mode))
+    return SpeakerLayout("60", 255, target.speaker_bitfield | 0x10,
+                         ("L", "R", "Ls", "Rs", "Lrs", "Rrs"),
+                         tuple(range(6)), tuple(regions))
+
+
+@lru_cache(maxsize=32)
+def _surround_fold_matrix(source_bitfield: int, target_bitfield: int,
+                          warp_mode: int) -> np.ndarray:
+    """Copy shared speakers and fold the rear pair into the target surround pair."""
+    def speakers(bitfield):
+        mask = expand_speaker_bitfield(bitfield)
+        return tuple(i for i in range(mask.bit_length()) if mask & (1 << i))
+    source, target = speakers(source_bitfield), speakers(target_bitfield)
+    matrix = np.zeros((len(target), len(source)), dtype=np.float64)
+    same_side, cross_side = (math.sqrt(3.0) / 2.0, 0.5) if warp_mode == 2 else (1.0, 0.0)
+    # Speaker IDs 4/5 are side surrounds; 6/7 are the rear pair.
+    for column, speaker in enumerate(source):
+        if speaker in target:
+            matrix[target.index(speaker), column] = 1.0
+        elif speaker in (6, 7):
+            matrix[target.index(speaker - 2), column] = same_side
+            matrix[target.index(5 if speaker == 6 else 4), column] = cross_side
+    matrix.flags.writeable = False
+    return matrix
+
+
+def _render_point_gains(target: SpeakerLayout, u: float, v: float, w: float,
+                        *, region_index: int, enable_height: bool, object_gain: float,
+                        parameters: SpeakerRenderParameters, bypass_trim: bool,
+                        compensation_bitfield: int) -> np.ndarray:
+    """Evaluate point gains before any surround fold or output-channel reorder."""
+    controls = parameters
     region = target.regions[int(region_index)]
     coordinates = _coordinates(region)
     v, w = float(v), max(float(w), 0.0)
     floor_v = min(max(math.ldexp(v, floor_y_exponent(
-        target.speaker_bitfield, controls.warp_mode == 1)), 0.0), 1.0)
+        target.speaker_bitfield, controls.warp_mode != 0)), 0.0), 1.0)
     top_v = min(max(v, 0.0), 1.0)
     trim_v = v
     if controls.trim_mode == "explicit" and not bypass_trim:
@@ -210,13 +281,11 @@ def render_point_gains(layout: str | SpeakerLayout, u: float, v: float, w: float
     gain = float(object_gain)
     if not bypass_trim:
         if controls.trim_mode == "automatic":
-            gain *= position_gain(target.speaker_bitfield, trim_v, w)
+            gain *= position_gain(compensation_bitfield, trim_v, w)
         elif controls.trim_mode == "explicit":
             gain *= explicit_position_gain(controls, u, trim_v, w)
     for point_gain, speaker_id in zip(point_gains, region.speaker_ids):
         internal[speaker_id] = point_gain * gain
-    if standard_order:
-        return internal[list(target.internal_to_standard)]
     return internal
 
 
