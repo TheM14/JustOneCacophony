@@ -23,10 +23,11 @@ inline constexpr int kBalanceSteps = 16;
 //   kappa_h: 0 -> 0, 2 -> 1, otherwise 2
 int trim_config_index(const LayoutInfo& layout);
 
-// Converts OAMD calibration to the speaker controls of one layout.  Warp modes
-// 2/3 and the reserved global trim mode are reported as unsupported.  A null
-// trim selects warp 0 and automatic trim, or disabled trim for a layout that
-// carries no trim semantics.
+// Converts OAMD calibration to the speaker controls of one layout.  Warp 0
+// renders directly, 1 scales the floor Y, and 2/3 render through an expanded
+// surround layout before folding; the reserved global trim mode is reported as
+// unsupported.  A null trim selects warp 0 and automatic trim, or disabled trim
+// for a layout that carries no trim semantics.
 Status parameters_from_oamd(const oamd::OamdTrim* trim, const LayoutInfo& layout,
                             ejoc_speaker_controls* out);
 

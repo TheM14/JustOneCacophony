@@ -143,11 +143,11 @@ downstream player recognises Dolby speaker positions on its own.
 `--speaker-layout` accepts only the eleven names in the table; anything else fails as an unknown
 layout.
 
-Speaker rendering reads warp 0/1, trim and front/back balance from the OAMD metadata; the CLI
-has no warp override, and warp 2/3 is reported as unsupported at render time. Trim and balance
-apply to the 2.0, 3.1, 4.0, 5.1, 5.1.2, 5.1.4 and 7.1 layouts. Source trajectories and binaural
-rendering do not pre-apply these controls; see [mathematics §12](docs/math.en.md) for the
-parameters and evaluation order.
+Speaker rendering reads warp, trim and front/back balance from the OAMD metadata; the CLI has no
+warp override. Warp 0/1 render directly; warp 2/3 render to a 7.1.x intermediate layout first,
+then fold back to 5.1.x with PLIIx or Standard (Lo/Ro) coefficients, and calibration always
+follows the final target layout. Source trajectories and binaural rendering do not pre-apply
+these controls; see [mathematics §12](docs/math.en.md) for the parameters and evaluation order.
 
 ## Library integration
 

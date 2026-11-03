@@ -124,10 +124,10 @@ PCM 声道顺序严格按上表，不按掩码位序重排。播放器、ASIO、
 
 `--speaker-layout` 只接受上表 11 个名字；其它名字按未知布局报错。
 
-扬声器渲染从 OAMD 元数据读取 warp 0/1、trim 和 front/back balance；命令行不提供 warp
-覆盖，warp 2/3 在渲染时明确报错。trim 与 balance 只施加于 2.0、3.1、4.0、5.1、5.1.2、
-5.1.4 和 7.1 这七种布局。原始对象轨迹与双耳渲染不预先应用这些控制，参数与求值顺序见
-[数学说明 §12](docs/math.md)。
+扬声器渲染从 OAMD 元数据读取 warp、trim 和 front/back balance；命令行不提供 warp 覆盖。
+warp 0/1 直接渲染；warp 2/3 先渲染到 7.1.x 中间布局，再按 PLIIx 或 Standard（Lo/Ro）
+折回 5.1.x，校准参数始终按最终目标布局选择。原始对象轨迹与双耳渲染不预处理这些控制，
+参数与求值顺序见[数学说明 §12](docs/math.md)。
 
 ## 库集成
 

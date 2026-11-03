@@ -550,11 +550,15 @@ void test_speaker_trim_parameters() {
     trim.configs[1].centre = 1.5;
 
     trim.warp_mode = 2;
-    const joc::Status warp2 = joc::speaker::parameters_from_oamd(&trim, layout51, &controls);
-    CHECK(!warp2.ok());
-    CHECK(warp2.code() == JOC_ERR_NOT_SUPPORTED);
+    CHECK(joc::speaker::parameters_from_oamd(&trim, layout51, &controls).ok());
+    CHECK(controls.warp_mode == 2);
     trim.warp_mode = 3;
-    CHECK(!joc::speaker::parameters_from_oamd(&trim, layout714, &controls).ok());
+    CHECK(joc::speaker::parameters_from_oamd(&trim, layout714, &controls).ok());
+    CHECK(controls.warp_mode == 3);
+    CHECK(controls.trim_mode == EJOC_SPEAKER_TRIM_DISABLED);
+    trim.warp_mode = 4;
+    CHECK(joc::speaker::parameters_from_oamd(&trim, layout51, &controls).code() ==
+          JOC_ERR_INVALID_ARGUMENT);
     trim.warp_mode = 0;
     trim.global_trim_mode = 3;
     CHECK(!joc::speaker::parameters_from_oamd(&trim, layout51, &controls).ok());
@@ -641,11 +645,121 @@ void test_speaker_warp_and_trim() {
                 CHECK(channel == 3 ? std::fabs(value - 0.25) <= 1e-15 : value == 0.0);
             }
         }
-        // Reserved warp modes are rejected before any rendering happens.
-        ejoc_speaker_controls reserved = speaker_controls(2, EJOC_SPEAKER_TRIM_DISABLED);
+        // Warp modes above the two-bit OAMD field are rejected.
+        ejoc_speaker_controls reserved = speaker_controls(4, EJOC_SPEAKER_TRIM_DISABLED);
         CHECK(ejoc_speaker_renderer_process(handle, input.data(), EJOC_SPEAKER_BLOCK_SAMPLES,
                                             0, nullptr, nullptr, nullptr, nullptr, nullptr,
                                             nullptr, &reserved, output.data()) != 0);
+        ejoc_speaker_renderer_destroy(handle);
+    }
+}
+
+// Warp 2/3 render the 5.1-family and 4.0 layouts through an expanded surround
+// layout and fold the rear pair back; calibration stays on the target layout.
+void test_speaker_surround_fold() {
+    joc::speaker::LayoutInfo layout20{};
+    joc::speaker::LayoutInfo layout40{};
+    joc::speaker::LayoutInfo layout51{};
+    joc::speaker::LayoutInfo layout512{};
+    joc::speaker::LayoutInfo layout514{};
+    joc::speaker::LayoutInfo layout71{};
+    CHECK(joc::speaker::layout_by_name("2.0", &layout20));
+    CHECK(joc::speaker::layout_by_name("4.0", &layout40));
+    CHECK(joc::speaker::layout_by_name("5.1", &layout51));
+    CHECK(joc::speaker::layout_by_name("5.1.2", &layout512));
+    CHECK(joc::speaker::layout_by_name("5.1.4", &layout514));
+    CHECK(joc::speaker::layout_by_name("7.1", &layout71));
+
+    ejoc_speaker_controls pl2x{};
+    CHECK(joc::speaker::parameters_from_oamd(nullptr, layout51, &pl2x).ok());
+    pl2x.warp_mode = 2;
+    ejoc_speaker_controls loro = pl2x;
+    loro.warp_mode = 3;
+
+    // PLIIx spreads the rear object into both surrounds; Lo/Ro keeps it on the
+    // same side.  Nothing is normalized after the fold.
+    const std::vector<double> pl2x_mid = {0, 0, 0, 0, 0.88868654605257746,
+                                          0.13546740014942704};
+    const std::vector<double> loro_mid = {0, 0, 0, 0, 0.92498492652336017, 0};
+    const std::vector<double> pl2x_back = {0, 0, 0, 0, 0.93411653293116492,
+                                           0.25030863131451864};
+    const std::vector<double> loro_back = {0, 0, 0, 0, 1.0011865285504298, 0};
+    check_gains(speaker_gains(layout51, pl2x, 0, 20480, 0), pl2x_mid);
+    check_gains(speaker_gains(layout51, loro, 0, 20480, 0), loro_mid);
+    check_gains(speaker_gains(layout51, pl2x, 0, 24576, 0), pl2x_back);
+    check_gains(speaker_gains(layout51, loro, 0, 24576, 0), loro_back);
+
+    // 4.0 adds a rear pair without adding centre or LFE.
+    const std::vector<double> pl2x_40 = {0, 0, 0.93411653293116492, 0.25030863131451864};
+    const std::vector<double> loro_40 = {0, 0, 1.0011865285504298, 0};
+    const std::vector<double> loro_40_front = {0.85973646214220434, 0,
+                                               0.35611450268596406, 0};
+    check_gains(speaker_gains(layout40, pl2x, 0, 24576, 0), pl2x_40);
+    check_gains(speaker_gains(layout40, loro, 0, 24576, 0), loro_40);
+    check_gains(speaker_gains(layout40, loro, 0, 4096, 0), loro_40_front);
+
+    // The height layer and the 5.1.4/5.1.2 geometry come from the 7.1 family.
+    const std::vector<double> pl2x_512 = {0, 0, 0, 0, 0.64546952862797569,
+                                          0.25210606107018951, 0.54573901433240524, 0};
+    const std::vector<double> loro_512 = {0, 0, 0, 0, 0.7130211440987243, 0,
+                                          0.54573901433240524, 0};
+    const std::vector<double> pl2x_514 = {0, 0, 0, 0, 0.70368087041735738,
+                                          0.27484211821501858, 0, 0,
+                                          0.59495621031473322, 0};
+    check_gains(speaker_gains(layout512, pl2x, 0, 28672, 16384), pl2x_512);
+    check_gains(speaker_gains(layout512, loro, 0, 28672, 16384), loro_512);
+    check_gains(speaker_gains(layout514, pl2x, 0, 28672, 16384), pl2x_514);
+
+    // Calibration is selected for the final target, not the intermediate
+    // layout: an explicit surround trim on 5.1 applies before the fold.
+    ejoc_speaker_controls trimmed = pl2x;
+    trimmed.trim_mode = EJOC_SPEAKER_TRIM_EXPLICIT;
+    trimmed.surround_db = -6.0;
+    const std::vector<double> pl2x_trim = {0, 0, 0, 0, 0.66130386161214494,
+                                           0.17720494033407685};
+    check_gains(speaker_gains(layout51, trimmed, 0, 24576, 0), pl2x_trim);
+    // Per-object bypass drops balance and trim but keeps the fold.
+    const std::vector<double> pl2x_bypass = {0, 0, 0, 0, 1.319474673818108,
+                                             0.35357033947489241};
+    check_gains(speaker_gains(layout51, trimmed, 0, 24576, 0, true), pl2x_bypass);
+
+    // Layouts with both surround pairs, or none, render directly.
+    ejoc_speaker_controls direct71{};
+    CHECK(joc::speaker::parameters_from_oamd(nullptr, layout71, &direct71).ok());
+    ejoc_speaker_controls pl2x71 = direct71;
+    pl2x71.warp_mode = 2;
+    check_gains(speaker_gains(layout71, pl2x71, 0, 24576, 0),
+                speaker_gains(layout71, direct71, 0, 24576, 0));
+    ejoc_speaker_controls direct20{};
+    CHECK(joc::speaker::parameters_from_oamd(nullptr, layout20, &direct20).ok());
+    ejoc_speaker_controls pl2x20 = direct20;
+    pl2x20.warp_mode = 2;
+    check_gains(speaker_gains(layout20, pl2x20, 0, 24576, 0),
+                speaker_gains(layout20, direct20, 0, 24576, 0));
+
+    // LFE passes through the folded output untouched.
+    ejoc_speaker_renderer_handle handle =
+        ejoc_speaker_renderer_create(layout51.speaker_bitfield);
+    CHECK(handle != nullptr);
+    if (handle != nullptr) {
+        std::vector<float> input(static_cast<std::size_t>(EJOC_SPEAKER_BLOCK_SAMPLES) *
+                                     JOC_OUTPUT_CHANNELS,
+                                 0.0f);
+        for (std::uint32_t sample = 0; sample < EJOC_SPEAKER_BLOCK_SAMPLES; ++sample) {
+            input[sample * JOC_OUTPUT_CHANNELS] = 0.25f;
+        }
+        std::vector<double> output(static_cast<std::size_t>(EJOC_SPEAKER_BLOCK_SAMPLES) *
+                                       layout51.channel_count,
+                                   0.0);
+        CHECK(ejoc_speaker_renderer_process(handle, input.data(), EJOC_SPEAKER_BLOCK_SAMPLES,
+                                            0, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                            nullptr, &pl2x, output.data()) == 0);
+        for (std::uint32_t sample = 0; sample < EJOC_SPEAKER_BLOCK_SAMPLES; ++sample) {
+            for (std::uint32_t channel = 0; channel < layout51.channel_count; ++channel) {
+                const double value = output[sample * layout51.channel_count + channel];
+                CHECK(channel == 3 ? std::fabs(value - 0.25) <= 1e-15 : value == 0.0);
+            }
+        }
         ejoc_speaker_renderer_destroy(handle);
     }
 }
@@ -707,6 +821,21 @@ void test_speaker_step_trim_events() {
     const std::vector<double> half_warp0 = {0.96001622724230795, 0, 0, 0,
                                             0.094556249720175942, 0};
     check_gains(gains, half_warp0);
+
+    // A warp 2 element renders through the expanded layout and folds.
+    update = joc::oamd::OamdUpdate{};
+    update.slots[1].q2 = 24576;
+    update.has_trim = true;
+    update.trim.warp_mode = 2;
+    update.trim.global_trim_mode = 0;
+    update.trim.object_count = 16;
+    CHECK(joc::speaker::step(&step, frame, &update, &error).ok());
+    for (std::uint32_t channel = 0; channel < step.layout.channel_count; ++channel) {
+        gains[channel] = step.output[read + channel];
+    }
+    const std::vector<double> fold_back = {0, 0, 0, 0, 0.93411653293116492,
+                                           0.25030863131451864};
+    check_gains(gains, fold_back);
 
     ejoc_speaker_renderer_destroy(step.handle);
 }
@@ -1366,6 +1495,7 @@ int main() {
     test_oamd_trim_parse();
     test_speaker_trim_parameters();
     test_speaker_warp_and_trim();
+    test_speaker_surround_fold();
     test_speaker_step_trim_events();
     test_dbmd_and_axml_trim();
     test_int24_packing();

@@ -131,8 +131,11 @@ the three trim levels and the two front-back balances.  trim_bypass is indexed
 by object slot (1..15); slot 0 carries the LFE and is unused.
 
 warp_mode 0 leaves the floor Y coordinate unchanged; mode 1 maps it through
-clamp(2Y, 0, 1).  warp modes 2 and 3 have no speaker implementation and are
-rejected by the caller that builds this structure.
+clamp(2Y, 0, 1).  Modes 2 and 3 render the 5.1-family and 4.0 layouts through an
+expanded surround layout (7.1-family, or a rear pair added to 4.0 without a
+centre or LFE) and fold the rear pair into the target surround pair: mode 2
+uses the PLIIx coefficients (sqrt(3)/2 and 1/2), mode 3 the Standard (Lo/Ro)
+coefficients (1 and 0).  Layouts without a single surround pair render directly.
 
 trim_mode selects where the gain comes from: automatic applies the layout
 position compensation, disabled applies no trim, and explicit applies the

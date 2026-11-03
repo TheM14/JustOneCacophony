@@ -16,6 +16,7 @@ namespace ejoc::speaker {
 using speaker_tables::AxisGroup;
 using speaker_tables::LayoutGeometry;
 using speaker_tables::RegionGeometry;
+using speaker_tables::SpeakerPoint;
 
 constexpr double kPi = 3.141592653589793238462643383279502884;
 constexpr double kQ15Scale = 32768.0;
@@ -194,7 +195,8 @@ public:
                 static_cast<std::uint8_t>(standard);
         }
         attenuation_db_ = layout_attenuation_db(layout_->speaker_bitfield);
-        floor_y_exponent_ = floor_y_exponent(layout_->speaker_bitfield);
+        target_floor_y_exponent_ = floor_y_exponent(layout_->speaker_bitfield);
+        configure_surround_fold();
         reset_state();
     }
 
@@ -268,6 +270,159 @@ public:
     }
 
 private:
+    // Warp 2/3 render the 5.1-family and 4.0 layouts through an expanded
+    // surround layout, then fold the rear pair into the target surround pair.
+    void configure_surround_fold() noexcept {
+        fold_layout_ = layout_;
+        fold_source_channels_ = layout_->channel_count;
+        fold_source_floor_y_exponent_ = target_floor_y_exponent_;
+        fold_available_ = false;
+        if (target_floor_y_exponent_ == 0) {
+            return;
+        }
+        const LayoutGeometry* source = nullptr;
+        switch (layout_->speaker_bitfield) {
+            case 15u: source = speaker_tables::find_layout(31u); break;
+            case 1039u: source = speaker_tables::find_layout(1055u); break;
+            case 2575u: source = speaker_tables::find_layout(2591u); break;
+            case 9u:
+                build_fold_source_40();
+                source = &fold_layout_storage_;
+                break;
+            default: return;
+        }
+        if (source == nullptr || source->channel_count == 0) {
+            return;
+        }
+        fold_layout_ = source;
+        fold_source_channels_ = source->channel_count;
+        fold_source_floor_y_exponent_ = floor_y_exponent(source->speaker_bitfield);
+        build_fold_matrix(source->speaker_bitfield, layout_->speaker_bitfield);
+        fold_available_ = true;
+    }
+
+    // 4.0 expands to six full-band speakers without adding centre or LFE.
+    void build_fold_source_40() noexcept {
+        const LayoutGeometry* base = speaker_tables::find_layout(31u);
+        if (base == nullptr) {
+            return;
+        }
+        LayoutGeometry& out = fold_layout_storage_;
+        out = *base;
+        out.speaker_bitfield = 25u;  // 4.0's pair plus the rear pair
+        out.out_ch_config = 255u;
+        out.channel_count = 6;
+        for (std::size_t slot = 0; slot < out.standard_from_internal.size(); ++slot) {
+            out.standard_from_internal[slot] = static_cast<std::uint8_t>(slot);
+        }
+        constexpr int kMapped[8] = {0, 1, -1, -1, 2, 3, 4, 5};
+        for (RegionGeometry& region : out.regions) {
+            int index_map[speaker_tables::kMaxPoints];
+            for (int& value : index_map) {
+                value = -1;
+            }
+            std::size_t kept = 0;
+            for (std::size_t point = 0; point < region.point_count; ++point) {
+                const int speaker = region.points[point].speaker_id;
+                const int mapped = speaker >= 0 && speaker < 8 ? kMapped[speaker] : -1;
+                if (mapped < 0) {
+                    continue;
+                }
+                region.points[kept] = region.points[point];
+                region.points[kept].speaker_id = static_cast<std::uint8_t>(mapped);
+                index_map[point] = static_cast<int>(kept);
+                ++kept;
+            }
+            for (std::size_t point = kept; point < region.point_count; ++point) {
+                region.points[point] = SpeakerPoint{};
+            }
+            region.point_count = static_cast<std::uint8_t>(kept);
+            filter_groups(region.axis0_groups, region.axis0_group_count, index_map);
+            filter_groups(region.axis1_groups, region.axis1_group_count, index_map);
+        }
+    }
+
+    static void filter_groups(std::array<AxisGroup, speaker_tables::kMaxGroups>& groups,
+                              std::uint8_t& count,
+                              const int (&index_map)[speaker_tables::kMaxPoints]) noexcept {
+        std::array<AxisGroup, speaker_tables::kMaxGroups> filtered{};
+        std::uint8_t kept_groups = 0;
+        for (std::size_t row = 0; row < count; ++row) {
+            AxisGroup group{};
+            for (std::size_t index = 0; index < groups[row].size; ++index) {
+                const int mapped = index_map[groups[row].indices[index]];
+                if (mapped < 0) {
+                    continue;
+                }
+                group.indices[group.size++] = static_cast<std::uint8_t>(mapped);
+            }
+            if (group.size != 0) {
+                filtered[kept_groups++] = group;
+            }
+        }
+        groups = filtered;
+        count = kept_groups;
+    }
+
+    // Shared speakers pass through; speaker IDs 6/7 are the rear pair and fold
+    // into the same-side (and, for PLIIx, the cross-side) surround.
+    void build_fold_matrix(std::uint32_t source_bitfield,
+                           std::uint32_t target_bitfield) noexcept {
+        int source_ids[64];
+        int target_ids[64];
+        std::size_t source_count = 0;
+        std::size_t target_count = 0;
+        const std::uint64_t source_mask = expand_speaker_bitfield(source_bitfield);
+        const std::uint64_t target_mask = expand_speaker_bitfield(target_bitfield);
+        for (int id = 0; id < 64; ++id) {
+            if (((source_mask >> id) & 1ULL) != 0u) {
+                source_ids[source_count++] = id;
+            }
+            if (((target_mask >> id) & 1ULL) != 0u) {
+                target_ids[target_count++] = id;
+            }
+        }
+        for (auto& row : fold_pl2x_) {
+            row.fill(0.0);
+        }
+        for (auto& row : fold_loro_) {
+            row.fill(0.0);
+        }
+        constexpr double kSqrt3Over2 = 0.86602540378443864676;
+        for (std::size_t column = 0; column < source_count; ++column) {
+            const int id = source_ids[column];
+            const std::size_t direct = target_position(target_ids, target_count, id);
+            if (direct < kChannels) {
+                fold_pl2x_[direct][column] = 1.0;
+                fold_loro_[direct][column] = 1.0;
+                continue;
+            }
+            if (id != 6 && id != 7) {
+                continue;
+            }
+            const std::size_t same = target_position(target_ids, target_count, id - 2);
+            const std::size_t cross = target_position(target_ids, target_count, id == 6 ? 5 : 4);
+            if (same < kChannels) {
+                fold_pl2x_[same][column] = kSqrt3Over2;
+                fold_loro_[same][column] = 1.0;
+            }
+            if (cross < kChannels) {
+                fold_pl2x_[cross][column] = 0.5;
+                fold_loro_[cross][column] = 0.0;
+            }
+        }
+    }
+
+    static std::size_t target_position(const int (&ids)[64], std::size_t count,
+                                       int id) noexcept {
+        for (std::size_t index = 0; index < count; ++index) {
+            if (ids[index] == id) {
+                return index;
+            }
+        }
+        return kChannels;
+    }
+
     void reset_state() noexcept {
         for (auto& row : current_) row.fill(0.0);
         for (auto& row : target_) row.fill(0.0);
@@ -292,8 +447,8 @@ private:
             fail("unknown speaker controls struct_version");
             return false;
         }
-        if (controls->warp_mode > 1u) {
-            fail("speaker rendering implements warp modes 0/1 only");
+        if (controls->warp_mode > 3u) {
+            fail("unknown speaker warp mode");
             return false;
         }
         if (controls->trim_mode > EJOC_SPEAKER_TRIM_EXPLICIT) {
@@ -370,11 +525,15 @@ private:
                       const bool bypass_trim,
                       ChannelGains& output) const noexcept {
         output.fill(0.0);
-        const auto& region = layout_->regions[region_index];
+        const bool folding = fold_available_ && controls.warp_mode >= 2u;
+        const auto& region = (folding ? *fold_layout_ : *layout_).regions[region_index];
         const double u = static_cast<double>(position[0]) / kQ15Scale;
         const double v = static_cast<double>(position[1]) / kQ15Scale;
         const double w = std::max(static_cast<double>(position[2]) / kQ15Scale, 0.0);
-        const int shift = controls.warp_mode == 1u ? floor_y_exponent_ : 0;
+        const int shift = controls.warp_mode == 0u
+                              ? 0
+                              : (folding ? fold_source_floor_y_exponent_
+                                         : target_floor_y_exponent_);
         double floor_v = clamp(std::ldexp(v, shift), 0.0, 1.0);
         double top_v = clamp(v, 0.0, 1.0);
         double trim_v = v;
@@ -416,8 +575,21 @@ private:
                 gain *= joc::speaker::explicit_position_gain(controls, u, trim_v, w);
             }
         }
+        ChannelGains internal{};
         for (std::size_t index = 0; index < region.point_count; ++index) {
-            output[region.points[index].speaker_id] = point[index] * gain;
+            internal[region.points[index].speaker_id] = point[index] * gain;
+        }
+        if (!folding) {
+            output = internal;
+            return;
+        }
+        const auto& matrix = controls.warp_mode == 2u ? fold_pl2x_ : fold_loro_;
+        for (std::size_t target = 0; target < layout_->channel_count; ++target) {
+            double sum = 0.0;
+            for (std::size_t source = 0; source < fold_source_channels_; ++source) {
+                sum += matrix[target][source] * internal[source];
+            }
+            output[target] = sum;
         }
     }
 
@@ -501,8 +673,15 @@ private:
     }
 
     const LayoutGeometry* layout_;
+    const LayoutGeometry* fold_layout_ = nullptr;
+    LayoutGeometry fold_layout_storage_{};
+    bool fold_available_ = false;
+    std::uint8_t fold_source_channels_ = 0;
+    int fold_source_floor_y_exponent_ = 0;
+    std::array<ChannelGains, kChannels> fold_pl2x_{};
+    std::array<ChannelGains, kChannels> fold_loro_{};
     double attenuation_db_{};
-    int floor_y_exponent_{};
+    int target_floor_y_exponent_{};
     ObjectChannelGains current_{};
     ObjectChannelGains target_{};
     ObjectChannelGains step_{};

@@ -454,8 +454,8 @@ v_{\mathrm{floor}}=
 $$
 
 Warp 0 and other layouts use $v_{\mathrm{floor}}=v$. The height layer is not scaled.
-An absent warp indication uses 0; no CLI override is provided. Modes 2/3 are
-explicitly unsupported rather than mapped to 0/1. Balance follows this scaling.
+An absent warp indication uses 0; no CLI override is provided. Modes 2/3 use
+the intermediate layout and folding matrix in §12.5. Balance follows this scaling.
 
 ### 10.3 Height layer
 
@@ -563,7 +563,7 @@ Warp, trim and balance controls are read from OAMD metadata:
 
 | Parameter | Value or unit | Behavior |
 |---|---|---|
-| `warp_mode` | 0 / 1 | Selects the floor Y mapping in §10.2; modes 2/3 are unsupported and rejected |
+| `warp_mode` | 0 / 1 / 2 / 3 | Direct rendering / floor Y scaling / PLIIx folding / Standard (Lo/Ro) folding |
 | `global_trim_mode` | 0 / 1 / 2 | Automatic / disabled / per-layout configuration; reserved value 3 is rejected |
 | $T_s$, $T_h$ | dB | Explicit surround and height trim, with positive values treated as zero |
 | $T_c$ | dB | Signed explicit centre trim |
@@ -642,7 +642,7 @@ $1$ at the back wall; $x$ and $z$ are unchanged.
 ### 12.4 Where it is applied
 
 Let $B_z(y)$ denote the balance map of §12.3 and $W(y)$ the warp map of §10.2.
-The ordinary point-object path keeps three coordinates:
+Direct point rendering in warp modes 0/1 keeps three coordinates:
 
 $$
 y_f=B_z(W(y)),\qquad y_h=B_z(y),\qquad y_t=B_z(y).
@@ -663,6 +663,47 @@ Floor coordinates pass through warp and then balance before floor panning.
 Height and trim coordinates pass through balance alone. The trim scalar
 multiplies the object's entire panning vector before accumulation into output
 channels. LFE passes through.
+
+### 12.5 Surround folding in warp modes 2/3
+
+For a 5.1, 5.1.2 or 5.1.4 target, warp modes 2/3 first render objects to the
+corresponding 7.1, 7.1.2 or 7.1.4 intermediate layout, then fold the rear
+surrounds into the target surround pair. The 4.0 layout also adds a rear pair
+without adding centre or LFE. Other existing layouts render directly.
+
+The intermediate layout changes speaker geometry and panning only. The trim
+configuration, both balance layers and the maximum automatic position
+compensation remain those of the final target. For example, 5.1.2 uses
+configuration 4 and a maximum compensation of $-2.25$ dB even when its
+intermediate layout is 7.1.2. With separate side and rear pairs in the
+intermediate layout, floor Y is not doubled. Balance and per-object trim
+are evaluated during intermediate rendering.
+
+For intermediate outputs $L_s,R_s,L_{rs},R_{rs}$ and target surrounds
+$L'_s,R'_s$:
+
+$$
+L'_s=L_s+aL_{rs}+bR_{rs},\qquad
+R'_s=R_s+bL_{rs}+aR_{rs}.
+$$
+
+| Mode | $a$ | $b$ |
+|---|---|---|
+| 2: PLIIx | $\sqrt{3}/2$ | $1/2$ |
+| 3: Standard (Lo/Ro) | $1$ | $0$ |
+
+Both matrices add linear amplitudes without normalizing energy after the
+fold. Shared front, height and LFE channels pass through to their matching
+positions. The folded object gain vector enters the target-gain update and
+ramp in §13 before object audio is accumulated.
+
+The complete order is: select calibration for the target layout → apply
+balance and trim while panning in the intermediate layout → fold horizontal
+surrounds → update gain ramps and mix. Per-object bypass disables balance
+and trim while retaining layout selection and folding. These modes are
+generic speaker-rendering controls; the publicly defined E-AC-3 JOC warp
+values remain 0/1. Source trajectories, ADM and binaural do not bake in the
+folded result.
 
 ## 13. OAMD time alignment and gain ramps
 

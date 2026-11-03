@@ -52,11 +52,10 @@ Status parameters_from_oamd(const oamd::OamdTrim* trim, const LayoutInfo& layout
             controls.trim_bypass[slot] = trim->disable_per_object[slot] ? 1u : 0u;
         }
     }
-    if (controls.warp_mode > 1u) {
-        return Status::fail(JOC_ERR_NOT_SUPPORTED, stage::kRender,
-                            "speaker: warp_mode_not_implemented: speaker rendering "
-                            "implements warp modes 0/1; warp mode " +
-                                std::to_string(controls.warp_mode) + " is reserved");
+    if (controls.warp_mode > 3u) {
+        return Status::fail(JOC_ERR_INVALID_ARGUMENT, stage::kRender,
+                            "speaker: invalid warp mode " +
+                                std::to_string(controls.warp_mode));
     }
     if (!layout.carries_trim) {
         controls.trim_mode = EJOC_SPEAKER_TRIM_DISABLED;
