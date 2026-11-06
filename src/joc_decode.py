@@ -79,54 +79,96 @@ def get_huff_code(mode, typ, nch):
              else "joc_huff_code_fine_generic"]           # MTX
 
 
-def parse_joc_header(payload):
+def _tail_info(out, br, payload):
+    """记录 joc_data 结束位置与载荷尾部（剩余位数、尾字节）。"""
+    total_bits = len(payload) * 8
+    out["data_end_bits"] = br.p
+    out["remaining_bits"] = total_bits - br.p
+    out["tail_bytes"] = payload[br.p // 8:]
+    return total_bits
+
+
+def parse_joc_header(payload, strict=True):
     """只读 joc_header 的 3+6+3 bit，不做 Huffman 解码。
 
     跨层一致性校验（规格 §11.2）只需要这些字段，因此不必为校验再走一遍完整解析。
+    配置不受支持时严格模式抛异常；宽松模式返回 ``status = 2``，由调用方按整帧无效处理。
     """
     br = BR(payload)
     out = {
         "dmx_config_idx": br.bits(3),
         "num_objects_bits": br.bits(6),
         "ext_config_idx": br.bits(3),
+        "status": 0,
     }
     out["n_channels"] = JOC_NUM_CHANNELS.get(out["dmx_config_idx"])
     if out["n_channels"] is None:
-        raise ValueError(f"未知的 JOC downmix 配置 {out['dmx_config_idx']}")
-    # 声明对象数超过 15 时截断到 15；截断本身另行记入 diagnostics。
+        # 核心声道数决定对象语法的展开方式，配置未知时无法继续解析。
+        if strict:
+            raise ValueError(f"未知的 JOC downmix 配置 {out['dmx_config_idx']}")
+        out["status"] = 2
+        out["objects_clamped"] = False
+        out["n_objects"] = 0
+        return out
+    # 声明对象数超过 15 时截断到 15；截断记入 diagnostics，整帧状态记为 3。
     declared = out["num_objects_bits"] + 1
     out["objects_clamped"] = declared > 15
     out["n_objects"] = min(declared, 15)
+    if out["objects_clamped"]:
+        out["status"] = 3
     return out
 
 
 def parse_joc(payload):
-    """解析 id14 载荷（joc() 位流）。返回字段 dict + 解析后剩余位数。"""
+    """解析 id14 载荷（joc() 位流），返回字段 dict 与整帧状态 ``status``。
+
+    status：0 正常；2 downmix 配置不受支持；3 对象数超过 15 被截断；
+    4 参数带索引越界；5 offset_ts 非法；6 ext_config_idx=0 时对齐后仍有多余数据。
+    """
     br = BR(payload)
-    out = parse_joc_header(payload)
-    n_objects, n_channels = out["n_objects"], out["n_channels"]
+    out = parse_joc_header(payload, strict=False)
     br.p = 12
     out["clipgain_x_bits"] = br.bits(3)
     out["clipgain_y_bits"] = br.bits(5)
     out["seq_count_bits"] = br.bits(10)
-    # clipgain = 1 + (y/32)·2^(x−4)，值域为 [1, 8.75]。
-    out["clipgain"] = 1 + out["clipgain_y_bits"] / 32.0 * 2 ** (out["clipgain_x_bits"] - 4)
+    # clipgain = 2^(x−4)·(1 + y/32)，值域为 [0.0625, 15.75]。
+    out["clipgain"] = 2 ** (out["clipgain_x_bits"] - 4) * (
+        1 + out["clipgain_y_bits"] / 32.0)
     objs = []
-    for obj in range(n_objects):
-        o = {}
-        o["present"] = br.bits(1)
-        if o["present"]:
-            o["num_bands_idx"] = br.bits(3)
-            o["n_bands"] = JOC_NUM_BANDS[o["num_bands_idx"]]
-            o["sparse"] = br.bits(1)
-            o["quant_idx"] = br.bits(1)
-            o["slope_idx"] = br.bits(1)
-            o["num_dpoints_bits"] = br.bits(1)
-            o["n_dpoints"] = o["num_dpoints_bits"] + 1
-            if o["slope_idx"] == 1:
-                o["offset_ts"] = [br.bits(5) + 1 for _ in range(o["n_dpoints"])]
-        objs.append(o)
     out["objs"] = objs
+    n_channels = out["n_channels"]
+    if n_channels is None:
+        # 核心声道数未知时对象语法无法展开，只保留头部字段与状态。
+        _tail_info(out, br, payload)
+        return out
+    for obj in range(out["n_objects"]):
+        o = {"present": br.bits(1)}
+        objs.append(o)
+        if not o["present"]:
+            continue
+        o["num_bands_idx"] = br.bits(3)
+        n_bands = JOC_NUM_BANDS.get(o["num_bands_idx"])
+        if n_bands is None:
+            # 参数带数未知时无法确定后续符号数量，停止解析。
+            if out["status"] == 0:
+                out["status"] = 4
+            _tail_info(out, br, payload)
+            return out
+        o["n_bands"] = n_bands
+        o["sparse"] = br.bits(1)
+        o["quant_idx"] = br.bits(1)
+        o["slope_idx"] = br.bits(1)
+        o["num_dpoints_bits"] = br.bits(1)
+        o["n_dpoints"] = o["num_dpoints_bits"] + 1
+        if o["slope_idx"] == 1:
+            offsets = [br.bits(5) for _ in range(o["n_dpoints"])]
+            o["offset_ts"] = offsets
+            invalid = any(offset >= 24 for offset in offsets)
+            if not invalid and o["n_dpoints"] > 1:
+                invalid = any(second <= first for first, second
+                              in zip(offsets, offsets[1:]))
+            if invalid and out["status"] == 0:
+                out["status"] = 5
     # joc_data（Huffman）：dense 逐声道逐带读 MTX；sparse 读 IDX 后读 VEC。
     for obj, o in enumerate(objs):
         if not o["present"]:
@@ -150,9 +192,12 @@ def parse_joc(payload):
                 o["mtx"].append(mtx)
                 o["channel_idx"].append(None)
                 o["vec"].append(None)
-    out["data_end_bits"] = br.p
-    out["remaining_bits"] = len(payload) * 8 - br.p
-    out["tail_bytes"] = payload[br.p // 8:]
+    total_bits = _tail_info(out, br, payload)
+    if out["status"] == 0:
+        # 尾部先补 0 到 8 bit 对齐，补出来的位不是数据；对齐后仍有字节即多余。
+        pad = (8 - (br.p % 8)) % 8
+        if out["ext_config_idx"] == 0 and total_bits - br.p - pad > 0:
+            out["status"] = 6
     return out
 
 

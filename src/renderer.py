@@ -1,11 +1,13 @@
 """把 E-AC-3 核心 PCM 和 JOC 元数据重建为 LFE 加 15 路对象 PCM。
 
 管线（每帧）：
-  核心 PCM（N=5 或 7 路全频段通道，按 k 查表）→ QMF 分析 x → 填充器 z = Σ m·x（每对象）
+  核心 PCM（N=5 或 7 路全频段通道，按 k 查表）→ QMF 分析 x → 对象矩阵 z = Σ m·x
   → 对象时域组装（前步、64 点 FFT、旋转、合成窗）→ ×16 + clamp
-  → 对象波形 × joc_clipgain
-  + LFE 专用 1217-sample 环形延迟
+  → LFE 专用 1217-sample 环形延迟（逐点乘 clipgain 斜坡）
   → 16ch（ch0 = LFE, ch1-15 = 15 对象）→ ×output_scale
+
+跨帧状态：seq 状态机（state/expected/无效帧计数）、每对象的 prev 矩阵与存在标记、
+QMF 分析与合成状态、LFE 延迟环、直通渲染的核心 PCM 历史。
 
 output_scale:
   默认 1.0（0 dB）。用户选择的 dB 在命令行转换为 float32 系数；该系数
@@ -19,29 +21,55 @@ from joc_qmf import (N, QMF5_WINDOW, qmf_analysis_frame,
 from evo_unpack import unpack_evolution
 
 CORE_CHANNELS = [0, 1, 2, 4, 5]  # L R C Ls Rs（EAC3 5.1 核心顺序）
+FRAME_SAMPLES = 1536
+MAX_OBJECTS = 15
+MAX_CORE_CHANNELS = 7
+LFE_DELAY = 1217
+SEQ_MODULUS = 1024
+# 没有 JOC 元数据的帧：状态机短路分支使用这个状态码。
+STATUS_NO_METADATA = 8
+# 渲染层给出的“核心声道数变化”状态码。
+STATUS_CORE_CHANNEL_CHANGE = 9
+
+
+def next_seq(value):
+    """seq 的推进规则：1023 之后回到 1。"""
+    return 1 if value == SEQ_MODULUS - 1 else value + 1
 
 
 class JocRenderer:
-    """E-AC-3 JOC 帧渲染器。状态跨帧保持（FIFO/插值 prev/合成状态）。"""
+    """E-AC-3 JOC 帧渲染器。状态跨帧保持（FIFO/插值 prev/合成状态/状态机）。"""
 
     def __init__(self, output_scale=1.0):
         # 成品增益明确按 float32 运算；默认值为 1.0。
         self.output_scale = np.float32(output_scale)
-        self._prev = {}           # 每对象插值 prev（m 的帧末 sb 值）
-        self._synthesis_state = np.zeros((15, 640), dtype=np.float64)
+        # 每对象插值 prev：上一帧发布的末时槽矩阵与“prev 存在”标记；槽位固定 15 个。
+        self._prev_mtx = np.zeros((MAX_OBJECTS, MAX_CORE_CHANNELS, N), dtype=np.float64)
+        self._prev_present = np.zeros(MAX_OBJECTS, dtype=bool)
+        self._synthesis_state = np.zeros((MAX_OBJECTS, 640), dtype=np.float64)
         # 分析 QMF：最多七路，各保留 9×64 FIFO。L/R/C 与 N=7 时的第 6、7 路
         # （额外那一对）在这里做 10 时隙延迟；Ls/Rs 的同一延迟在环绕通路内完成。
-        self._analysis_fifo = np.zeros((7, 9, 64), dtype=np.float64)
+        self._analysis_fifo = np.zeros((MAX_CORE_CHANNELS, 9, 64), dtype=np.float64)
         self._analysis_delay = np.zeros((5, 10, 64), dtype=np.float32)
         # 哨兵：复位后（或整条流的第一帧）直接用新标量，不做帧内过渡。
         self._analysis_phase = np.float32(-0.5)
         self._surround_qmf_delay = np.zeros((2, 10, 64), dtype=np.complex128)
         self._surround_dc_hist = np.zeros((2, 20), dtype=np.complex128)
         # ch0/LFE 使用循环历史，读指针恒落后写指针 1217 个采样。
-        # phase=1/16 与输出端 *16 抵消，净效果是 LFE 延迟。
-        self._lfe_delay = np.zeros(1217, dtype=np.float64)
-        self._last_x = None       # 仅供逐槽诊断读取，不参与状态推进
-        self._rot = None          # 每带旋转表
+        # 逐点增益斜坡在写入延迟环之前乘上，读出后不再乘任何增益。
+        self._lfe_delay = np.zeros(LFE_DELAY, dtype=np.float64)
+        self._lfe_clipgain = None         # LFE 增益斜坡的起点；None = 还没有历史
+        # 直通渲染的核心 PCM 延迟历史：保存上一帧输入。
+        self._core_hist = np.zeros((MAX_CORE_CHANNELS, FRAME_SAMPLES), dtype=np.float64)
+        # seq 状态机与逐帧分派所需的跨帧状态。
+        self._state = 0
+        self._expected = 0
+        self._invalid_count = 0
+        self._last_frame_valid = False
+        self._n_channels_prev = None
+        self._config_idx = 3
+        self._last_x = None               # 仅供逐槽诊断读取，不参与状态推进
+        self._rot = None                  # 每带旋转表
 
     def held_analysis_scalar(self):
         """当前分析端标量；还没有过 JOC 帧时用结构常数 1/16。"""
@@ -50,21 +78,27 @@ class JocRenderer:
             return np.float32(0.0625)
         return value
 
+    def held_clipgain(self):
+        """当前生效的完整 clipgain；没有历史时为 1.0。"""
+        return float(self.held_analysis_scalar()) * 16.0
+
     @staticmethod
     def decode_payload(payload_bytes):
         """id14 载荷 → (parse 结果, mix_q, mix_dq)。"""
         subs, _ = unpack_evolution(payload_bytes, loose=True)
-        out = parse_joc(subs[14])
-        mix_q = diff_decode(out)
-        mix_dq = dequantize(out, mix_q)
-        return out, mix_q, mix_dq
+        return JocRenderer.decode_subpayloads(subs)
 
     @staticmethod
     def decode_subpayloads(subs):
-        """已解析 EMDF 子载荷 → (parse 结果, mix_q, mix_dq)。"""
+        """已解析 EMDF 子载荷 → (parse 结果, mix_q, mix_dq)。
+
+        整帧状态不是 0 时只返回解析结果：这一帧按无效帧处理，不做矩阵还原。
+        """
         if 14 not in subs:
             raise ValueError("EMDF 缺少 ID14/JOC")
         out = parse_joc(subs[14])
+        if out["status"] != 0:
+            return out, {}, {}
         mix_q = diff_decode(out)
         mix_dq = dequantize(out, mix_q)
         return out, mix_q, mix_dq
@@ -80,13 +114,13 @@ class JocRenderer:
         """
         pcm = np.asarray(bed_pcm, dtype=np.float32)
         n_channels = pcm.shape[0] if pcm.ndim == 2 else 0
-        if n_channels not in (5, 7) or pcm.shape != (n_channels, 1536):
+        if n_channels not in (5, 7) or pcm.shape != (n_channels, FRAME_SAMPLES):
             raise ValueError(f"核心帧应为 (5,1536) 或 (7,1536)，实际 {pcm.shape}")
         new_phase = np.float32(phase_new)
         old_phase = self._analysis_phase
         if old_phase <= 0.0 and old_phase != 0.0:      # 哨兵：首帧/复位后不做过过渡
             old_phase = new_phase
-        gains = np.full(1536, new_phase, dtype=np.float32)
+        gains = np.full(FRAME_SAMPLES, new_phase, dtype=np.float32)
         if old_phase != new_phase:
             step = np.float32((new_phase - old_phase) / np.float32(256.0))
             gains[:256] = old_phase + np.arange(256, dtype=np.float32) * step
@@ -110,23 +144,111 @@ class JocRenderer:
             apply_dc_filter=apply_dc_filter, rotate=rotate)
         return x
 
+    def _clear_unused_channels(self, n_channels):
+        """核心声道数变化后，只清除新布局中未使用声道的历史状态。"""
+        if n_channels >= MAX_CORE_CHANNELS:
+            return
+        self._analysis_fifo[n_channels:] = 0.0
+        self._prev_mtx[:, n_channels:, :] = 0.0
+        self._core_hist[n_channels:] = 0.0
+        if n_channels == 5:
+            # N=5 不用额外那一对，10 时隙延迟线 3、4 号槽不再推进。
+            self._analysis_delay[3:] = 0.0
+
+    def _advance_state(self, status, seq):
+        """按 seq 推进状态机，返回进入本帧前的 ``state``。
+
+        status：0 正常；2..6 解析层无效；8 无元数据；9 核心声道数变化。
+        """
+        pre_state = self._state
+        valid = status in (0, STATUS_CORE_CHANNEL_CHANGE)
+        if status == STATUS_NO_METADATA and pre_state != 0:
+            # 无元数据帧不推进期望、不比较 seq。
+            self._state = 3
+            return pre_state
+        self._expected = next_seq(self._expected)
+        if valid and seq == 0 and pre_state != 0:
+            # seq 回到 0：节目重新开始，硬切并清空对象历史。
+            self._state = 4
+            return pre_state
+
+        state = self._state
+        if state == 0:
+            if valid:
+                state = 1
+                self._expected = seq
+        elif state == 1:
+            if valid:
+                if seq != self._expected:
+                    state = 4
+            else:
+                state = 2
+                self._invalid_count = 1
+        elif state == 2:
+            if valid:
+                state = 1
+                self._expected = seq
+            elif self._invalid_count == 5:
+                state = 3
+            else:
+                self._invalid_count += 1
+        elif state == 3:
+            if valid:
+                state = 1
+                self._expected = seq
+            else:
+                self._invalid_count += 1
+        elif state == 4:
+            if valid:
+                state = 1
+                self._expected = seq
+            else:
+                state = 2
+                self._invalid_count = 1
+        self._state = state
+        if status == STATUS_CORE_CHANNEL_CHANGE:
+            self._state = 4
+        self._last_frame_valid = valid
+        return pre_state
+
     def object_z(self, out, mix_dq, x):
-        """计算 ``z[obj] = Σ_ch m[ch,sb,ts]·x[ch,sb,ts]``。"""
+        """计算恢复正常渲染时的 ``z[obj] = Σ_ch m[ch,sb,ts]·x[ch,sb,ts]``。
+
+        对象槽固定 15 个：本帧声明范围内 present=1 的对象按插值规则生成矩阵；
+        present 由 1 变 0（或落在声明范围之外）的对象按“present=1 且矩阵全零”
+        继续发布，直到它重新 present=1；从未出现过的槽输出零。
+        """
+        n_channels = x.shape[0]
+        objs = out["objs"]
         z_all = {}
-        new_prev = {}
-        for obj, o in enumerate(out["objs"]):
-            if not o["present"]:
-                continue
-            dq = mix_dq[obj]
-            prev = self._prev.get(obj)
-            if prev is None:
-                prev = np.zeros((out["n_channels"], N), dtype=np.float64)
-            m = interp_matrix(o, dq, prev)          # [ch][sb][ts]（内部按 o["n_bands"] 映射）
-            z = np.sum(x * m, axis=0)               # [sb][ts]（复）
-            z_all[obj] = z
-            new_prev[obj] = m[:, :, -1]
-        self._prev.update(new_prev)
+        for obj in range(MAX_OBJECTS):
+            present = obj < len(objs) and objs[obj]["present"]
+            if present:
+                prev = self._prev_mtx[obj][:n_channels] if self._prev_present[obj] else None
+                mtx = interp_matrix(objs[obj], mix_dq[obj], prev)
+                z_all[obj] = np.sum(x * mtx, axis=0)
+                self._prev_mtx[obj][:n_channels] = mtx[:, :, -1]
+                self._prev_present[obj] = True
+            elif self._prev_present[obj]:
+                z_all[obj] = np.zeros((N, 24), dtype=np.complex128)
+                self._prev_mtx[obj][:n_channels] = 0.0
+                self._prev_present[obj] = True
+            else:
+                z_all[obj] = np.zeros((N, 24), dtype=np.complex128)
         return z_all
+
+    def _hold_objects(self, x):
+        """保持渲染：24 个时隙全部使用上一帧发布的矩阵，不更新 prev。"""
+        n_channels = x.shape[0]
+        z_all = {}
+        for obj in range(MAX_OBJECTS):
+            z_all[obj] = np.sum(x * self._prev_mtx[obj][:n_channels][:, :, None], axis=0)
+        return z_all
+
+    @staticmethod
+    def _zero_objects():
+        return {obj: np.zeros((N, 24), dtype=np.complex128)
+                for obj in range(MAX_OBJECTS)}
 
     def _rot_table_86840(self):
         """生成 ``θ=πk/128`` 的 ``0.5·(sin θ, cos θ)`` 旋转表。"""
@@ -218,7 +340,7 @@ class JocRenderer:
         z = np.stack([z_all[obj] for obj in object_ids], axis=0)
         state = self._synthesis_state[object_ids].copy()
         rot868 = self._rot_table_86840()
-        pcm = np.zeros((len(object_ids), 1536), dtype=np.float64)
+        pcm = np.zeros((len(object_ids), FRAME_SAMPLES), dtype=np.float64)
         for tsg in range(6):
             ring = np.zeros((len(object_ids), 512), dtype=np.float64)
             chunk = z[:, :, tsg * 4:tsg * 4 + 4].transpose(0, 2, 1)
@@ -242,39 +364,134 @@ class JocRenderer:
         """返回逆 QMF 使用的 640 项有效合成窗表。"""
         return QMF5_WINDOW
 
-    def decode_lfe(self, lfe_pcm):
-        """将核心 ch3/LFE 经过跨帧 1217-sample 延迟后输出到 ch0。"""
+    def decode_lfe(self, lfe_pcm, clipgain=None):
+        """核心 ch3/LFE 乘逐点增益斜坡，再经跨帧 1217-sample 延迟输出到 ch0。
+
+        clipgain 为本帧完整增益 G_new；None 表示本帧没有新值（沿用当前值）。
+        斜坡：n<256 时 G_old + n·(G_new−G_old)/256，n≥256 时 G_new；
+        首帧（没有历史）时 G_old = G_new。
+        """
         current = np.asarray(lfe_pcm, dtype=np.float64)
-        if current.shape != (1536,):
+        if current.shape != (FRAME_SAMPLES,):
             raise ValueError(f"LFE 帧应为 (1536,)，实际 {current.shape}")
-        delayed = np.concatenate([self._lfe_delay, current])
-        out = np.clip(delayed[:1536], -1.0, 1.0)
-        self._lfe_delay = delayed[-1217:].copy()
+        new_gain = self.held_clipgain() if clipgain is None else float(clipgain)
+        old_gain = new_gain if self._lfe_clipgain is None else self._lfe_clipgain
+        gains = np.full(FRAME_SAMPLES, new_gain, dtype=np.float64)
+        if old_gain != new_gain:
+            gains[:256] = old_gain + np.arange(256, dtype=np.float64) * (
+                (new_gain - old_gain) / 256.0)
+        self._lfe_clipgain = new_gain
+        delayed = np.concatenate([self._lfe_delay, current * gains])
+        out = np.clip(delayed[:FRAME_SAMPLES], -1.0, 1.0)
+        self._lfe_delay = delayed[-LFE_DELAY:].copy()
         return out
 
-    def render_missing_frame(self, bed_pcm, lfe_pcm=None, config_idx=3):
-        """没有 JOC 元数据的音频帧：对象通道静音，只保留 LFE 旁通。
+    @staticmethod
+    def _validate_bed(bed_pcm):
+        pcm = np.asarray(bed_pcm, dtype=np.float32)
+        n_channels = pcm.shape[0] if pcm.ndim == 2 else 0
+        if n_channels not in (5, 7) or pcm.shape != (n_channels, FRAME_SAMPLES):
+            raise ValueError(f"核心帧应为 (5,1536) 或 (7,1536)，实际 {pcm.shape}")
+        return pcm
 
-        QMF 分析与对象合成状态照常推进，否则后续帧的时间轴会整体少一格。
-        """
-        sigma = config_idx in SIGMA_DMX_CONFIGS
-        # 本帧没有 JOC 元数据，分析端标量保持上一帧的值（槽位不被改写）。
-        x = self.qmf_x(bed_pcm, phase_new=self.held_analysis_scalar(),
-                       apply_dc_filter=sigma, rotate=sigma)
+    @staticmethod
+    def _delayed_core(hist, current):
+        """直通渲染：把核心 PCM 延迟 1217 个采样（只处理实际有的声道数）。"""
+        n_channels = current.shape[0]
+        out = np.zeros((MAX_CORE_CHANNELS, FRAME_SAMPLES), dtype=np.float64)
+        out[:n_channels, :LFE_DELAY] = hist[:n_channels, 319:]
+        out[:n_channels, LFE_DELAY:] = current[:, :FRAME_SAMPLES - LFE_DELAY]
+        return out[:n_channels]
+
+    def _render_frame(self, *, status, seq, out, mix_dq, bed_pcm, lfe_pcm,
+                      config_idx=None):
+        """每帧执行一次状态机并按结果分派渲染。"""
+        pcm = self._validate_bed(bed_pcm)
+        n_channels = pcm.shape[0]
+        if self._n_channels_prev is not None and n_channels != self._n_channels_prev:
+            self._clear_unused_channels(n_channels)
+        pre_state = self._advance_state(status, seq)
+        state = self._state
+
+        if status == STATUS_NO_METADATA:
+            mode = "hold" if pre_state == 1 else "passthrough"
+        elif state == 4:
+            mode = "hard_cut"
+        elif state in (2, 3):
+            mode = "hold"
+        elif state == 1 and status == 0:
+            mode = "normal"
+        else:
+            mode = "passthrough"
+
+        if out is not None and out.get("n_channels") is not None:
+            config = out["dmx_config_idx"]
+            self._config_idx = config
+        elif config_idx is not None:
+            config = config_idx
+            self._config_idx = config
+        else:
+            config = self._config_idx
+        sigma = config in SIGMA_DMX_CONFIGS
+
+        valid_metadata = (out is not None and out.get("status") == 0
+                          and out.get("n_channels") is not None)
+        if mode in ("normal", "hard_cut") and valid_metadata:
+            clipgain = float(out["clipgain"])
+            phase_new = 0.0625 * clipgain
+        else:
+            clipgain = self.held_clipgain()
+            phase_new = self.held_analysis_scalar()
+
+        lfe = (np.zeros(FRAME_SAMPLES, dtype=np.float64)
+               if lfe_pcm is None else np.asarray(lfe_pcm, dtype=np.float64))
+        if lfe.shape != (FRAME_SAMPLES,):
+            raise ValueError(f"LFE 帧应为 (1536,)，实际 {lfe.shape}")
+
+        x = self.qmf_x(pcm, phase_new=phase_new, apply_dc_filter=sigma, rotate=sigma)
         self._last_x = x.copy()
-        z_all = {obj: np.zeros((x.shape[1], x.shape[2]), dtype=np.complex128)
-                 for obj in range(15)}
-        self.dll_synth_objects(z_all)
-        pcm16 = np.zeros((16, 1536), dtype=np.float64)
-        if lfe_pcm is not None:
-            pcm16[0] = self.decode_lfe(lfe_pcm)
+        pcm16 = np.zeros((MAX_OBJECTS + 1, FRAME_SAMPLES), dtype=np.float64)
+
+        if mode == "normal":
+            z_all = self.object_z(out, mix_dq, x)
+            objs_pcm = self.dll_synth_objects(z_all)
+            pcm16[0] = self.decode_lfe(lfe, clipgain)
+            for obj, pcm_obj in objs_pcm.items():
+                pcm16[obj + 1] = pcm_obj
+        elif mode == "hold":
+            z_all = self._hold_objects(x)
+            objs_pcm = self.dll_synth_objects(z_all)
+            pcm16[0] = self.decode_lfe(lfe, clipgain)
+            for obj, pcm_obj in objs_pcm.items():
+                pcm16[obj + 1] = pcm_obj
+        elif mode == "hard_cut":
+            # 全部对象矩阵清零，保留“prev 存在”标记，下一有效帧从 0 淡入。
+            z_all = self._zero_objects()
+            self.dll_synth_objects(z_all)
+            self.decode_lfe(lfe, clipgain)          # 环照常写入并推进写游标
+            self._prev_present[:] = True
+            self._prev_mtx[:] = 0.0
+        else:                                        # passthrough
+            z_all = self._zero_objects()
+            self.dll_synth_objects(z_all)
+            self.decode_lfe(lfe, clipgain)
+            pcm16[:n_channels] = self._delayed_core(self._core_hist, pcm)
+
+        self._core_hist[:n_channels] = pcm
+        self._n_channels_prev = n_channels
         pcm16_f32 = np.asarray(pcm16, dtype=np.float32)
         return np.multiply(pcm16_f32, self.output_scale, dtype=np.float32), z_all
 
+    def render_missing_frame(self, bed_pcm, lfe_pcm=None, config_idx=3):
+        """没有 JOC 元数据的音频帧：按状态机结果保持渲染或直通核心 PCM。"""
+        return self._render_frame(status=STATUS_NO_METADATA, seq=None,
+                                  out=None, mix_dq=None,
+                                  bed_pcm=bed_pcm, lfe_pcm=lfe_pcm,
+                                  config_idx=config_idx)
+
     def render_frame(self, payload_bytes, bed_pcm, lfe_pcm=None):
         """payload_bytes = evolution 载荷（含 id14 JOC）；bed_pcm = N×1536 核心 PCM。
-        lfe_pcm = 1536 核心 LFE；提供时生成 ch0，省略时 ch0 静音
-        （保留给只验证对象/z 链的诊断脚本）。
+
         返回 (pcm16, z_all)：pcm16 = 16×1536（ch0 LFE + 15 对象）f32，
         已用 FP32 系数乘 output_scale。"""
         subs, _ = unpack_evolution(payload_bytes, loose=True)
@@ -283,19 +500,14 @@ class JocRenderer:
     def render_subpayloads(self, subs, bed_pcm, lfe_pcm=None):
         """以已拆出的 EMDF payload 字典渲染一帧，避免绑定 transport 容器。"""
         out, mix_q, mix_dq = self.decode_subpayloads(subs)
-        # σ(k) 同时门控 -j 旋转与 band-0 FIR（规格 §4）。
-        sigma = out["dmx_config_idx"] in SIGMA_DMX_CONFIGS
-        x = self.qmf_x(bed_pcm, phase_new=0.0625 * out["clipgain"],
-                       apply_dc_filter=sigma, rotate=sigma)
-        self._last_x = x.copy()
-        z_all = self.object_z(out, mix_dq, x)
-        # joc_clipgain 已在分析端进入 qmf_x，与用户 output_scale 分离。
-        objs_pcm = self.dll_synth_objects(z_all)
-        pcm16 = np.zeros((16, 1536), dtype=np.float64)
-        pcm16[0] = self.decode_lfe(lfe_pcm) if lfe_pcm is not None else 0.0
-        for obj, p in objs_pcm.items():
-            pcm16[obj + 1] = p
-        pcm16_f32 = np.asarray(pcm16, dtype=np.float32)
-        return np.multiply(pcm16_f32, self.output_scale, dtype=np.float32), z_all
-
-
+        pcm = self._validate_bed(bed_pcm)
+        status = out["status"]
+        if (status == 0 and out["n_channels"] is not None
+                and self._n_channels_prev is not None
+                and out["n_channels"] != self._n_channels_prev):
+            status = STATUS_CORE_CHANNEL_CHANGE
+        config_idx = (out["dmx_config_idx"] if out["n_channels"] is not None else None)
+        return self._render_frame(status=status, seq=out.get("seq_count_bits"),
+                                  out=out, mix_dq=mix_dq,
+                                  bed_pcm=pcm, lfe_pcm=lfe_pcm,
+                                  config_idx=config_idx)

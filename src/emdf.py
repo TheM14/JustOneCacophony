@@ -115,7 +115,7 @@ def _parse_at(data, start_bit):
             raise EmdfError(f"同一 EMDF 容器重复 payload id {payload_id}")
 
         has_sample_offset = bool(reader.read(1))
-        sample_offset = (reader.read(12) >> 1) if has_sample_offset else 0
+        sample_offset = variable_bits(reader, 11) if has_sample_offset else 0
         if reader.read(1):
             variable_bits(reader, 11)       # duration
         if reader.read(1):

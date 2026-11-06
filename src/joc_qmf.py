@@ -16,12 +16,12 @@ QMF5_WINDOW = np.asarray(_TABLES["qmf5_window"], dtype=np.float64)
 # 子带到参数带的映射表。
 _TABLE39 = {
     23: "0 1 2 3 4 5 6 7 8 9 10 11 12 12 13 13 14 14 15 15 16 16 16 17 17 17 18 18 18 18 19 19 19 19 19 20 20 20 20 20 20 21 21 21 21 21 21 21 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22 22",
-    15: "0 1 2 3 4 5 6 7 8 9 9 10 10 11 11 11 12 12 12 12 13 13 13 13 13 13 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14",
+    15: "0 1 2 3 4 5 6 7 8 9 9 10 10 10 11 11 11 11 12 12 12 12 12 13 13 13 13 13 13 13 13 13 13 13 13 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14 14",
     12: "0 1 2 3 4 4 5 5 6 6 6 7 7 7 8 8 8 8 9 9 9 9 9 10 10 10 10 10 10 10 10 10 10 10 10 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11 11",
-    9: "0 1 2 3 3 3 4 5 5 6 6 6 7 7 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8",
+    9: "0 1 2 3 3 4 4 5 5 6 6 6 6 6 7 7 7 7 7 7 7 7 7 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8",
     7: "0 1 2 2 3 3 3 3 4 4 4 4 4 4 5 5 5 5 5 5 5 5 5 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6 6",
-    5: "0 1 1 2 2 2 2 2 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 3 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4",
-    3: "0 0 0 1 1 1 1 1 1 1 1 1 1 1 1 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2",
+    5: "0 1 1 2 2 2 2 2 2 3 3 3 3 3 3 3 3 3 3 3 3 3 3 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4 4",
+    3: "0 0 0 1 1 1 1 1 1 1 1 1 1 1 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2 2",
     1: "0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0",
 }
 _PB_MAP = {k: np.fromstring(v, dtype=np.int64, sep=" ") for k, v in _TABLE39.items()}
@@ -34,13 +34,19 @@ def sb_to_pb_table(n_bands):
         raise ValueError(f"不支持的 JOC 参数带数: {n_bands}") from exc
 
 
-def interp_matrix(obj_info, dq, prev, n_ts=24):
-    """按数据点和跨帧状态插值，返回 ``[channel,subband,timeslot]``。"""
+def interp_matrix(obj_info, dq, prev=None, n_ts=24):
+    """按数据点和跨帧状态插值，返回 ``[channel,subband,timeslot]``。
+
+    ``prev`` 是上一帧末时槽的矩阵；``prev`` 为 None 表示该对象还没有历史，
+    此时所有时槽直接使用本帧第一个数据点（硬切，不从零淡入）。
+    """
     dq_sb = np.asarray(dq, dtype=np.float64)[:, :, sb_to_pb_table(dq.shape[2])]
-    previous = np.asarray(prev, dtype=np.float64)
+    previous = None if prev is None else np.asarray(prev, dtype=np.float64)
     n_dp = obj_info["n_dpoints"]
     slope = obj_info["slope_idx"]
     if slope == 0:
+        if previous is None:
+            return np.repeat(dq_sb[0, :, :, None], n_ts, axis=2)
         if n_dp == 1:
             alpha = (np.arange(n_ts, dtype=np.float64) + 1.0) / n_ts
             return previous[:, :, None] * (1.0 - alpha) + dq_sb[0, :, :, None] * alpha
@@ -53,9 +59,10 @@ def interp_matrix(obj_info, dq, prev, n_ts=24):
 
     ts = np.arange(n_ts)
     offsets = obj_info.get("offset_ts", [])
+    base = dq_sb[0, :, :, None] if previous is None else previous[:, :, None]
     if n_dp == 1:
-        return np.where(ts[None, None, :] < offsets[0], previous[:, :, None], dq_sb[0, :, :, None])
-    out = np.where(ts[None, None, :] < offsets[0], previous[:, :, None], dq_sb[0, :, :, None])
+        return np.where(ts[None, None, :] < offsets[0], base, dq_sb[0, :, :, None])
+    out = np.where(ts[None, None, :] < offsets[0], base, dq_sb[0, :, :, None])
     return np.where(ts[None, None, :] < offsets[1], out, dq_sb[1, :, :, None])
 
 

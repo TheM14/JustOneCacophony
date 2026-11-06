@@ -293,9 +293,10 @@ The main documented stages are:
 
 - dense JOC differential reconstruction and dequantization;
 - parameter-band mapping to 64 QMF subbands;
-- cross-frame parameter interpolation;
+- cross-frame parameter interpolation (hard cut when no previous state exists, zero-matrix publishing after an object disappears);
+- the frame-level JOC state machine (normal, hold, hard cut, core passthrough);
 - analysis/inverse QMF, surround delay, and FIR state;
-- the 1217-sample LFE delay;
+- the 1217-sample LFE delay with its sample-wise clipgain ramp;
 - OAMD Q15 coordinate conversion;
 - equal-power panning over target-layout regions;
 - layout-dependent position compensation and sample-wise gain ramps;
@@ -310,15 +311,16 @@ See the [mathematical notes](docs/math.en.md) for the equations used by the deco
 - All `joc_dmx_config_idx` values 0..4 are covered ($N=5,7,7,5,7$; the phase switch $\sigma(k)$ gates the Ls/Rs $-j$ rotation and the band-0 FIR together). The 7-channel configurations need an 8-channel bed and a dependent-substream `chanmap` to identify the extra pair: a missing independent substream or a missing `chanmap` is still a variant error, while a `chanmap` that disagrees with $k$ about the extra pair, or an OAMD bed mask that does, is recorded as a diagnostic and the frame still renders. The extra pair's **identity** is metadata only and never reaches the DSP (section 10.1); the bed mapping follows the channel codes the `chanmap` declares.
 - When one audio frame holds several EMDF containers carrying ID11/ID14 (one of them may be something other than the frame's JOC parameters: its ID14 may declare more objects than its bytes can hold, and its ID11 may carry no group id), the container is chosen by the association rule of ETSI TS 103 420 section 8.2 and its Table 56: **the container whose OAMD and JOC payloads share a group id and whose ID14 parses completely** wins, then one whose ID14 merely parses; only a unique best score is used, the others are recorded as a diagnostic (`emdf/extra_container_ignored`), and a tie or all-zero score stays a variant error.
 - The extra pair's identity follows TS 103 420 Table 47/Table 48 ($k=1\to$Lb/Rb, $k\in\{2,4\}\to$Tfl/Tfr, $N=5,7,7,5,7$); Annex E.3 requires a dependent-substream `chanmap`, when present, to indicate one of the Table 47 configurations, so `*_5_1_2top_*` (chanmap says Lts/Rts) does not satisfy that "shall". Such material is tolerated with a diagnostic instead of being refused.
-- An audio frame with no JOC EMDF at all (for example when the encoder wrote none for the first frame) emits silent object channels and is recorded in the `[diagnostics]` line and the JSON report's `diagnostics` field.
+- E-AC-3 input without JOC metadata (ID11 + ID14) is outside the supported scope. If an individual audio frame has no JOC EMDF, the implementation falls back to the decode state machine (hold the previous matrices while normal rendering was active, otherwise pass through the core PCM delayed by 1217 samples) and records `joc_frame_missing` in `diagnostics`.
 - The speaker and SOFA binaural paths currently cover ordinary point objects; extent, spread, diffuse, divergence, channel lock, and similar controls are outside the supported scope.
 - Speaker rendering reads warp, trims and front/back balance from OAMD, with no CLI warp override. Generic rendering parameters support warp 0/1 and modes 2/3, which render to 7.1.x before PLIIx or Standard (Lo/Ro) folding to 5.1.x; calibration always follows the final target layout. Source trajectories and binaural do not bake in these speaker controls; see [mathematics §12](docs/math.en.md) for parameters and evaluation order.
 - Multi-data-point streams, uncommon band configurations, and unusual OAMD scheduling have less coverage than common 12-band, single-data-point material.
-- `joc_clipgain` is folded into the **analysis-side scalar** (`scalar = 1/16 x g`, with `g` from the
-  `x:3 | y:5` field), so the x16 at the output cancels the 1/16 and the clamp sits **after** the gain.
-  The scalar is kept per frame: the first 256 samples ramp linearly from the previous frame's value and
-  the rest stays constant. For `g = 1` the interpolation is the identity and
-  `clamp(x)·1 == clamp(x·1)`.
+- `joc_clipgain` is folded into the **analysis-side scalar** (`scalar = 1/16 x g`, with
+  `g = 2^(x-4)·(1 + y/32)` from the `x:3 | y:5` field, range 0.0625..15.75), so the x16 at the output
+  cancels the 1/16 and the clamp sits **after** the gain. The scalar is kept per frame: the first 256
+  samples ramp linearly from the previous frame's value and the rest stays constant. For `g = 1` the
+  interpolation is the identity and `clamp(x)·1 == clamp(x·1)`. LFE bypasses the analysis but applies
+  the same full `g` as a sample-wise ramp before its 1217-sample delay.
 - A speaker limiter is outside the current primary formula.
 - The SOFA importer currently supports the strict `SimpleFreeFieldHRIR` FIR subset; other SOFA conventions require explicit adapters.
 - The binaural runtime is fixed at 48 kHz, fifth order, and one measurement-radius shell at a time.

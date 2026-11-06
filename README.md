@@ -255,9 +255,10 @@ JustOneCacophony/
 
 - dense JOC 差分还原与去量化；
 - 参数带到 64 个 QMF 子带的映射；
-- 跨帧参数插值；
+- 跨帧参数插值（无上一帧时硬切，对象消失后按零矩阵发布）；
+- 帧级 JOC 状态机（正常 / 保持 / 硬切 / 核心直通）；
 - analysis / inverse QMF、环绕声道延迟与 FIR 状态；
-- LFE 1217-sample 延迟；
+- LFE 1217-sample 延迟与逐点 clipgain 斜坡；
 - OAMD Q15 坐标转换；
 - 基于目标布局 region 的等功率声像；
 - 布局位置补偿与逐样本增益斜坡；
@@ -272,13 +273,14 @@ JustOneCacophony/
 - 覆盖 `joc_dmx_config_idx` 0..4 的全部档位（$N=5,7,7,5,7$，相位开关 $\sigma(k)$ 同时门控 Ls/Rs 的 $-j$ 旋转与 band-0 FIR）。7 通道档位必须解出 8 通道床，且需要依赖子流的 `chanmap` 才能确定额外那一对：缺少核心子流或缺少 `chanmap` 仍按变体报错；`chanmap` 声明的额外对与 $k$ 不一致、或 OAMD bed 掩码与 $k$ 不一致时，只记入 `diagnostics` 并继续解码——额外那对的**身份**只进元数据、不进 DSP（§10.1），床映射按 `chanmap` 的通道码做。
 - 同一音频帧里出现多个含 ID11/ID14 的 EMDF 容器时（其中一个容器可能不是本帧的 JOC 参数：ID14 声明的对象数超出其字节所能容纳的范围，ID11 也可能没有 groupid），按 ETSI TS 103 420 §8.2 + Table 56 的关联规则打分选取：**OAMD 与 JOC 载荷 groupid 相同且 ID14 能完整解析**的容器优先，其次只看 ID14 能否完整解析；只有唯一最高分才采用，其余记入 `diagnostics`（`emdf/extra_container_ignored`），并列或全部为 0 仍报变体。
 - 额外那一对的身份以 TS 103 420 Table 47/Table 48 为准（$k=1\to$Lb/Rb，$k\in\{2,4\}\to$Tfl/Tfr，$N=5,7,7,5,7$）；Annex E.3 规定依赖子流的 `chanmap`（若存在）**应**指明 Table 47 的某种配置，因此 `*_5_1_2top_*`（chanmap 写 Lts/Rts）属于不满足 "shall" 的素材，我们按"记诊断 + 继续解码"容错处理。
-- 音频帧内没有任何 JOC EMDF 时（例如编码器未写首帧元数据），该帧的对象通道静音，并在 stderr 的 `[diagnostics]` 与 JSON 报告的 `diagnostics` 里记一笔。
+- 不含 JOC 元数据（ID11 + ID14）的 E-AC-3 输入不在支持范围；解码过程中若个别音频帧没有 JOC EMDF，当前实现按状态机兜底（进入该帧前处于正常渲染时保持渲染，否则直通延迟 1217 采样的核心 PCM），并以 `joc_frame_missing` 记入 `diagnostics`。
 - 扬声器与 SOFA 双耳路径当前只覆盖普通点对象；extent、spread、diffuse、divergence、channel lock 等对象控制不在支持范围内。
 - 扬声器渲染从 OAMD 元数据读取 warp、trim 和 front/back balance；命令行不提供 warp 覆盖。通用渲染参数支持 warp 0/1，以及先渲染到 7.1.x 再按 PLIIx 或 Standard（Lo/Ro）折回 5.1.x 的 warp 2/3；校准参数始终按最终目标布局选择。原始对象轨迹与 binaural 不预处理这些扬声器控制，参数和顺序见 [数学说明 §12](docs/math.md)。
 - 多数据点、少见参数带配置和特殊 OAMD 调度的覆盖度低于常见 12-band、单数据点素材。
-- `joc_clipgain` 在**分析端**并入分析标量：`标量 = 1/16 × g`（`g = 1 + (y/32)·2^(x−4)`），出口的
+- `joc_clipgain` 在**分析端**并入分析标量：`标量 = 1/16 × g`（`g = 2^(x−4)·(1 + y/32)`，值域 0.0625..15.75），出口的
   ×16 抵消 1/16，净效果是 `×g`，clamp 因此处在增益**之后**。标量按帧保存两个槽（上一帧值 → 本帧值），
   本帧前 256 个采样线性过渡、之后为常数，复位后的第一帧直接取新值；`g = 1` 时插值恒等，且 `clamp(x)·1 == clamp(x·1)`。
+  LFE 走独立通路，但使用同一个完整 `g` 的逐点斜坡，并乘在 1217-sample 延迟之前。
 - 扬声器 limiter 不属于当前实现的主公式。
 - SOFA importer 当前严格支持 `SimpleFreeFieldHRIR` FIR；其它 SOFA convention 需要显式 adapter。
 - 双耳 runtime 固定 48 kHz、五阶和一次选择一个 measurement-radius shell。

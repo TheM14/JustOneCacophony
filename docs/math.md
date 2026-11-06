@@ -147,13 +147,15 @@ $$
 
 $$
 G_{\mathrm{clip}}=
-1+\frac{y}{32}2^{x-4}.
+2^{x-4}\left(1+\frac{y}{32}\right).
 $$
 
-它并入分析端标量 $S=\frac{1}{16}G_{\mathrm{clip}}$，乘在核心 bed 的每个采样上（QMF 分析之前）；
+值域为 $[0.0625,15.75]$；$x=4$ 时化为 $1+y/32$。它并入分析端标量
+$S=\frac{1}{16}G_{\mathrm{clip}}$，乘在核心 bed 的每个采样上（QMF 分析之前）；
 对象 inverse QMF 之后的 $\times16$ 抵消 $1/16$，净效果是乘 $G_{\mathrm{clip}}$，因此钳位 $[-1,1]$
 处在增益**之后**。标量按帧保留两个槽，本帧前 256 个采样从上一帧值线性过渡到本帧值、之后为常数，
-复位后的第一帧直接取新值。LFE 走旁通通路，不参与该标量。
+复位后的第一帧直接取新值。LFE 走独立通路，但使用同一个完整 $G_{\mathrm{clip}}$ 的逐点斜坡：
+斜坡在进入 1217-sample 延迟之前乘到 LFE 采样上，见 §8。
 
 ## 3. 参数带展开与时间插值
 
@@ -188,7 +190,14 @@ $$
 
 ### 3.2 单数据点插值
 
-令上一帧末值为 $P_{o,c,b}$，当前目标值为 $D_{o,c,p(b)}$。对时槽 $t=0\ldots23$：
+令上一帧末值为 $P_{o,c,b}$，当前目标值为 $D_{o,c,p(b)}$。对象没有 previous 状态时
+（整条流第一帧或对象首次出现），24 个时槽直接取当前目标（硬切，不从零淡入）：
+
+$$
+M_{o,c,b,t}=D_{o,c,p(b)},\qquad t=0\ldots23.
+$$
+
+有 previous 状态时，对时槽 $t=0\ldots23$：
 
 $$
 \alpha_t=\frac{t+1}{24},
@@ -206,11 +215,26 @@ $$
 M_{o,c,b,23}=D_{o,c,p(b)}.
 $$
 
-该值随后成为下一帧的 previous 状态。
+该值随后成为下一帧的 previous 状态。对象 present 由 1 变 0 后，从该帧起继续按全零矩阵发布，
+并把 previous 更新为零矩阵，直到它重新 present=1。
 
 ### 3.3 多数据点
 
-当一帧含两个数据点时，`offset_ts` 给出分段边界。每一段在上一目标和下一目标之间使用相同的线性关系；阶跃模式则在指定时槽直接切换目标。
+`offset_ts` 给出各数据点开始生效的时隙序号，取原始 5 bit 值（合法范围 $0\ldots23$）；
+同一对象的数据点必须严格递增。默认模式（`slope_idx=0`）下，两个数据点 $D_0,D_1$ 的插值为
+
+$$
+M_{o,c,b,t}=
+\begin{cases}
+(1-\alpha_t)P_{o,c,b}+\alpha_tD_{0}, & t=0\ldots10,\ \alpha_t=\dfrac{t+1}{12},\\[1mm]
+D_{0}, & t=11,\\[1mm]
+(1-\beta_t)D_{0}+\beta_tD_{1}, & t=12\ldots23,\ \beta_t=\dfrac{t-11}{12}.
+\end{cases}
+$$
+
+阶跃模式（`slope_idx=1`）在指定时槽直接切换目标：$t<o_0$ 保持上一帧末值 $P_{o,c,b}$
+（没有 previous 时取 $D_0$），$o_0\le t<o_1$ 取 $D_0$，$t\ge o_1$ 取 $D_1$；
+单数据点时 $t<o_0$ 保持 $P$、$t\ge o_0$ 取 $D_0$。
 
 ## 4. 核心 PCM 的 analysis QMF
 
@@ -334,14 +358,19 @@ $$
 
 ## 8. LFE 路径
 
-LFE 不经过对象矩阵或 inverse QMF，而是使用 1217-sample 延迟。输入与输出端的比例因子抵消后：
+LFE 不经过对象矩阵或 inverse QMF。核心 LFE 先乘逐点增益斜坡 $G[n]$（与 §2.4 同一个完整
+$G_{\mathrm{clip}}$：$n<256$ 时 $G[n]=G_{\mathrm{old}}+n(G_{\mathrm{new}}-G_{\mathrm{old}})/256$，
+$n\ge256$ 时 $G[n]=G_{\mathrm{new}}$，首帧或复位后 $G_{\mathrm{old}}=G_{\mathrm{new}}$），
+再进入 1217-sample 延迟；读出后只做钳位，不再乘任何增益：
 
 $$
 y_{\mathrm{LFE}}[n]=
 \mathrm{clip}\left(
-x_{\mathrm{LFE,core}}[n-1217],-1,1
+x_{\mathrm{LFE,core}}[n-1217]\cdot G[n-1217],-1,1
 \right).
 $$
+
+其中 $G[k]$ 取输入采样 $k$ 所在帧内的位置，即 $k\bmod1536$。
 
 ## 9. OAMD 坐标
 

@@ -147,15 +147,17 @@ If the clipgain field consists of integer $x$ and mantissa $y$, then
 
 $$
 G_{\mathrm{clip}}=
-1+\frac{y}{32}2^{x-4}.
+2^{x-4}\left(1+\frac{y}{32}\right).
 $$
 
-It is folded into the analysis-side scalar $S=\frac{1}{16}G_{\mathrm{clip}}$, which multiplies
-every core-bed sample before the QMF analysis; the $\times16$ after the object inverse QMF cancels the
-$1/16$, so the net effect is a multiply by $G_{\mathrm{clip}}$ and the $[-1,1]$ clamp sits **after** the
-gain. The scalar keeps two per-frame slots: the first 256 samples of a frame ramp linearly from the
-previous frame's value to this frame's value and the rest stays constant, and the first frame after a
-reset takes the new value directly. LFE bypasses this scalar.
+Its range is $[0.0625,15.75]$; at $x=4$ it reduces to $1+y/32$. It is folded into the analysis-side
+scalar $S=\frac{1}{16}G_{\mathrm{clip}}$, which multiplies every core-bed sample before the QMF
+analysis; the $\times16$ after the object inverse QMF cancels the $1/16$, so the net effect is a multiply
+by $G_{\mathrm{clip}}$ and the $[-1,1]$ clamp sits **after** the gain. The scalar keeps two per-frame
+slots: the first 256 samples of a frame ramp linearly from the previous frame's value to this frame's
+value and the rest stays constant, and the first frame after a reset takes the new value directly. LFE
+uses a separate path but applies the same full $G_{\mathrm{clip}}$ as a sample-wise ramp before its
+1217-sample delay; see section 8.
 
 ## 3. Parameter-band expansion and time interpolation
 
@@ -190,7 +192,15 @@ Thus $p(b)=k$ if and only if $b\in\mathcal B_k$. Other parameter-band counts use
 
 ### 3.2 One-data-point interpolation
 
-Let $P_{o,c,b}$ be the previous frame-end value and $D_{o,c,p(b)}$ the current target. For slot $t=0\ldots23$:
+Let $P_{o,c,b}$ be the previous frame-end value and $D_{o,c,p(b)}$ the current target. When the object
+has no previous state yet (the first frame of the stream, or the object's first appearance), all 24 slots
+take the current target directly (hard cut, no fade-in from zero):
+
+$$
+M_{o,c,b,t}=D_{o,c,p(b)},\qquad t=0\ldots23.
+$$
+
+With a previous state, for slot $t=0\ldots23$:
 
 $$
 \alpha_t=\frac{t+1}{24},
@@ -208,11 +218,29 @@ $$
 M_{o,c,b,23}=D_{o,c,p(b)}.
 $$
 
-This value then becomes the previous state for the next frame.
+This value then becomes the previous state for the next frame. Once an object's present flag goes from 1
+to 0, it keeps being published with an all-zero matrix and its previous state is updated to zero until it
+becomes present again.
 
 ### 3.3 Multiple data points
 
-When a frame contains two data points, `offset_ts` gives the segment boundary. Each segment uses the same linear relation between the previous and next targets; step mode switches targets at the designated slot.
+`offset_ts` gives the first slot at which each data point becomes active, using the raw 5-bit value
+(legal range $0\ldots23$); the values of one object must be strictly increasing. In the default mode
+(`slope_idx=0`), two data points $D_0$ and $D_1$ interpolate as
+
+$$
+M_{o,c,b,t}=
+\begin{cases}
+(1-\alpha_t)P_{o,c,b}+\alpha_tD_{0}, & t=0\ldots10,\ \alpha_t=\dfrac{t+1}{12},\\[1mm]
+D_{0}, & t=11,\\[1mm]
+(1-\beta_t)D_{0}+\beta_tD_{1}, & t=12\ldots23,\ \beta_t=\dfrac{t-11}{12}.
+\end{cases}
+$$
+
+Step mode (`slope_idx=1`) switches targets directly at the designated slots: for $t<o_0$ it keeps the
+previous frame-end value $P_{o,c,b}$ (or $D_0$ when no previous state exists), for $o_0\le t<o_1$ it
+uses $D_0$, and for $t\ge o_1$ it uses $D_1$; with a single data point it keeps $P$ for $t<o_0$ and uses
+$D_0$ from $o_0$ on.
 
 ## 4. Analysis QMF for core PCM
 
@@ -337,14 +365,20 @@ where $r=0\ldots63$. Synthesis state must advance continuously by slot.
 
 ## 8. LFE path
 
-LFE bypasses the object matrix and inverse QMF and uses a 1217-sample delay. After the input and output scale factors cancel:
+LFE bypasses the object matrix and inverse QMF. The core LFE samples are first multiplied by the
+sample-wise gain ramp $G[n]$ (the same full $G_{\mathrm{clip}}$ as section 2.4: for $n<256$,
+$G[n]=G_{\mathrm{old}}+n(G_{\mathrm{new}}-G_{\mathrm{old}})/256$; for $n\ge256$, $G[n]=G_{\mathrm{new}}$;
+on the first frame or after a reset, $G_{\mathrm{old}}=G_{\mathrm{new}}$). The scaled samples then
+enter the 1217-sample delay, and the read-out is only clamped, with no further gain:
 
 $$
 y_{\mathrm{LFE}}[n]=
 \mathrm{clip}\left(
-x_{\mathrm{LFE,core}}[n-1217],-1,1
+x_{\mathrm{LFE,core}}[n-1217]\cdot G[n-1217],-1,1
 \right).
 $$
+
+Here $G[k]$ uses the frame-local position of input sample $k$, i.e. $k\bmod1536$.
 
 ## 9. OAMD coordinates
 
