@@ -5,9 +5,10 @@
   → 对象时域组装（前步、64 点 FFT、旋转、合成窗）→ ×16 + clamp
   → LFE 专用 1217-sample 环形延迟（逐点乘 clipgain 斜坡）
   → 16ch（ch0 = LFE, ch1-15 = 15 对象）→ ×output_scale
+  无元数据帧改为 8 路核心 PCM identity 直通（槽 0..7，每路延迟 1217），槽 8..15 为零。
 
 跨帧状态：seq 状态机（state/expected/无效帧计数）、每对象的 prev 矩阵与存在标记、
-QMF 分析与合成状态、LFE 延迟环、直通渲染的核心 PCM 历史。
+QMF 分析与合成状态、LFE 延迟环、直通渲染的 8 路核心 PCM 历史。
 
 output_scale:
   默认 1.0（0 dB）。用户选择的 dB 在命令行转换为 float32 系数；该系数
@@ -24,6 +25,8 @@ CORE_CHANNELS = [0, 1, 2, 4, 5]  # L R C Ls Rs（EAC3 5.1 核心顺序）
 FRAME_SAMPLES = 1536
 MAX_OBJECTS = 15
 MAX_CORE_CHANNELS = 7
+CORE_OUT_CHANNELS = 8
+LFE_SLOT = 3
 LFE_DELAY = 1217
 SEQ_MODULUS = 1024
 # 没有 JOC 元数据的帧：状态机短路分支使用这个状态码。
@@ -59,8 +62,8 @@ class JocRenderer:
         # 逐点增益斜坡在写入延迟环之前乘上，读出后不再乘任何增益。
         self._lfe_delay = np.zeros(LFE_DELAY, dtype=np.float64)
         self._lfe_clipgain = None         # LFE 增益斜坡的起点；None = 还没有历史
-        # 直通渲染的核心 PCM 延迟历史：保存上一帧输入。
-        self._core_hist = np.zeros((MAX_CORE_CHANNELS, FRAME_SAMPLES), dtype=np.float64)
+        # 直通渲染的 8 路核心 PCM 延迟历史：保存上一帧输入。
+        self._core_hist = np.zeros((CORE_OUT_CHANNELS, FRAME_SAMPLES), dtype=np.float64)
         # seq 状态机与逐帧分派所需的跨帧状态。
         self._state = 0
         self._expected = 0
@@ -150,10 +153,14 @@ class JocRenderer:
             return
         self._analysis_fifo[n_channels:] = 0.0
         self._prev_mtx[:, n_channels:, :] = 0.0
-        self._core_hist[n_channels:] = 0.0
         if n_channels == 5:
             # N=5 不用额外那一对，10 时隙延迟线 3、4 号槽不再推进。
             self._analysis_delay[3:] = 0.0
+
+    def _maybe_clear_lfe_ring(self, status):
+        """声明声道数与实际核心声道数失配（本帧 status=9）时清空 LFE 环。"""
+        if status == STATUS_CORE_CHANNEL_CHANGE:
+            self._lfe_delay.fill(0.0)
 
     def _advance_state(self, status, seq):
         """按 seq 推进状态机，返回进入本帧前的 ``state``。
@@ -395,13 +402,23 @@ class JocRenderer:
         return pcm
 
     @staticmethod
+    def _core8(core, lfe):
+        """JOC 输入序 5/7 路（不含 LFE）→ 8 平面核心序 L,R,C,LFE,Ls,Rs,(Lrs,Rrs)。"""
+        out = np.zeros((CORE_OUT_CHANNELS, FRAME_SAMPLES), dtype=np.float64)
+        out[0:3] = core[0:3]
+        out[LFE_SLOT] = lfe
+        rest = core.shape[0] - 3
+        if rest > 0:
+            out[4:4 + rest] = core[3:]
+        return out
+
+    @staticmethod
     def _delayed_core(hist, current):
-        """直通渲染：把核心 PCM 延迟 1217 个采样（只处理实际有的声道数）。"""
-        n_channels = current.shape[0]
-        out = np.zeros((MAX_CORE_CHANNELS, FRAME_SAMPLES), dtype=np.float64)
-        out[:n_channels, :LFE_DELAY] = hist[:n_channels, 319:]
-        out[:n_channels, LFE_DELAY:] = current[:, :FRAME_SAMPLES - LFE_DELAY]
-        return out[:n_channels]
+        """直通渲染：8 路核心 PCM 各延迟 1217 个采样。"""
+        out = np.empty((CORE_OUT_CHANNELS, FRAME_SAMPLES), dtype=np.float64)
+        out[:, :LFE_DELAY] = hist[:, FRAME_SAMPLES - LFE_DELAY:]
+        out[:, LFE_DELAY:] = current[:, :FRAME_SAMPLES - LFE_DELAY]
+        return out
 
     def _render_frame(self, *, status, seq, out, mix_dq, bed_pcm, lfe_pcm,
                       config_idx=None):
@@ -410,11 +427,12 @@ class JocRenderer:
         n_channels = pcm.shape[0]
         if self._n_channels_prev is not None and n_channels != self._n_channels_prev:
             self._clear_unused_channels(n_channels)
-        pre_state = self._advance_state(status, seq)
+        self._advance_state(status, seq)
         state = self._state
+        self._maybe_clear_lfe_ring(status)
 
         if status == STATUS_NO_METADATA:
-            mode = "hold" if pre_state == 1 else "passthrough"
+            mode = "passthrough"
         elif state == 4:
             mode = "hard_cut"
         elif state in (2, 3):
@@ -447,6 +465,7 @@ class JocRenderer:
                if lfe_pcm is None else np.asarray(lfe_pcm, dtype=np.float64))
         if lfe.shape != (FRAME_SAMPLES,):
             raise ValueError(f"LFE 帧应为 (1536,)，实际 {lfe.shape}")
+        core8 = self._core8(pcm, lfe)
 
         x = self.qmf_x(pcm, phase_new=phase_new, apply_dc_filter=sigma, rotate=sigma)
         self._last_x = x.copy()
@@ -475,15 +494,15 @@ class JocRenderer:
             z_all = self._zero_objects()
             self.dll_synth_objects(z_all)
             self.decode_lfe(lfe, clipgain)
-            pcm16[:n_channels] = self._delayed_core(self._core_hist, pcm)
+            pcm16[:CORE_OUT_CHANNELS] = self._delayed_core(self._core_hist, core8)
 
-        self._core_hist[:n_channels] = pcm
+        self._core_hist[:] = core8
         self._n_channels_prev = n_channels
         pcm16_f32 = np.asarray(pcm16, dtype=np.float32)
         return np.multiply(pcm16_f32, self.output_scale, dtype=np.float32), z_all
 
     def render_missing_frame(self, bed_pcm, lfe_pcm=None, config_idx=3):
-        """没有 JOC 元数据的音频帧：按状态机结果保持渲染或直通核心 PCM。"""
+        """没有 JOC 元数据的音频帧：8 路核心 PCM identity 直通（每路延迟 1217 采样）。"""
         return self._render_frame(status=STATUS_NO_METADATA, seq=None,
                                   out=None, mix_dq=None,
                                   bed_pcm=bed_pcm, lfe_pcm=lfe_pcm,

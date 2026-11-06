@@ -37,8 +37,9 @@ def sb_to_pb_table(n_bands):
 def interp_matrix(obj_info, dq, prev=None, n_ts=24):
     """按数据点和跨帧状态插值，返回 ``[channel,subband,timeslot]``。
 
-    ``prev`` 是上一帧末时槽的矩阵；``prev`` 为 None 表示该对象还没有历史，
-    此时所有时槽直接使用本帧第一个数据点（硬切，不从零淡入）。
+    ``prev`` 是上一帧末时槽的矩阵；``prev`` 为 None 表示该对象还没有历史：
+    单数据点全部取 ``dp0``（硬切）；双数据点前一半取 ``dp0``，后一半仍从 ``dp0``
+    插值到 ``dp1``。
     """
     dq_sb = np.asarray(dq, dtype=np.float64)[:, :, sb_to_pb_table(dq.shape[2])]
     previous = None if prev is None else np.asarray(prev, dtype=np.float64)
@@ -46,7 +47,13 @@ def interp_matrix(obj_info, dq, prev=None, n_ts=24):
     slope = obj_info["slope_idx"]
     if slope == 0:
         if previous is None:
-            return np.repeat(dq_sb[0, :, :, None], n_ts, axis=2)
+            if n_dp == 1:
+                return np.repeat(dq_sb[0, :, :, None], n_ts, axis=2)
+            half = n_ts // 2
+            a1 = (np.arange(n_ts - half, dtype=np.float64) + 1.0) / (n_ts - half)
+            first = np.repeat(dq_sb[0, :, :, None], half, axis=2)
+            second = dq_sb[0, :, :, None] * (1.0 - a1) + dq_sb[1, :, :, None] * a1
+            return np.concatenate((first, second), axis=2)
         if n_dp == 1:
             alpha = (np.arange(n_ts, dtype=np.float64) + 1.0) / n_ts
             return previous[:, :, None] * (1.0 - alpha) + dq_sb[0, :, :, None] * alpha

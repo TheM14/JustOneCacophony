@@ -193,12 +193,10 @@ Thus $p(b)=k$ if and only if $b\in\mathcal B_k$. Other parameter-band counts use
 ### 3.2 One-data-point interpolation
 
 Let $P_{o,c,b}$ be the previous frame-end value and $D_{o,c,p(b)}$ the current target. When the object
-has no previous state yet (the first frame of the stream, or the object's first appearance), all 24 slots
-take the current target directly (hard cut, no fade-in from zero):
-
-$$
-M_{o,c,b,t}=D_{o,c,p(b)},\qquad t=0\ldots23.
-$$
+has no previous state yet (the first frame of the stream, or the object's first appearance), a single
+data point keeps all 24 slots at $D_{o,c,p(b)}$ (hard cut, no fade-in from zero); with two data points,
+the first 12 slots stay at $D_0$ and the last 12 slots still interpolate from $D_0$ to $D_1$ using the
+second segment of section 3.3 (with $P$ set to $D_0$).
 
 With a previous state, for slot $t=0\ldots23$:
 
@@ -236,6 +234,8 @@ D_{0}, & t=11,\\[1mm]
 (1-\beta_t)D_{0}+\beta_tD_{1}, & t=12\ldots23,\ \beta_t=\dfrac{t-11}{12}.
 \end{cases}
 $$
+
+When no previous state exists, the same formulas apply with $P_{o,c,b}$ set to $D_0$.
 
 Step mode (`slope_idx=1`) switches targets directly at the designated slots: for $t<o_0$ it keeps the
 previous frame-end value $P_{o,c,b}$ (or $D_0$ when no previous state exists), for $o_0\le t<o_1$ it

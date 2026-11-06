@@ -30,9 +30,10 @@ def _joc_pair_score(container):
     payload = container.payloads.get(14)
     if payload is None or 11 not in container.payloads:
         return 0
-    parses = True
+    parses = False
     try:
-        parse_joc(payload)
+        parsed = parse_joc(payload)
+        parses = parsed["status"] not in (2, 4)
     except (IndexError, ValueError):
         parses = False
     group_ids = getattr(container, "group_ids", None) or {}
@@ -297,7 +298,14 @@ class DirectPayloadIndex:
                 continue
 
             if 14 in container.payloads:
-                parsed = parse_joc_header(container.payloads[14])
+                parsed = parse_joc_header(container.payloads[14], strict=False)
+                if parsed["n_channels"] is None:
+                    raise UnsupportedVariantError(
+                        "joc", "downmix_config_unsupported",
+                        "ID14 的 joc_dmx_config_idx 不受支持（合法值 0..4）",
+                        frame=frame_number,
+                        details={"dmx_config_idx": parsed["dmx_config_idx"],
+                                 "payload": bytes_descriptor(container.payloads[14])})
                 parsed["payload"] = container.payloads[14]
                 frame_bed = (program_bed_summary(container.payloads[11])
                              if 11 in container.payloads else None)
