@@ -384,7 +384,7 @@ q_N(k)=
 \right).
 $$
 
-OAR 坐标为
+归一化房间坐标为
 
 $$
 u=\frac{q_1}{32768},
@@ -803,3 +803,35 @@ $$
 - 多个 OAMD position block 必须按其时间顺序调度。
 - limiter 属于独立后处理，不包含在上述混音公式中。
 - trim 与前后平衡只作用于扬声器渲染；双耳渲染不读取它们。
+
+## 16. OAMD 元数据应用（扬声器路径）
+
+扬声器渲染把对象 PCM 映射到目标布局时，除几何声像外还应用 OAMD 的对象属性：
+
+- 每块整数增益 `Qg`（单位增益 4096）与 `inactive`；增益在生成目标系数时乘一次，
+  LFE 使用所属元数据对象的增益/活动状态；
+- basic/render 状态 0/1/2/3 的完整块展开、同对象前一块继承与局部 mask 更新；
+- `zone_constraints_idx` 选择区域，映射为 `[0,1,2,3,4,5,6,0]`；`enable_elevation=0`
+  在位置补偿和尺寸扩散前令 z=0；
+- `object_size_idx` 的 5 bit 尺寸、`size_curve` 分段线性映射与尺寸扩散核；
+  尺寸核按分组等功率声像、S448 权重和幂和，在运行时用区域几何生成：
+  20/20/8 个虚拟点、20 个尺寸节点、35/4 个位置节点，边界表为
+  X(0)、X(1)、Y(0)、Y(1)、Z(1)；
+- `snap` 的首个最大系数扬声器吸附、`divergence` 的左右两点合成、
+  element 5 的高精度位置补充；
+- `default_priority`/`priority_bits` 在 size 数量预算不足时决定保留尺寸的对象；
+- `isf_idx` 的 ISF 基矩阵（可含负系数，不做逐列归一化）与逐 basis 补偿；
+- `b_bed_chan_distribute` 的 bed 标签候选筛选、权重归一化、缺失声道 fallback 和
+  直达/distribute 的补偿。
+
+ISF 路径把 N 路 ISF object audio essences 按 `isf_config` 的 M.U.L.Z 顺序组成
+列向量 t，按 `isf_idx` 选输入配置、按目标输出布局选矩阵 M，再计算 y = M·t：
+每个 ISF 声道按矩阵对应的一行分配到目标扬声器，LFE 不参与矩阵、直接旁路，
+每个 basis 另有补偿。矩阵系数与布局描述见 `data/oamd/metadata_params.json`。
+
+gain、size、priority、位置、divergence 与差分/细化表由 `src/oamd_bits.py` 按
+公式或固定常量计算，size 扩散核由 `src/oamd_math.py` 从区域几何生成（分组
+等功率声像 + S448 权重 + 幂和）。bed 标签、路由和参考位置由
+`src/bed_layout.py` 从 `speaker_layouts` 推导。
+ADM 导出与 SOFA 双耳路径仍只使用对象位置，不应用这些扬声器目标系数。
+

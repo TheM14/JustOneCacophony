@@ -20,7 +20,7 @@ It covers the currently implemented stream forms. Unknown variants fail explicit
   layout, while LFE keeps its separate path.
 - Reconstruct LFE plus 15 object channels through analysis QMF, parameter interpolation, the object matrix, and inverse QMF.
 - Write a 25-channel ADM BWF: a 10-channel 7.1.2 bed (silent except for LFE) plus 15 objects.
-- Render directly to `2.0`, `3.1`, `4.0`, `5.1`, `7.1`, `5.1.2`, `5.1.4`, `7.1.2`, `7.1.4`, `9.1.4`
+- Render directly to `2.0`, `3.1`, `4.0`, `5.1`, `6.0`, `7.1`, `5.1.2`, `5.1.4`, `7.1.2`, `7.1.4`, `9.1.4`
   or `9.1.6` (`4.0` is the quad layout, a front and a back pair; see
   [Speaker layouts and channel order](#speaker-layouts-and-channel-order)).
 - Run binaural rendering directly from `pcm16 + ID11/OAMD`, without a temporary ADM BWF.
@@ -242,7 +242,7 @@ Without `-o`, output goes to `output/` at the repository root.
 
 ## Speaker layouts and channel order
 
-`--speaker-layout` accepts the eleven layouts below, and the PCM/WAV channel order is the order in
+`--speaker-layout` accepts the twelve layouts below, and the PCM/WAV channel order is the order in
 the table:
 
 | Layout | Channel order |
@@ -251,6 +251,7 @@ the table:
 | 3.1 | L, R, C, LFE |
 | 4.0 | L, R, Lrs, Rrs |
 | 5.1 | L, R, C, LFE, Ls, Rs |
+| 6.0 | L, R, Ls, Rs, Lrs, Rrs |
 | 7.1 | L, R, C, LFE, Ls, Rs, Lrs, Rrs |
 | 5.1.2 | L, R, C, LFE, Ls, Rs, Ltm, Rtm |
 | 5.1.4 | L, R, C, LFE, Ls, Rs, Ltf, Rtf, Ltr, Rtr |
@@ -299,6 +300,7 @@ The main documented stages are:
 - the 1217-sample LFE delay with its sample-wise clipgain ramp;
 - OAMD Q15 coordinate conversion;
 - equal-power panning over target-layout regions;
+- OAMD metadata application (per-block gain and inactive, zone/elevation, size kernel, snap, divergence, position refinement, priority size budget, ISF matrices, bed distribution);
 - layout-dependent position compensation and sample-wise gain ramps;
 - float32 and PCM24 output quantization;
 - SOFA canonical import, full-HRIR directional interpolation, explicit 64-QMF/77-hybrid compact export, `36×2×77` fifth-order fields, exactly-once delay/phase, and special LFE.
@@ -312,7 +314,7 @@ See the [mathematical notes](docs/math.en.md) for the equations used by the deco
 - When one audio frame holds several EMDF containers carrying ID11/ID14 (one of them may be something other than the frame's JOC parameters: its ID14 may declare more objects than its bytes can hold, and its ID11 may carry no group id), the container is chosen by the association rule of ETSI TS 103 420 section 8.2 and its Table 56: **the container whose OAMD and JOC payloads share a group id and whose ID14 parses completely** wins, then one whose ID14 merely parses; only a unique best score is used, the others are recorded as a diagnostic (`emdf/extra_container_ignored`), and a tie or all-zero score stays a variant error.
 - The extra pair's identity follows TS 103 420 Table 47/Table 48 ($k=1\to$Lb/Rb, $k\in\{2,4\}\to$Tfl/Tfr, $N=5,7,7,5,7$); Annex E.3 requires a dependent-substream `chanmap`, when present, to indicate one of the Table 47 configurations, so `*_5_1_2top_*` (chanmap says Lts/Rts) does not satisfy that "shall". Such material is tolerated with a diagnostic instead of being refused.
 - E-AC-3 input without JOC metadata (ID11 + ID14) is outside the supported scope. If an individual audio frame has no JOC EMDF, that frame passes the core PCM through (the 8 core planes are written to output slots 0..7 by identity, each delayed by 1217 samples) and records `joc_frame_missing` in `diagnostics`.
-- The speaker and SOFA binaural paths currently cover ordinary point objects; extent, spread, diffuse, divergence, channel lock, and similar controls are outside the supported scope.
+- Speaker rendering applies the OAMD object attributes: per-block gain/inactive, zone/elevation, size/snap/divergence, the priority size budget, element 5 position refinement, ISF basis matrices, and bed distribution. The SOFA binaural path still covers ordinary point objects only; these object controls are outside the binaural path's scope.
 - Speaker rendering reads warp, trims and front/back balance from OAMD, with no CLI warp override. Generic rendering parameters support warp 0/1 and modes 2/3, which render to 7.1.x before PLIIx or Standard (Lo/Ro) folding to 5.1.x; calibration always follows the final target layout. Source trajectories and binaural do not bake in these speaker controls; see [mathematics §12](docs/math.en.md) for parameters and evaluation order.
 - Multi-data-point streams, uncommon band configurations, and unusual OAMD scheduling have less coverage than common 12-band, single-data-point material.
 - `joc_clipgain` is folded into the **analysis-side scalar** (`scalar = 1/16 x g`, with

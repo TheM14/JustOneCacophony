@@ -5,6 +5,8 @@ ch1..15；bed/ISF/未激活对象没有位置字段，保持上一帧位置。el
 驱动，未知 element 按边界跳过；个别编码器的 ``oa_element_size`` 比实际内容短时以
 结构解析为准，差异记入 ``diagnostics``，不算变体错误。
 """
+import math
+
 import numpy as np
 
 from variant_error import UnsupportedVariantError, bytes_descriptor
@@ -25,6 +27,18 @@ TRIM_LUT = (6.0, 3.0, 1.5, 0.75, -0.75, -1.5, -3.0, -4.5,
             -6.0, -7.5, -9.0, -10.5, -12.0, -13.5, -15.0, -36.0)
 # bal3d_y 的编码为 (code + 1) / 16，幅度落在 [1/16, 1]，取不到 0。
 BALANCE_STEP = 16
+# 5.5.3/5.5.5 divergence 码表（公开实现固定值），Q15 量纲。
+DIVERGENCE_TABLE = (
+    0, 0, 66, 117, 209, 331, 467, 659,
+    829, 1042, 1309, 1643, 2059, 2302, 2573, 2872,
+    3202, 3564, 3960, 4391, 4856, 5354, 5882, 6437,
+    7014, 7605, 8204, 8803, 9394, 9970, 10524, 11051,
+    11548, 12011, 12441, 12835, 13197, 13525, 13823, 14092,
+    14335, 14553, 14748, 14924, 15081, 15221, 15347, 15459,
+    15559, 15649, 15728, 15799, 15863, 15970, 16055, 16123,
+    16176, 16219, 16267, 16301, 16332, 16355, 16368, 16384,
+)
+DIVERGENCE_QUICK_INDEX = (26, 29, 32, 63)
 # 5.6.0.11 Table 11b：ISF 类型 → 对象数。
 ISF_OBJECT_COUNTS = (4, 8, 10, 14, 15, 30)
 # 5.6.1.1.4 Table 12：10 bit 标准 bed 掩码。array position 9（RC_L/RC_R）是 channel
@@ -179,6 +193,8 @@ def _parse_program_assignment(reader, raw_payload):
         "content_description": None,
         "bed_assignments": [],
         "num_bed_objects": 0,
+        "b_bed_chan_distribute": False,
+        "bed_mask": 0,
         "isf_idx": None,
         "num_isf_objects": 0,
         "num_dynamic_objects": None,
@@ -187,6 +203,11 @@ def _parse_program_assignment(reader, raw_payload):
         program["lfe_present"] = bool(reader.read(1))
         # 5.6.4.8：对象顺序为 bed → ISF → dynamic，LFE 属于 bed，排在最前。
         program["num_bed_objects"] = 1 if program["lfe_present"] else 0
+        if program["lfe_present"]:
+            program["bed_assignments"] = [{
+                "instance": 0, "lfe_only": True, "channels": ["RC_LFE"],
+            }]
+            program["bed_mask"] = 0x8
         return program
 
     mask = reader.read(4)
@@ -207,16 +228,19 @@ def _parse_program_assignment(reader, raw_payload):
                 continue
             if reader.read(1):                      # b_standard_chan_assign
                 bed_mask = reader.read(10)
-                program["bed_assignments"].append({
-                    "instance": instance, "lfe_only": False, "standard": True,
-                    "mask": bed_mask, "channels": standard_bed_channels(bed_mask),
-                })
+                standard = True
+                channels = standard_bed_channels(bed_mask)
+                wide_mask = standard_bed_mask(bed_mask)
             else:
                 bed_mask = reader.read(17)
-                program["bed_assignments"].append({
-                    "instance": instance, "lfe_only": False, "standard": False,
-                    "mask": bed_mask, "channels": nonstandard_bed_channels(bed_mask),
-                })
+                standard = False
+                channels = nonstandard_bed_channels(bed_mask)
+                wide_mask = bed_mask
+            program["bed_assignments"].append({
+                "instance": instance, "lfe_only": False, "standard": standard,
+                "mask": bed_mask, "channels": channels,
+            })
+            program["bed_mask"] |= wide_mask
         program["num_bed_objects"] = sum(
             len(assignment["channels"]) for assignment in program["bed_assignments"])
     if mask & 0x2:
@@ -235,82 +259,264 @@ def _parse_program_assignment(reader, raw_payload):
     return program
 
 
-def _parse_object_info_block(reader, object_index, in_bed_or_isf, raw_payload, retain_spatial=False):
-    """5.5.9 ``object_info_block(0)``：一个对象的属性更新。"""
+# 17 bit 非标准 bed 标签在 wide mask 中的位顺序（与 NONSTD_BED_LABELS 相同）。
+_STANDARD_BED_TO_WIDE = (0x3, 0x4, 0x8, 0x30, 0xC0,
+                         0x300, 0xC00, 0x3000, 0xC000, 0x10000)
+
+
+def standard_bed_mask(bed_mask):
+    """5.6.1.1.4 的 10 bit 标准掩码 → 17 bit 非标准 bed 掩码。"""
+    wide = 0
+    for bit, expanded in enumerate(_STANDARD_BED_TO_WIDE):
+        if (int(bed_mask) >> bit) & 1:
+            wide |= expanded
+    return wide
+
+
+def _q15_ratio(numerator, denominator):
+    """Q15 of ``numerator / denominator``, rounded half up and capped."""
+    return min(32767, int(math.floor(32768.0 * numerator / denominator + 0.5)))
+
+
+def _gain_q(gain_idx, gain_bits):
+    """gain_idx/bits → 整数增益 Qg（单位增益 4096）。"""
+    if gain_idx == 0:
+        return 4096
+    if gain_idx == 1:
+        return 0
+    if gain_idx == 2:
+        bits = int(gain_bits)
+        db = 15 - bits if bits < 15 else 14 - bits
+        return int(math.floor(4096.0 * (10.0 ** (db / 20.0))))
+    raise ValueError("gain_idx=3 需要同块前一对象的状态")
+
+
+def _size_q(mode, values):
+    """size_idx 与 5 bit 数值 → (sx, sy, sz) 整数 Q15。"""
+    if mode == 1:
+        value = _q15_ratio(int(values), 31)
+        return (value, value, value)
+    if mode == 2:
+        return tuple(_q15_ratio(int(value), 31) for value in values)
+    return (0, 0, 0)
+
+
+_RENDER_DEFAULTS = {
+    "qx": 16384, "qy": 16384, "qz": 0,
+    "coarse": (31, 31, 0),
+    "zone_idx": 0, "enable_elevation": True,
+    "size_mode": 0, "size_q": (0, 0, 0), "snap": 0,
+    "divergence_q": 0,
+}
+
+
+def _clamp_coarse(coarse):
+    x, y, z = coarse
+    return (min(max(int(x), 0), 62), min(max(int(y), 0), 62),
+            min(max(int(z), -15), 15))
+
+
+def _coarse_to_q15(coarse):
+    x, y, z = coarse
+    qx = _q15_ratio(int(x), 62)
+    qy = _q15_ratio(int(y), 62)
+    magnitude = _q15_ratio(abs(int(z)), 15)
+    return qx, qy, (-magnitude if z < 0 else magnitude)
+
+
+_POSITION_DELTA = (0, 1, 2, 3, -4, -3, -2, -1)
+_REFINE_DELTA = (1, 2, -1, -2)
+
+
+def _refine_xy(index):
+    """Q15 code for one refined X/Y position index ``5*coarse + delta + 2``."""
+    return min(32767, max(0, int(math.floor(
+        (int(index) - 2) * 32768.0 / 310.0 + 0.5))))
+
+
+def _refine_z(index):
+    """Q15 code for one refined Z position index (signed)."""
+    return min(32767, max(-32767, int(math.floor(
+        (int(index) - 2) * 32768.0 / 75.0 + 0.5))))
+
+
+def _copy_render_state(previous):
+    state = {key: previous[key] for key in _RENDER_DEFAULTS}
+    state["coarse"] = tuple(previous["coarse"])
+    state["size_q"] = tuple(previous["size_q"])
+    state["qx"], state["qy"], state["qz"] = previous["qx"], previous["qy"], previous["qz"]
+    state["divergence_q"] = int(previous["divergence_q"])
+    return state
+
+
+def parse_object_info_block(reader, object_index, block_index, kind,
+                            previous_block, raw_payload, retain_spatial=False,
+                            object_states=None):
+    """5.5.9 ``object_info_block``：展开一个对象的一个块。"""
     info = {
         "object": object_index,
-        "in_bed_or_isf": bool(in_bed_or_isf),
+        "block": block_index,
+        "kind": kind,
+        "in_bed_or_isf": kind != "dynamic",
         "not_active": bool(reader.read(1)),
     }
-    # blk == 0 且对象激活时 basic info 恒为 full update（status 0b01）。
-    basic_status = 0 if info["not_active"] else 1
-    info["basic_status"] = basic_status
-    if basic_status in (1, 3):
-        if basic_status == 1:
-            # 5.5.10：object_basic_info[] = {true, true}；
-            # 5.6.4.12：array[1] = object_gain_idx，array[0] = b_default_object_priority。
-            gain_present = priority_present = True
-        else:
-            flags = reader.read(2)
-            gain_present = bool(flags & 1)
-            priority_present = bool(flags & 2)
-        if gain_present:
+    inactive = info["not_active"]
+    if inactive:
+        info["basic_status"] = 0
+        info["gain_q"] = 0
+        info["priority_q"] = 0
+        render = dict(_RENDER_DEFAULTS)
+        render["coarse"] = (31, 31, 0)
+        render["size_q"] = tuple(render["size_q"])
+        info.update({key: render[key] for key in render if key != "coarse"})
+        info["coarse"] = render["coarse"]
+        info["render_status"] = 0
+        info["qx"], info["qy"], info["qz"] = _coarse_to_q15(render["coarse"])
+    else:
+        basic_status = 1 if block_index == 0 else reader.read(2)
+        info["basic_status"] = basic_status
+        if basic_status == 0:
+            info["gain_q"] = 0
+            info["priority_q"] = 0
+        elif basic_status == 1:
             gain_idx = reader.read(2)
             info["gain_idx"] = gain_idx
-            if gain_idx == 2:
-                info["gain_bits"] = reader.read(6)
-        if priority_present:
+            gain_bits = reader.read(6) if gain_idx == 2 else None
+            if gain_bits is not None:
+                info["gain_bits"] = gain_bits
+            if gain_idx == 3:
+                if object_index == 0:
+                    info["gain_q"] = 4096
+                elif object_states[object_index - 1][block_index]["not_active"]:
+                    info["gain_q"] = 0
+                else:
+                    info["gain_q"] = object_states[object_index - 1][block_index]["gain_q"]
+            else:
+                info["gain_q"] = _gain_q(gain_idx, gain_bits)
             default_priority = bool(reader.read(1))
             info["default_priority"] = default_priority
-            if not default_priority:
-                info["priority_bits"] = reader.read(5)
-    render_status = 0 if (info["not_active"] or info["in_bed_or_isf"]) else 1
-    info["render_status"] = render_status
-    if render_status in (1, 3):
-        if render_status == 1:
-            # 5.5.11：obj_render_info[] = {true, true, true, true}。
-            position_present = zone_present = size_present = screen_present = True
+            if default_priority:
+                info["priority_q"] = 32767
+            else:
+                bits = reader.read(5)
+                info["priority_bits"] = bits
+                info["priority_q"] = 1024 * bits
+        elif basic_status == 2:
+            info["gain_q"] = previous_block["gain_q"]
+            info["priority_q"] = previous_block["priority_q"]
         else:
-            flags = reader.read(4)
-            position_present = bool(flags & 0x1)
-            zone_present = bool(flags & 0x2)
-            size_present = bool(flags & 0x4)
-            screen_present = bool(flags & 0x8)
-        if position_present:
-            # blk == 0 时 b_differential_position_specified 恒为 FALSE。
-            x = reader.read(6)
-            y = reader.read(6)
-            z_sign = reader.read(1)
-            z = reader.read(4)
-            info["position"] = (x, y, z if z_sign else -z)
-            outside = bool(reader.read(1))
-            infinite = False
-            distance_index = None
-            if outside:
-                infinite = bool(reader.read(1))
-                if not infinite:
-                    distance_index = reader.read(4)
-            if retain_spatial:
-                info.update(distance_specified=outside, at_infinity=infinite,
-                            distance_factor_idx=distance_index)
-        if zone_present:
-            info["zone_constraints_idx"] = reader.read(3)
-            info["enable_elevation"] = bool(reader.read(1))
-        if size_present:
-            size_idx = reader.read(2)
-            info["object_size_idx"] = size_idx
-            if size_idx == 1:
-                reader.read(5)
-            elif size_idx == 2:
-                reader.read(15)
-        if screen_present:
-            screen_ref = bool(reader.read(1))
-            screen_bits = reader.read(3) if screen_ref else None
-            depth_index = reader.read(2) if screen_ref else None
-            if retain_spatial:
-                info.update(use_screen_ref=screen_ref, screen_factor_bits=screen_bits,
-                            depth_factor_idx=depth_index)
-        info["snap"] = bool(reader.read(1))
+            flags = reader.read(2)
+            info["basic_mask"] = flags
+            info["gain_q"] = previous_block["gain_q"]
+            info["priority_q"] = previous_block["priority_q"]
+            if flags & 1:
+                gain_idx = reader.read(2)
+                info["gain_idx"] = gain_idx
+                gain_bits = reader.read(6) if gain_idx == 2 else None
+                if gain_bits is not None:
+                    info["gain_bits"] = gain_bits
+                if gain_idx == 3:
+                    if object_index == 0:
+                        info["gain_q"] = 4096
+                    elif object_states[object_index - 1][block_index]["not_active"]:
+                        info["gain_q"] = 0
+                    else:
+                        info["gain_q"] = object_states[object_index - 1][block_index]["gain_q"]
+                else:
+                    info["gain_q"] = _gain_q(gain_idx, gain_bits)
+            if flags & 2:
+                default_priority = bool(reader.read(1))
+                info["default_priority"] = default_priority
+                if default_priority:
+                    info["priority_q"] = 32767
+                else:
+                    bits = reader.read(5)
+                    info["priority_bits"] = bits
+                    info["priority_q"] = 1024 * bits
+
+        render_status = 0 if kind in ("bed", "isf") else (
+            1 if block_index == 0 else reader.read(2))
+        info["render_status"] = render_status
+        if render_status in (1, 3):
+            if render_status == 1:
+                position_present = zone_present = size_present = screen_present = True
+                flags = 0xF
+            else:
+                flags = reader.read(4)
+                position_present = bool(flags & 0x1)
+                zone_present = bool(flags & 0x2)
+                size_present = bool(flags & 0x4)
+                screen_present = bool(flags & 0x8)
+            info["render_mask"] = flags
+            state = _copy_render_state(previous_block) if render_status == 3 \
+                else dict(_RENDER_DEFAULTS)
+            state["coarse"] = tuple(state["coarse"])
+            state["size_q"] = tuple(state["size_q"])
+            if position_present:
+                differential = (block_index > 0 and bool(reader.read(1)))
+                if differential:
+                    dx, dy, dz = (_POSITION_DELTA[reader.read(3)]
+                                  for _axis in range(3))
+                    coarse = (previous_block["coarse"][0] + dx,
+                              previous_block["coarse"][1] + dy,
+                              previous_block["coarse"][2] + dz)
+                else:
+                    x = reader.read(6)
+                    y = reader.read(6)
+                    z_sign = reader.read(1)
+                    z = reader.read(4)
+                    coarse = (x, y, z if z_sign else -z)
+                state["coarse"] = _clamp_coarse(coarse)
+                outside = bool(reader.read(1))
+                infinite = False
+                distance_index = None
+                if outside:
+                    infinite = bool(reader.read(1))
+                    if not infinite:
+                        distance_index = reader.read(4)
+                if retain_spatial:
+                    info["distance_specified"] = outside
+                    info["at_infinity"] = infinite
+                    info["distance_factor_idx"] = distance_index
+            if zone_present:
+                state["zone_idx"] = reader.read(3)
+                state["enable_elevation"] = bool(reader.read(1))
+            if size_present:
+                size_idx = reader.read(2)
+                state["size_mode"] = size_idx
+                if size_idx == 1:
+                    state["size_q"] = _size_q(1, reader.read(5))
+                elif size_idx == 2:
+                    state["size_q"] = _size_q(2, (reader.read(5), reader.read(5),
+                                                   reader.read(5)))
+                else:
+                    state["size_q"] = (0, 0, 0)
+            if screen_present:
+                screen_ref = bool(reader.read(1))
+                screen_bits = reader.read(3) if screen_ref else None
+                depth_index = reader.read(2) if screen_ref else None
+                if retain_spatial:
+                    info["use_screen_ref"] = screen_ref
+                    info["screen_factor_bits"] = screen_bits
+                    info["depth_factor_idx"] = depth_index
+            state["snap"] = 1 if reader.read(1) else 0
+            info.update({key: state[key] for key in state if key != "coarse"})
+            info["coarse"] = state["coarse"]
+            info["qx"], info["qy"], info["qz"] = _coarse_to_q15(state["coarse"])
+        elif render_status == 2:
+            info.update({key: previous_block[key] for key in _RENDER_DEFAULTS
+                         if key != "coarse"})
+            info["coarse"] = tuple(previous_block["coarse"])
+            info["size_q"] = tuple(previous_block["size_q"])
+            info["qx"], info["qy"], info["qz"] = (
+                previous_block["qx"], previous_block["qy"], previous_block["qz"])
+            info["divergence_q"] = previous_block["divergence_q"]
+        else:
+            info.update({key: _RENDER_DEFAULTS[key] for key in _RENDER_DEFAULTS
+                         if key != "coarse"})
+            info["coarse"] = tuple(_RENDER_DEFAULTS["coarse"])
+            info["size_q"] = tuple(_RENDER_DEFAULTS["size_q"])
+            info["qx"], info["qy"], info["qz"] = _coarse_to_q15(info["coarse"])
     if reader.read(1):                              # b_additional_table_data_exists
         info["additional_table_bytes"] = reader.read(4) + 1
         reader.skip(info["additional_table_bytes"] * 8)
@@ -318,7 +524,7 @@ def _parse_object_info_block(reader, object_index, in_bed_or_isf, raw_payload, r
 
 
 def _parse_object_element(reader, element, raw_payload, retain_spatial=False):
-    """5.5.5 ``object_element()``：时间信息 + 每个对象一条 object_info_block。"""
+    """5.5.5 ``object_element()``：时间头 + 对象外/块内顺序的完整块状态。"""
     object_count = element["object_count"]
     try:
         sample_offset_code = reader.read(2)
@@ -355,11 +561,20 @@ def _parse_object_element(reader, element, raw_payload, retain_spatial=False):
         reserved_data_not_present = bool(reader.read(1))
         if not reserved_data_not_present:
             reader.read(5)
-        objects = [
-            _parse_object_info_block(
-                reader, index, index < element["bed_isf_objects"], raw_payload, retain_spatial)
-            for index in range(object_count)
-        ]
+        kinds = element["object_kinds"]
+        object_blocks = []
+        for object_index in range(object_count):
+            kind = kinds[object_index]
+            states = []
+            previous = None
+            for block_index in range(block_count):
+                info = parse_object_info_block(
+                    reader, object_index, block_index, kind, previous,
+                    raw_payload, retain_spatial, object_blocks)
+                info["previous"] = previous
+                states.append(info)
+                previous = info
+            object_blocks.append(states)
     except UnsupportedVariantError:
         raise
     except ValueError as exc:
@@ -374,8 +589,99 @@ def _parse_object_element(reader, element, raw_payload, retain_spatial=False):
         "sample_offset": sample_offset,
         "blocks": blocks,
         "reserved_data_not_present": reserved_data_not_present,
-        "objects": objects,
+        "objects": object_blocks,
     }
+
+
+def _parse_extended_element(reader, element, object_element, raw_payload):
+    """扩展对象元素：divergence 与高精度位置补充。"""
+    blocks = object_element["blocks"]
+    block_count = len(blocks)
+    objects = object_element["objects"]
+    object_count = len(objects)
+    if object_element is None:
+        raise UnsupportedVariantError(
+            "oamd", "extended_without_object_element",
+            "OAMD 扩展对象元素在默认主对象元素之前出现",
+            details={"element": _element_details([element])[0],
+                     "payload": bytes_descriptor(raw_payload)})
+    try:
+        divergence_present = bool(reader.read(1))
+        if divergence_present:
+            table = DIVERGENCE_TABLE
+            quick = DIVERGENCE_QUICK_INDEX
+            for object_index in range(object_count):
+                for block_index in range(block_count):
+                    state = objects[object_index][block_index]
+                    if state["not_active"]:
+                        state["divergence_q"] = 0
+                        continue
+                    if state["kind"] != "dynamic":
+                        continue
+                    present = bool(reader.read(1))
+                    if not present:
+                        state["divergence_q"] = 0
+                        continue
+                    mode = reader.read(2)
+                    if mode == 0:
+                        state["divergence_q"] = int(table[quick[reader.read(2)]])
+                    elif mode == 1:
+                        state["divergence_q"] = (
+                            0 if block_index == 0
+                            else objects[object_index][block_index - 1]["divergence_q"])
+                    elif mode == 2:
+                        state["divergence_q"] = int(table[reader.read(6)])
+                    else:
+                        reader.read(6)
+                        state["divergence_q"] = 0
+        refinement_present = bool(reader.read(1))
+        if refinement_present:
+            for object_index in range(object_count):
+                for block_index in range(block_count):
+                    state = objects[object_index][block_index]
+                    if state["not_active"] or state["kind"] != "dynamic":
+                        continue
+                    present = bool(reader.read(1))
+                    if not present:
+                        continue
+                    mask = reader.read(3)
+                    if not mask:
+                        continue
+                    deltas = [0, 0, 0]
+                    for axis in range(3):
+                        if mask & (1 << axis):
+                            deltas[axis] = _REFINE_DELTA[reader.read(2)]
+                    qx, qy, qz = state["qx"], state["qy"], state["qz"]
+
+                    def _sign(value):
+                        return -1 if value < 0 else 1
+
+                    def _coarse_xy(value):
+                        return 31 + _sign(value - 16384) * (
+                            (62 * abs(value - 16384) + 16384) >> 15)
+
+                    def _coarse_z(value):
+                        value = max(value, -32767)
+                        return _sign(value) * ((15 * abs(value) + 16384) >> 15)
+
+                    ix = _coarse_xy(qx)
+                    iy = _coarse_xy(qy)
+                    iz = _coarse_z(qz)
+                    sign = _sign(iz)
+                    qx = _refine_xy(5 * ix + 2 + deltas[0])
+                    qy = _refine_xy(5 * iy + 2 + deltas[1])
+                    qz = sign * _refine_z(sign * (5 * iz + deltas[2]) + 2)
+                    state["qx"], state["qy"], state["qz"] = qx, qy, qz
+    except ValueError as exc:
+        raise _syntax_error(
+            "extended_element_syntax",
+            "OAMD 扩展对象元素字段越界或不完整",
+            raw_payload, exc,
+            element=_element_details([element])[0],
+            object_count=object_count,
+        ) from exc
+    return {"divergence_present": divergence_present,
+            "refinement_present": refinement_present}
 
 
 def _parse_trim_element(reader, object_count, raw_payload):
@@ -490,8 +796,9 @@ def parse_trim(bits_one):
     return None
 
 
-def _parse_elements(reader, alternate_present, object_count, program, raw_payload, retain_spatial=False):
-    """5.5.4 ``oa_element_md()`` 目录；对象 element 按结构解析，其余按声明长度跳过。"""
+def _parse_elements(reader, alternate_present, object_count, program,
+                    raw_payload, retain_spatial=False):
+    """5.5.4 ``oa_element_md()`` 目录：先选替代变体，再解析内容。"""
     try:
         element_count = reader.read(4)
         if element_count == 0xF:
@@ -507,8 +814,18 @@ def _parse_elements(reader, alternate_present, object_count, program, raw_payloa
             details={"payload": bytes_descriptor(raw_payload)})
 
     bed_isf_objects = program["num_bed_objects"] + program["num_isf_objects"]
+    kinds = []
+    for object_index in range(object_count):
+        if object_index < program["num_bed_objects"]:
+            kinds.append("bed")
+        elif object_index < bed_isf_objects:
+            kinds.append("isf")
+        else:
+            kinds.append("dynamic")
     elements = []
     object_element = None
+    extended = None
+    seen = set()
     for ordinal in range(element_count):
         header_start = reader.position
         try:
@@ -534,16 +851,8 @@ def _parse_elements(reader, alternate_present, object_count, program, raw_payloa
                     "payload_bits": reader.limit,
                     "payload": bytes_descriptor(raw_payload),
                 })
-        try:
-            alternate_data_id = (reader.read(4)
-                                 if alternate_present else None)
-            discard_unknown = bool(reader.read(1))
-        except ValueError as exc:
-            raise _syntax_error(
-                "element_control_bounds", "OAMD element 太短，无法容纳控制字段",
-                raw_payload, exc,
-                element_ordinal=ordinal, element_id=element_id,
-                size_bytes=size_bytes) from exc
+        alternate_data_id = reader.read(4) if alternate_present else 0
+        discard_unknown = bool(reader.read(1))
         element = {
             "ordinal": ordinal,
             "element_id": element_id,
@@ -557,30 +866,38 @@ def _parse_elements(reader, alternate_present, object_count, program, raw_payloa
             "object_count": object_count,
             "bed_isf_objects": bed_isf_objects,
         }
-        if element_id == OBJECT_ELEMENT_ID:
-            if object_element is not None:
-                raise UnsupportedVariantError(
-                    "oamd", "multiple_object_elements",
-                    "OAMD 含多个 object element",
-                    details={
-                        "elements": _element_details(elements + [element]),
-                        "payload": bytes_descriptor(raw_payload),
-                    })
+        selected = (element_id in (OBJECT_ELEMENT_ID, TRIM_ELEMENT_ID, 5)
+                    and alternate_data_id == 0 and element_id not in seen)
+        if not selected:
+            element["parsed_end_bit"] = region_end
+            reader.position = region_end
+        elif element_id == OBJECT_ELEMENT_ID:
+            element["object_kinds"] = kinds
             object_element = _parse_object_element(
                 reader, element, raw_payload, retain_spatial)
             element["parsed_end_bit"] = reader.position
             element["object_element"] = object_element
-            # 个别编码器声明的 oa_element_size 比实际内容短；以结构解析结果为准。
+            seen.add(element_id)
             reader.position = max(region_end, reader.position)
-        elif element_id == TRIM_ELEMENT_ID:
+        elif element_id == 5:
+            if object_element is None:
+                raise UnsupportedVariantError(
+                    "oamd", "extended_before_object_element",
+                    "OAMD 扩展对象元素出现在默认主对象元素之前",
+                    details={"element": _element_details(elements + [element])[0],
+                             "payload": bytes_descriptor(raw_payload)})
+            extended = _parse_extended_element(reader, element,
+                                               object_element, raw_payload)
+            element["parsed_end_bit"] = reader.position
+            element["extended_element"] = extended
+            seen.add(element_id)
+            reader.position = max(region_end, reader.position)
+        else:
             element["trim_element"] = _parse_trim_element(
                 reader, object_count, raw_payload)
             element["parsed_end_bit"] = reader.position
+            seen.add(element_id)
             reader.position = max(region_end, reader.position)
-        else:
-            # extended / 未知 element：按声明长度整体跳过（5.5.4）。
-            element["parsed_end_bit"] = region_end
-            reader.position = region_end
         elements.append(element)
 
     if object_element is None:
@@ -603,6 +920,16 @@ def _parse_elements(reader, alternate_present, object_count, program, raw_payloa
                 "payload": bytes_descriptor(raw_payload),
             })
     return object_element, elements
+
+
+def _element_kinds(program, object_count):
+    kinds = []
+    bed_end = program["num_bed_objects"]
+    isf_end = bed_end + program["num_isf_objects"]
+    for index in range(object_count):
+        kinds.append("bed" if index < bed_end
+                     else ("isf" if index < isf_end else "dynamic"))
+    return kinds
 
 
 def program_bed_summary(bits_one):
@@ -645,6 +972,11 @@ def program_bed_summary(bits_one):
         "num_bed_objects": program["num_bed_objects"],
         "num_isf_objects": program["num_isf_objects"],
         "num_dynamic_objects": program["num_dynamic_objects"],
+        "isf_idx": program["isf_idx"],
+        "dynamic_object_only": program["dynamic_object_only"],
+        "lfe_present": program["lfe_present"],
+        "b_bed_chan_distribute": program["b_bed_chan_distribute"],
+        "bed_mask": program["bed_mask"],
     }
 
 
@@ -657,8 +989,8 @@ def program_bed_channels(bits_one):
     return program_bed_summary(bits_one)["channels"]
 
 
-def frame_update(bits_one, *, retain_spatial=False):
-    """单帧 OAMD → 位置字段增量及其 sample offset/ramp duration。"""
+def frame_state(bits_one, *, retain_spatial=False):
+    """完整展开一帧 OAMD：每个对象每一块的属性、节目分区与扩展对象元素更新。"""
     bits, raw_payload = _payload_bits(bits_one)
     try:
         version = bits[0] << 1 | bits[1]
@@ -679,14 +1011,14 @@ def frame_update(bits_one, *, retain_spatial=False):
         program = _parse_program_assignment(reader, raw_payload)
         alternate_present = bool(reader.read(1))
         object_element, elements = _parse_elements(
-            reader, alternate_present, object_count, program, raw_payload, retain_spatial)
+            reader, alternate_present, object_count, program, raw_payload,
+            retain_spatial)
     except UnsupportedVariantError:
         raise
     except ValueError as exc:
         raise _syntax_error(
             "header_truncated", "OAMD header 字段越界或不完整",
             raw_payload, exc, payload_bits=len(bits)) from exc
-
     if version != 0:
         raise UnsupportedVariantError(
             "oamd", "oamd_version",
@@ -695,46 +1027,27 @@ def frame_update(bits_one, *, retain_spatial=False):
                 "version": version,
                 "payload": bytes_descriptor(raw_payload),
             })
-    if object_count > MAX_SLOTS:
-        raise UnsupportedVariantError(
-            "oamd", "object_count",
-            "OAMD 对象数超过当前 16 槽对象模型",
-            details={
-                "object_count": object_count,
-                "max_slots": MAX_SLOTS,
-                "payload": bytes_descriptor(raw_payload),
-            })
     blocks = object_element["blocks"]
-    if len(blocks) != 1:
-        raise UnsupportedVariantError(
-            "oamd", "multiple_position_blocks",
-            "OAMD 一帧含多个对象位置更新块，单次 frame_update 无法表达",
-            details={
-                "block_count": len(blocks),
-                "blocks": blocks,
-                "payload": bytes_descriptor(raw_payload),
-                "repair_hint": "按 ObjectInfoBlock 顺序逐块解析坐标，再生成分段 ADM ramp",
-            })
-
-    # 对外契约：始终给出 16 个槽；本帧没有覆盖到的槽保持上一帧位置。
-    out = {(slot, field): None for slot in range(MAX_SLOTS)
-           for field in ("q1", "q2", "q3")}
-    for info in object_element["objects"]:
-        slot = info["object"]
-        position = info.get("position")
-        if position is None:
-            # bed/ISF 对象与未激活对象没有位置字段：保持上一帧位置。
-            out[(slot, "q1")] = None
-            out[(slot, "q2")] = None
-            out[(slot, "q3")] = None
+    objects = object_element["objects"]
+    # 对外契约：16 槽位置视图（block 0），保留旧 frame_update 的 values 形状。
+    values = {(slot, field): None for slot in range(MAX_SLOTS)
+              for field in ("q1", "q2", "q3")}
+    for object_index, states in enumerate(objects):
+        if object_index >= MAX_SLOTS:
+            break
+        state = states[0]
+        if state["not_active"] or state.get("position") is None and \
+                state["render_status"] == 0 and state["kind"] != "dynamic":
+            # bed/ISF 与未激活对象没有位置字段：保持上一帧位置。
             continue
-        x, y, z = position
-        out[(slot, "q1")] = q_of(x, N_Q12) if 0 <= x <= N_Q12 else None
-        out[(slot, "q2")] = q_of(y, N_Q12) if 0 <= y <= N_Q12 else None
-        # Clamp negative height to zero unless signed spatial output is requested.
-        out[(slot, "q3")] = q_of(z, N_Q3) if (0 <= z <= N_Q3 or retain_spatial and -N_Q3 <= z < 0) else (
-            0 if z < 0 else None)
-
+        values[(object_index, "q1")] = state["qx"]
+        values[(object_index, "q2")] = state["qy"]
+        qz = state["qz"]
+        if not state["enable_elevation"]:
+            # 描述符构建在 enable_elevation=0 时令 z=0。
+            qz = 0
+        values[(object_index, "q3")] = (
+            qz if qz >= 0 or retain_spatial else 0)
     size_mismatch = [
         {
             "element_ordinal": element["ordinal"],
@@ -746,11 +1059,18 @@ def frame_update(bits_one, *, retain_spatial=False):
         for element in elements
         if element["parsed_end_bit"] > element["body_end_bit"]
     ]
+    trim = next((element["trim_element"] for element in elements
+                 if "trim_element" in element), None)
     return {
-        "values": out,
+        "values": values,
         "block_offset_samples": blocks[0]["block_offset_samples"],
         "ramp_duration_samples": blocks[0]["ramp_duration_samples"],
+        "blocks": blocks,
+        "sample_offset": object_element["sample_offset"],
         "object_count": object_count,
+        "kinds": [states[0]["kind"] for states in objects],
+        "objects": [dict(states[0]) for states in objects],
+        "object_blocks": objects,
         "program": {
             "dynamic_object_only": program["dynamic_object_only"],
             "lfe_present": program["lfe_present"],
@@ -760,11 +1080,39 @@ def frame_update(bits_one, *, retain_spatial=False):
             "num_dynamic_objects": program["num_dynamic_objects"],
             "bed_channels": [list(assignment["channels"])
                              for assignment in program["bed_assignments"]],
+            "bed_mask": program["bed_mask"],
+            "b_bed_chan_distribute": program["b_bed_chan_distribute"],
+            "isf_idx": program["isf_idx"],
         },
+        "trim": trim,
         "elements": _element_details(elements),
-        "objects": object_element["objects"],
         "size_mismatch": size_mismatch,
     }
+
+
+def frame_update(bits_one, *, retain_spatial=False):
+    """单帧 OAMD → 位置字段增量及其 sample offset/ramp duration。"""
+    state = frame_state(bits_one, retain_spatial=retain_spatial)
+    if state["object_count"] > MAX_SLOTS:
+        raise UnsupportedVariantError(
+            "oamd", "object_count",
+            "OAMD 对象数超过当前 16 槽对象模型",
+            details={
+                "object_count": state["object_count"],
+                "max_slots": MAX_SLOTS,
+            })
+    if len(state["blocks"]) != 1:
+        # 旧接口（ADM/双耳/sofa 轨迹）只表达单块位置；多块由 frame_state 提供给
+        # 扬声器渲染路径。这里保持与旧实现一致的显式拒绝，避免静默只取首块。
+        raise UnsupportedVariantError(
+            "oamd", "multiple_position_blocks",
+            "OAMD 一帧含多个对象位置更新块，单次 frame_update 无法表达",
+            details={
+                "block_count": len(state["blocks"]),
+                "blocks": state["blocks"],
+                "repair_hint": "扬声器渲染路径改用 frame_state()",
+            })
+    return state
 
 
 def frame_update_values(bits_one):

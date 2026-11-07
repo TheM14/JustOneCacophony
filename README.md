@@ -18,7 +18,7 @@
   作为点声源渲染，扬声器与双耳共用同一组源位置，不随输出布局改变；LFE 独立处理；
 - 通过 analysis QMF、参数插值、对象矩阵和 inverse QMF 重建 LFE + 15 路对象 PCM；
 - 输出 25 声道 ADM BWF：10 声道 7.1.2 bed（除 LFE 外静音）+ 15 个对象；
-- 直接渲染 `2.0`、`3.1`、`4.0`、`5.1`、`7.1`、`5.1.2`、`5.1.4`、`7.1.2`、`7.1.4`、`9.1.4`、
+- 直接渲染 `2.0`、`3.1`、`4.0`、`5.1`、`6.0`、`7.1`、`5.1.2`、`5.1.4`、`7.1.2`、`7.1.4`、`9.1.4`、
   `9.1.6`（`4.0` 是 Quad 布局，前后各一对；声道排列见[扬声器布局与声道顺序](#扬声器布局与声道顺序)）；
 - 从 `pcm16 + ID11/OAMD` 直接运行双耳渲染，不生成临时 ADM BWF；
 - 双耳 DSP 全程使用 float64/complex128；个性化路线保留原滤波器组与延迟规则，`.jochrtf` 路线保留 77 带方向场与跨帧状态；
@@ -209,7 +209,7 @@ python main.py --help
 
 ## 扬声器布局与声道顺序
 
-`--speaker-layout` 只接受下表 11 个布局，PCM/WAV 的声道顺序就是表里的顺序：
+`--speaker-layout` 只接受下表 12 个布局，PCM/WAV 的声道顺序就是表里的顺序：
 
 | 布局 | 声道顺序 |
 |---|---|
@@ -217,6 +217,7 @@ python main.py --help
 | 3.1 | L, R, C, LFE |
 | 4.0 | L, R, Lrs, Rrs |
 | 5.1 | L, R, C, LFE, Ls, Rs |
+| 6.0 | L, R, Ls, Rs, Lrs, Rrs |
 | 7.1 | L, R, C, LFE, Ls, Rs, Lrs, Rrs |
 | 5.1.2 | L, R, C, LFE, Ls, Rs, Ltm, Rtm |
 | 5.1.4 | L, R, C, LFE, Ls, Rs, Ltf, Rtf, Ltr, Rtr |
@@ -261,6 +262,7 @@ JustOneCacophony/
 - LFE 1217-sample 延迟与逐点 clipgain 斜坡；
 - OAMD Q15 坐标转换；
 - 基于目标布局 region 的等功率声像；
+- OAMD 元数据应用（每块增益与 inactive、zone/elevation、size 核、snap、divergence、位置细化、priority 尺寸预算、ISF 矩阵、bed 分配）；
 - 布局位置补偿与逐样本增益斜坡；
 - float32 与 PCM24 输出量化；
 - SOFA canonical importer、完整HRIR方向插值、显式64-QMF/77-hybrid压缩导出、`36×2×77`五阶方向field、exactly-once delay/phase与special LFE。
@@ -274,7 +276,7 @@ JustOneCacophony/
 - 同一音频帧里出现多个含 ID11/ID14 的 EMDF 容器时（其中一个容器可能不是本帧的 JOC 参数：ID14 声明的对象数超出其字节所能容纳的范围，ID11 也可能没有 groupid），按 ETSI TS 103 420 §8.2 + Table 56 的关联规则打分选取：**OAMD 与 JOC 载荷 groupid 相同且 ID14 能完整解析**的容器优先，其次只看 ID14 能否完整解析；只有唯一最高分才采用，其余记入 `diagnostics`（`emdf/extra_container_ignored`），并列或全部为 0 仍报变体。
 - 额外那一对的身份以 TS 103 420 Table 47/Table 48 为准（$k=1\to$Lb/Rb，$k\in\{2,4\}\to$Tfl/Tfr，$N=5,7,7,5,7$）；Annex E.3 规定依赖子流的 `chanmap`（若存在）**应**指明 Table 47 的某种配置，因此 `*_5_1_2top_*`（chanmap 写 Lts/Rts）属于不满足 "shall" 的素材，我们按"记诊断 + 继续解码"容错处理。
 - 不含 JOC 元数据（ID11 + ID14）的 E-AC-3 输入不在支持范围；解码过程中若个别音频帧没有 JOC EMDF，该帧输出核心 PCM 直通（8 路核心按 identity 写入输出槽 0..7，每路延迟 1217 采样），并以 `joc_frame_missing` 记入 `diagnostics`。
-- 扬声器与 SOFA 双耳路径当前只覆盖普通点对象；extent、spread、diffuse、divergence、channel lock 等对象控制不在支持范围内。
+- 扬声器渲染应用 OAMD 的对象属性：每块增益/inactive、zone/elevation、size/snap/divergence、priority 尺寸预算、element 5 位置细化、ISF 基矩阵和 bed distribute；SOFA 双耳路径仍只覆盖普通点对象，这些对象控制不在双耳路径范围内。
 - 扬声器渲染从 OAMD 元数据读取 warp、trim 和 front/back balance；命令行不提供 warp 覆盖。通用渲染参数支持 warp 0/1，以及先渲染到 7.1.x 再按 PLIIx 或 Standard（Lo/Ro）折回 5.1.x 的 warp 2/3；校准参数始终按最终目标布局选择。原始对象轨迹与 binaural 不预处理这些扬声器控制，参数和顺序见 [数学说明 §12](docs/math.md)。
 - 多数据点、少见参数带配置和特殊 OAMD 调度的覆盖度低于常见 12-band、单数据点素材。
 - `joc_clipgain` 在**分析端**并入分析标量：`标量 = 1/16 × g`（`g = 2^(x−4)·(1 + y/32)`，值域 0.0625..15.75），出口的

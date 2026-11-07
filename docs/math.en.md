@@ -392,7 +392,7 @@ q_N(k)=
 \right).
 $$
 
-OAR coordinates are
+The normalized room coordinates are
 
 $$
 u=\frac{q_1}{32768},
@@ -835,3 +835,46 @@ $$
 - A limiter is separate post-processing and is not included in the mixing equations above.
 - Trim and front-back balance apply to speaker rendering only;
   binaural rendering reads neither of them.
+
+## 16. OAMD metadata application (speaker path)
+
+When mapping object PCM to the target layout, speaker rendering applies the OAMD
+object attributes in addition to the geometric panning:
+
+- per-block integer gain `Qg` (unity 4096) and `inactive`; the gain is applied to
+  the target coefficients once, and the LFE uses its owning metadata object's
+  gain/active state;
+- full basic/render status 0/1/2/3 block expansion, same-object previous-block
+  inheritance, and local mask updates;
+- `zone_constraints_idx` region selection mapped through `[0,1,2,3,4,5,6,0]`;
+  `enable_elevation=0` forces z=0 before position compensation and size spread;
+- `object_size_idx` 5-bit sizes, the `size_curve` piecewise mapping, and the size
+  kernel; the kernel is generated at runtime from region geometry with
+  equal-power grouped panning, the S448 weight and a power sum (20/20/8
+  virtual points, 20 size nodes, 35/4 position nodes; boundary rows
+  X(0), X(1), Y(0), Y(1), Z(1));
+- `snap` first-argmax speaker snapping, `divergence` left/right point-source
+  combination, and element 5 high-precision position refinement;
+- `default_priority`/`priority_bits` choose which size objects keep their size
+  when the size budget is limited;
+- `isf_idx` basis matrices (signed coefficients, no per-column normalization)
+  with the per-basis compensation;
+- `b_bed_chan_distribute` label candidates, weight normalization, missing-channel
+  fallback, and the direct/distribute compensation.
+
+The ISF path orders the N ISF object audio essences into the column vector t
+according to the M.U.L.Z order of `isf_config`, selects the input configuration
+by `isf_idx` and the matrix M for the target output layout, and evaluates
+y = M·t: each ISF channel is distributed over the speakers by the corresponding
+matrix row, LFE bypasses the matrix, and each basis carries its own
+compensation. The matrix coefficients and layout descriptors are in
+`data/oamd/metadata_params.json`.
+
+Gain, size, priority, position, divergence, delta and refinement values are
+computed in code from formulas or fixed constants; the size kernel is generated
+at runtime from region geometry with grouped equal-power panning, the S448
+weight and a power sum. Bed labels, routing and reference positions are
+derived from `speaker_layouts` in `src/bed_layout.py`.
+ADM export and the SOFA binaural path still use object positions only and do not
+apply these speaker target coefficients.
+

@@ -19,6 +19,17 @@ joc_huff_code_7ch_pos_index_sparse      int64[6,2]
 
 `src/joc_qmf.py` 读取 QMF 表，`src/joc_decode.py` 读取 JOC Huffman 树。
 
+## ISF 系数数据
+
+`oamd/metadata_params.json` 提供 ISF 压缩基系数与布局描述的查表数据。
+gain、size、priority、位置、divergence 与差分/细化表在代码中按公式或
+固定常量计算；size 扩散核按分组等功率声像、S448 权重和幂和，在运行时从
+`speaker_layouts` 的区域几何生成（20/20/8 虚拟点、20 个尺寸节点、35/4 个
+位置节点）；bed 的标签、路由和参考位置也由 `speaker_layouts` 推导。
+
+`src/oamd_params.py` 延迟解析数据文件，`src/oamd_math.py` 按固定的 float32 运算
+顺序生成系数；`src/speaker_renderer.py` 把它们接到对象目标系数上。
+
 ## 双耳渲染表
 
 `rosella_kernels.npz` 保存`.jochrtf`压缩渲染和个性化bank 1使用的64-QMF/77-hybrid固定表：

@@ -4,6 +4,9 @@
 那一对落到 ADM 骨架的槽位。JOC 的 DSP 不读取这些信息（规格 §10.1），它只用
 ``(N, sigma)``。
 """
+import math
+from functools import lru_cache
+
 from emdf import expand_chanmap
 
 # JOC 核心通道序列的前 5 位（规格 §2）：L R C Ls Rs。
@@ -107,6 +110,137 @@ BED_CHANNEL_ADM_POSITION = {
 # LFE 不是空间声源：它的 PCM 走独立通路，不参与对象摆位。
 BED_LFE_LABELS = frozenset(("RC_LFE", "RC_LFE2"))
 
+# 参考位置网格：bed 标签/输出 slots 的最近邻匹配使用这一组固定的 Q15 点。
+BED_REFERENCE_POSITIONS_Q15 = (
+    (0, 0, 0), (32767, 0, 0), (16384, 0, 0), (-1, -1, -1),
+    (0, 16384, 0), (32767, 16384, 0), (0, 32767, 0), (32767, 32767, 0),
+    (16384, 32767, 0), (5285, 0, 0), (27483, 0, 0), (0, 5285, 0),
+    (32767, 5285, 0), (7928, 0, 32767), (24840, 0, 32767),
+    (7928, 7928, 32767), (24840, 7928, 32767), (7928, 16384, 32767),
+    (24840, 16384, 32767), (7928, 24840, 32767), (24840, 24840, 32767),
+    (7928, 32767, 32767), (24840, 32767, 32767), (11099, 0, 0),
+    (21669, 0, 0), (0, 11099, 0), (32767, 11099, 0), (0, 21669, 0),
+    (32767, 21669, 0), (0, 27483, 0), (32767, 27483, 0), (5285, 32767, 0),
+    (27483, 32767, 0), (11099, 32767, 0), (21669, 32767, 0),
+    (16384, 0, 32767), (16384, 16384, 32767), (16384, 32767, 32767),
+)
+
+# 自动 trim 的每个布局基准衰减，单位 dB。
+BED_LAYOUT_ATTENUATION_DB = {
+    "20": -4.5, "31": -4.5, "40": -3.0, "51": -3.0, "60": -1.5,
+    "71": -1.5, "512": -2.25, "514": -1.5, "712": -0.75,
+    "714": 0.0, "914": 0.0, "916": 0.0,
+}
+
+
+def _channel_positions(layout):
+    """Channel index -> Q15 room position (LFE gets the special sentinel)."""
+    found = {}
+    for region in layout.regions:
+        for speaker, coordinate in zip(region.speaker_ids,
+                                       region.coordinates_q15):
+            found.setdefault(int(speaker), tuple(coordinate))
+    result = []
+    for index, channel in enumerate(layout.channels):
+        if channel == "LFE":
+            result.append((-1, -1, -1))
+        else:
+            result.append(found.get(index, (-1, -1, -1)))
+    return result
+
+
+def _nearest_reference(coordinate):
+    """Index of the closest entry in BED_REFERENCE_POSITIONS_Q15."""
+    if tuple(coordinate) == (-1, -1, -1):
+        return 3
+    position = (coordinate[0] / 32768.0, coordinate[1] / 32768.0,
+                coordinate[2] / 32768.0)
+    best = 3
+    best_distance = float("inf")
+    for index, candidate in enumerate(BED_REFERENCE_POSITIONS_Q15):
+        if candidate == (-1, -1, -1):
+            continue
+        distance = math.dist(position,
+                             (candidate[0] / 32768.0,
+                              candidate[1] / 32768.0,
+                              candidate[2] / 32768.0))
+        if distance < best_distance:
+            best = index
+            best_distance = distance
+    return best
+
+
+def _nearest_channel(desired, positions, tolerance=0.05):
+    """Channel index nearest to desired (u, v, w), or None if too far."""
+    best = None
+    best_distance = float("inf")
+    for index, coordinate in enumerate(positions):
+        if coordinate == (-1, -1, -1):
+            continue
+        candidate = (coordinate[0] / 32768.0, coordinate[1] / 32768.0,
+                     coordinate[2] / 32768.0)
+        distance = math.dist(desired, candidate)
+        if distance < best_distance:
+            best = index
+            best_distance = distance
+    return best if best_distance <= tolerance else None
+
+
+@lru_cache(maxsize=32)
+def bed_output_description(layout):
+    """Derive the bed routing description from a speaker layout.
+
+    The description is keyed by the standard bed label order and contains the
+    output reference-position list, per-label slot routing and the automatic
+    trim attenuation for the layout.
+    """
+    channels = tuple(layout.channels)
+    positions = _channel_positions(layout)
+    output_labels = [_nearest_reference(position) for position in positions]
+    label_to_slot = []
+    direct_output_labels = []
+    for label in (item for pair in BED_LAYOUT_ORDER
+                  for item in pair.split("/")):
+        name = BED_CHANNEL_NAMES.get(label)
+        slot = None
+        if name in channels:
+            slot = channels.index(name)
+        elif label == "RC_LFE2" and "LFE" in channels:
+            slot = channels.index("LFE")
+        else:
+            desired = adm_xyz_to_render_coordinates(
+                *BED_CHANNEL_ADM_POSITION[label])
+            slot = _nearest_channel(desired, positions)
+        if slot is None:
+            label_to_slot.append(-1 if label in BED_LFE_LABELS else -2)
+        else:
+            label_to_slot.append(int(slot))
+        if label in BED_LFE_LABELS:
+            direct_output_labels.append(3)
+        else:
+            desired = adm_xyz_to_render_coordinates(
+                *BED_CHANNEL_ADM_POSITION[label])
+            best = None
+            best_distance = float("inf")
+            for index, candidate in enumerate(BED_REFERENCE_POSITIONS_Q15):
+                if candidate == (-1, -1, -1):
+                    continue
+                point = (candidate[0] / 32768.0, candidate[1] / 32768.0,
+                         candidate[2] / 32768.0)
+                distance = math.dist(desired, point)
+                if distance < best_distance:
+                    best = index
+                    best_distance = distance
+            direct_output_labels.append(int(best))
+    return {
+        "output_labels": output_labels,
+        "label_to_slot": label_to_slot,
+        "direct_output_labels": direct_output_labels,
+        "automatic_attenuation_db": BED_LAYOUT_ATTENUATION_DB.get(
+            layout.name, 0.0),
+    }
+
+
 # 标准 bed 布局名：由声明声道的集合唯一确定（9.1.6 这类常用叫法即由此得来）。
 BED_LAYOUT_NAMES = {
     frozenset(("L", "R")): "2.0",
@@ -115,6 +249,7 @@ BED_LAYOUT_NAMES = {
     frozenset(("L", "R", "Ls", "Rs")): "4.0",
     frozenset(("L", "R", "C", "Ls", "Rs")): "5.0",
     frozenset(("L", "R", "C", "LFE", "Ls", "Rs")): "5.1",
+    frozenset(("L", "R", "Ls", "Rs", "Lrs", "Rrs")): "6.0",
     frozenset(("L", "R", "C", "LFE", "Ls", "Rs", "Lrs", "Rrs")): "7.1",
     frozenset(("L", "R", "C", "LFE", "Ls", "Rs", "Lrs", "Rrs", "Lw", "Rw")): "9.1",
     frozenset(("L", "R", "C", "LFE", "Ls", "Rs", "Ltm", "Rtm")): "5.1.2",

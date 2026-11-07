@@ -19,6 +19,21 @@ joc_huff_code_7ch_pos_index_sparse      int64[6,2]
 
 `src/joc_qmf.py` loads the QMF tables, while `src/joc_decode.py` loads the JOC Huffman trees.
 
+## ISF coefficient data
+
+`oamd/metadata_params.json` provides the ISF compressed base coefficients and
+layout descriptors as lookup data. Gain, size, priority, position, divergence,
+delta and refinement values are computed in code from formulas or fixed
+constants; the size spread kernel is generated at runtime from the
+`speaker_layouts` region geometry with grouped equal-power panning, an S448
+weight and a power sum (20/20/8 virtual points, 20 size nodes, 35/4 position
+nodes). Bed labels, routing and reference positions are derived from
+`speaker_layouts` as well.
+
+`src/oamd_params.py` parses the data file lazily and `src/oamd_math.py`
+computes coefficients in a fixed float32 order; `src/speaker_renderer.py`
+applies them to the object target coefficients.
+
 ## Binaural rendering tables
 
 `rosella_kernels.npz` contains the fixed 64-QMF/77-hybrid tables used by
