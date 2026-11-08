@@ -44,19 +44,22 @@
 #define JOC_EVENT_VERSION 1u
 
 /* JOC_STATIC: this branch exists for building the sources directly into an application, where nothing is imported or exported. */
+#if defined(_WIN32)
+  #define JOC_CALL __cdecl
+#else
+  #define JOC_CALL
+#endif
+
 #if defined(JOC_STATIC)
   #define JOC_API
-  #define JOC_CALL __cdecl
 #elif defined(_WIN32)
   #if defined(JOC_BUILD_DLL)
     #define JOC_API __declspec(dllexport)
   #else
     #define JOC_API __declspec(dllimport)
   #endif
-  #define JOC_CALL __cdecl
 #else
   #define JOC_API __attribute__((visibility("default")))
-  #define JOC_CALL
 #endif
 
 #ifdef __cplusplus

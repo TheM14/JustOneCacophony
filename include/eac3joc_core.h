@@ -3,19 +3,22 @@
 #include <stdint.h>
 
 /* EJOC_STATIC: this branch exists for building the sources directly into an application, where nothing is imported or exported. */
+#if defined(_WIN32)
+  #define EJOC_CALL __cdecl
+#else
+  #define EJOC_CALL
+#endif
+
 #if defined(EJOC_STATIC)
   #define EJOC_API
-  #define EJOC_CALL __cdecl
 #elif defined(_WIN32)
   #if defined(EJOC_BUILD_DLL)
     #define EJOC_API __declspec(dllexport)
   #else
     #define EJOC_API __declspec(dllimport)
   #endif
-  #define EJOC_CALL __cdecl
 #else
   #define EJOC_API __attribute__((visibility("default")))
-  #define EJOC_CALL
 #endif
 
 #ifdef __cplusplus
