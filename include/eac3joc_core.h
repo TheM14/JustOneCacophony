@@ -23,13 +23,15 @@ extern "C" {
 #endif
 
 enum {
-    EJOC_ABI_VERSION = 3,
+    EJOC_ABI_VERSION = 4,
     EJOC_FRAME_SAMPLES = 1536,
     EJOC_TIMESLOTS = 24,
     EJOC_SUBBANDS = 64,
     EJOC_CORE_CHANNELS = 5,          /* downmix configurations 0 and 3 */
     EJOC_MAX_CORE_CHANNELS = 7,      /* downmix configurations 1, 2 and 4 */
     EJOC_OUTPUT_CHANNELS = 16,
+    EJOC_CORE_OUT_CHANNELS = 8,      /* passthrough order: L,R,C,LFE,Ls,Rs,(Lrs,Rrs) */
+    EJOC_LFE_SLOT = 3,               /* LFE slot of the passthrough order */
     EJOC_MAX_OBJECTS = 15,
     EJOC_MAX_DPOINTS = 2,
     EJOC_MAX_PARAMETER_BANDS = 23,
@@ -41,6 +43,21 @@ enum {
     EJOC_BINAURAL_OUTPUT_CHANNELS = 2,
     EJOC_BINAURAL_QMF_BANDS = 64,
     EJOC_BINAURAL_HYBRID_BANDS = 77
+};
+
+/* Per-frame status of ejoc_renderer_render_frame().  A status outside 0..6 is
+ * the renderer's own no-metadata marker; the parse-status values match
+ * joc_frame_params.status (JOC_FRAME_STATUS_* in joc_core.h).  Any non-zero
+ * status makes the frame invalid for matrix rendering: the renderer holds the
+ * previous matrices or passes the core PCM through instead of decoding it. */
+enum {
+    EJOC_FRAME_STATUS_OK = 0,
+    EJOC_FRAME_STATUS_UNSUPPORTED_DMX = 2,
+    EJOC_FRAME_STATUS_OBJECTS_CLAMPED = 3,
+    EJOC_FRAME_STATUS_BAD_PARAMETER_BAND = 4,
+    EJOC_FRAME_STATUS_BAD_OFFSET_TS = 5,
+    EJOC_FRAME_STATUS_TRAILING_DATA = 6,
+    EJOC_FRAME_STATUS_NO_METADATA = 8
 };
 
 typedef void* ejoc_renderer_handle;
@@ -102,6 +119,63 @@ EJOC_API int EJOC_CALL ejoc_renderer_process(
     float phase_new,
     float output_scale,
     float* output16_planar);
+
+/*
+Frame-level entry point: one E-AC-3 audio frame per call, with the seq state
+machine and the per-object previous-matrix state kept inside the renderer.  This
+is what produces the 16-channel object result for the ADM, speaker and binaural
+backends; ejoc_renderer_process() stays as a single-frame kernel for A/B tests.
+
+Fixed array layouts, identical to ejoc_renderer_process():
+  bed_planar   [core_channel_count][1536]  (JOC lane order L,R,C,Ls,Rs,(pair))
+  lfe          [1536] or NULL (zeros; the LFE delay ring still advances)
+  n_bands, n_dpoints, slope_idx    [15]
+  offset_ts    [15][2]                     (raw 5-bit JOC offsets, 0..23)
+  dq           [15][2][7][23]
+  output16     [16][1536]                  (ch0 = LFE, ch1..15 = objects)
+
+frame_status is a JOC_FRAME_STATUS_* / EJOC_FRAME_STATUS_* value.  has_metadata
+is 0 for an audio frame without a JOC EMDF container (frame_status must then be
+EJOC_FRAME_STATUS_NO_METADATA); such a frame always passes the 8 core planes
+through to output slots 0..7, delayed by 1217 samples, with slots 8..15 zero.
+declared_core_channels is the JOC header's n_channels (0 when unknown); a declared
+change against the previous frame's actual count turns the frame into a hard cut
+with the LFE ring cleared.  phase_shift is sigma(k) = (k in {3,4}) for the frame's
+downmix configuration; phase_shift_valid = 0 keeps the previous switch (an
+unsupported downmix configuration has no usable one).  clipgain is the frame's
+joc_clipgain when frame_status == 0.  seq is the 10-bit JOC sequence counter.
+When has_metadata is 0 the object descriptors are ignored.
+
+Slot 0 of output16 is the LFE, slots 1..15 are the 15 objects; each frame's
+values are float32(clamped PCM) * output_scale, exactly like the reference.
+*/
+typedef struct ejoc_frame_input {
+    uint32_t struct_size;
+    uint32_t struct_version;
+    const float* bed_planar;
+    const float* lfe;
+    uint32_t core_channel_count;
+    uint32_t declared_core_channels;
+    uint32_t phase_shift;
+    uint32_t phase_shift_valid;
+    uint32_t frame_status;
+    uint32_t seq;
+    uint32_t has_metadata;
+    uint32_t object_mask;
+    const uint8_t* n_bands;
+    const uint8_t* n_dpoints;
+    const uint8_t* slope_idx;
+    const uint8_t* offset_ts;
+    const double* dq;
+    double clipgain;
+    float output_scale;
+    float* output16_planar;
+} ejoc_frame_input;
+
+enum { EJOC_FRAME_INPUT_VERSION = 1 };
+
+EJOC_API int EJOC_CALL ejoc_renderer_render_frame(ejoc_renderer_handle handle,
+                                                  const ejoc_frame_input* input);
 
 /*
 High-precision object-to-speaker renderer.

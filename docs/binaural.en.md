@@ -26,7 +26,7 @@ performs no parsing or conversion of measurement data formats.
 ```powershell
 joc_cli input.m4a --binaural `
     --compiled-hrtf-cache path\to\subject.jochrtf `
-    --kernels data\rosella_kernels.npz `
+    --kernels path\to\rosella_kernels.npz `
     --binaural-mode mid --binaural-tail-seconds 5.0
 ```
 
@@ -95,8 +95,8 @@ compiler does not sample 77 FFT bins. Defaults are `1e-3` projection ridge and
 `1e-5` SH ridge. Coincident directions are merged before a spherical-Voronoi
 weighted ridge fit.
 
-The fixed resource is `data/rosella_kernels.npz`, which implements publicly
-standardized filter banks, computable from the following formulas.
+The fixed tables implement publicly standardized filter banks, compile into the
+sources, and are computable from the following formulas.
 
 The hybrid analysis kernels are defined in [3GPP TS 26.405 / ETSI TS 126 405](https://www.etsi.org/deliver/etsi_ts/126400_126499/126405/06.00.00_60/ts_126405v060000p.pdf),
 Section 5.2.2 (Table 1 $Q=8$/
@@ -125,11 +125,9 @@ $8+4+4$ child partition):
 
 $$Y_p = \sum_{q\in C_p}\Bigl(\mathrm{Re}X_q + j\,s_q\,\mathrm{Im}X_q\Bigr),\qquad s_q\in\{\pm1\}$$
 
-The loader verifies the archive and every array by SHA-256; the table version,
-all array hashes, and the 77 reference band-center values are part of the cache
-key. Public availability of a standard does not by itself grant permission to
-practice related patent claims. See
-[`data/README.en.md`](../data/README.en.md) and
+The tables are fixed at compile time, so no external archive is loaded and
+nothing enters a cache key at run time. Public availability of a standard does
+not by itself grant permission to practice related patent claims. See
 [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md) for the sources and the
 rights boundary.
 

@@ -17,7 +17,7 @@ inline constexpr std::size_t kMaxPayloads = JOC_MAX_EMDF_PAYLOADS;
 
 struct Payload {
     std::uint8_t id = 0;
-    std::uint16_t sample_offset = 0;
+    std::uint32_t sample_offset = 0;  // EMDF outer smpoffst: variable_bits(11)
     std::size_t bit_offset = 0;  // MSB-first bit position of the payload bytes
     std::size_t size = 0;        // payload byte count
     // Payload configuration data (ETSI TS 102 366 H.2.2.3).  Spec section 8.2 and

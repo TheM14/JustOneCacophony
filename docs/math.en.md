@@ -147,15 +147,17 @@ If the clipgain field consists of integer $x$ and mantissa $y$, then
 
 $$
 G_{\mathrm{clip}}=
-1+\frac{y}{32}2^{x-4}.
+2^{x-4}\left(1+\frac{y}{32}\right).
 $$
 
-It is folded into the analysis-side scalar $S=\frac{1}{16}G_{\mathrm{clip}}$, which multiplies
-every core-bed sample before the QMF analysis; the $\times16$ after the object inverse QMF cancels the
-$1/16$, so the net effect is a multiply by $G_{\mathrm{clip}}$ and the $[-1,1]$ clamp sits **after** the
-gain. The scalar keeps two per-frame slots: the first 256 samples of a frame ramp linearly from the
-previous frame's value to this frame's value and the rest stays constant, and the first frame after a
-reset takes the new value directly. LFE bypasses this scalar.
+Its range is $[0.0625,15.75]$; at $x=4$ it reduces to $1+y/32$. It is folded into the analysis-side
+scalar $S=\frac{1}{16}G_{\mathrm{clip}}$, which multiplies every core-bed sample before the QMF
+analysis; the $\times16$ after the object inverse QMF cancels the $1/16$, so the net effect is a multiply
+by $G_{\mathrm{clip}}$ and the $[-1,1]$ clamp sits **after** the gain. The scalar keeps two per-frame
+slots: the first 256 samples of a frame ramp linearly from the previous frame's value to this frame's
+value and the rest stays constant, and the first frame after a reset takes the new value directly. LFE
+uses a separate path but applies the same full $G_{\mathrm{clip}}$ as a sample-wise ramp before its
+1217-sample delay; see section 8.
 
 ## 3. Parameter-band expansion and time interpolation
 
@@ -190,7 +192,13 @@ Thus $p(b)=k$ if and only if $b\in\mathcal B_k$. Other parameter-band counts use
 
 ### 3.2 One-data-point interpolation
 
-Let $P_{o,c,b}$ be the previous frame-end value and $D_{o,c,p(b)}$ the current target. For slot $t=0\ldots23$:
+Let $P_{o,c,b}$ be the previous frame-end value and $D_{o,c,p(b)}$ the current target. When the object
+has no previous state yet (the first frame of the stream, or the object's first appearance), a single
+data point keeps all 24 slots at $D_{o,c,p(b)}$ (hard cut, no fade-in from zero); with two data points,
+the first 12 slots stay at $D_0$ and the last 12 slots still interpolate from $D_0$ to $D_1$ using the
+second segment of section 3.3 (with $P$ set to $D_0$).
+
+With a previous state, for slot $t=0\ldots23$:
 
 $$
 \alpha_t=\frac{t+1}{24},
@@ -208,11 +216,31 @@ $$
 M_{o,c,b,23}=D_{o,c,p(b)}.
 $$
 
-This value then becomes the previous state for the next frame.
+This value then becomes the previous state for the next frame. Once an object's present flag goes from 1
+to 0, it keeps being published with an all-zero matrix and its previous state is updated to zero until it
+becomes present again.
 
 ### 3.3 Multiple data points
 
-When a frame contains two data points, `offset_ts` gives the segment boundary. Each segment uses the same linear relation between the previous and next targets; step mode switches targets at the designated slot.
+`offset_ts` gives the first slot at which each data point becomes active, using the raw 5-bit value
+(legal range $0\ldots23$); the values of one object must be strictly increasing. In the default mode
+(`slope_idx=0`), two data points $D_0$ and $D_1$ interpolate as
+
+$$
+M_{o,c,b,t}=
+\begin{cases}
+(1-\alpha_t)P_{o,c,b}+\alpha_tD_{0}, & t=0\ldots10,\ \alpha_t=\dfrac{t+1}{12},\\[1mm]
+D_{0}, & t=11,\\[1mm]
+(1-\beta_t)D_{0}+\beta_tD_{1}, & t=12\ldots23,\ \beta_t=\dfrac{t-11}{12}.
+\end{cases}
+$$
+
+When no previous state exists, the same formulas apply with $P_{o,c,b}$ set to $D_0$.
+
+Step mode (`slope_idx=1`) switches targets directly at the designated slots: for $t<o_0$ it keeps the
+previous frame-end value $P_{o,c,b}$ (or $D_0$ when no previous state exists), for $o_0\le t<o_1$ it
+uses $D_0$, and for $t\ge o_1$ it uses $D_1$; with a single data point it keeps $P$ for $t<o_0$ and uses
+$D_0$ from $o_0$ on.
 
 ## 4. Analysis QMF for core PCM
 
@@ -337,14 +365,20 @@ where $r=0\ldots63$. Synthesis state must advance continuously by slot.
 
 ## 8. LFE path
 
-LFE bypasses the object matrix and inverse QMF and uses a 1217-sample delay. After the input and output scale factors cancel:
+LFE bypasses the object matrix and inverse QMF. The core LFE samples are first multiplied by the
+sample-wise gain ramp $G[n]$ (the same full $G_{\mathrm{clip}}$ as section 2.4: for $n<256$,
+$G[n]=G_{\mathrm{old}}+n(G_{\mathrm{new}}-G_{\mathrm{old}})/256$; for $n\ge256$, $G[n]=G_{\mathrm{new}}$;
+on the first frame or after a reset, $G_{\mathrm{old}}=G_{\mathrm{new}}$). The scaled samples then
+enter the 1217-sample delay, and the read-out is only clamped, with no further gain:
 
 $$
 y_{\mathrm{LFE}}[n]=
 \mathrm{clip}\left(
-x_{\mathrm{LFE,core}}[n-1217],-1,1
+x_{\mathrm{LFE,core}}[n-1217]\cdot G[n-1217],-1,1
 \right).
 $$
+
+Here $G[k]$ uses the frame-local position of input sample $k$, i.e. $k\bmod1536$.
 
 ## 9. OAMD coordinates
 
@@ -358,7 +392,7 @@ q_N(k)=
 \right).
 $$
 
-OAR coordinates are
+The normalized room coordinates are
 
 $$
 u=\frac{q_1}{32768},
@@ -800,3 +834,51 @@ $$
 - Multiple OAMD position blocks must be scheduled in time order.
 - A limiter is separate post-processing and is not included in the mixing equations above.
 - Trim and front-back balance affect speaker rendering only; binaural rendering does not read them.
+
+## 16. OAMD metadata application (speaker path)
+
+When mapping object PCM to the target layout, speaker rendering applies the OAMD
+object attributes in addition to the geometric panning:
+
+- per-block integer gain `Qg` (unity 4096) and `inactive`; the gain is applied to
+  the target coefficients once, and the LFE uses its owning metadata object's
+  gain/active state;
+- full basic/render status 0/1/2/3 block expansion, same-object previous-block
+  inheritance, and local mask updates;
+- `zone_constraints_idx` region selection mapped through `[0,1,2,3,4,5,6,0]`;
+  `enable_elevation=0` forces z=0 before position compensation and size spread;
+- `object_size_idx` 5-bit sizes, the `size_curve` piecewise mapping, and the size
+  kernel; the kernel is generated at runtime from region geometry with
+  equal-power grouped panning, the S448 weight and a power sum (20/20/8
+  virtual points, 20 size nodes, 35/4 position nodes; boundary rows
+  X(0), X(1), Y(0), Y(1), Z(1));
+- `snap` first-argmax speaker snapping, `divergence` left/right point-source
+  combination, and element 5 high-precision position refinement;
+- `default_priority`/`priority_bits` choose which size objects keep their size
+  when the size budget is limited;
+- `isf_idx` basis matrices (signed coefficients, no per-column normalization)
+  with the per-basis compensation;
+- `b_bed_chan_distribute` label candidates, weight normalization, missing-channel
+  fallback, and the direct/distribute compensation.
+
+The ISF path orders the N ISF object audio essences into the column vector t
+according to the M.U.L.Z order of `isf_config`, selects the input configuration
+by `isf_idx` and the matrix M for the target output layout, and evaluates
+y = M·t: each ISF channel is distributed over the speakers by the corresponding
+matrix row, LFE bypasses the matrix, and each basis carries its own
+compensation. The matrix coefficients and layout descriptors are obtained from
+lookup tables stored in the compiled-in `src/oamd/isf_tables.h`; nothing reads a
+data file at run time.
+
+Gain, size, priority, position, divergence, delta and refinement values are
+computed in code (`src/oamd/oamd_parser.*`) from formulas or fixed constants; the
+size kernel (`src/oamd/oamd_math.*`) is generated at runtime from region geometry
+with grouped equal-power panning, the S448 weight and a power sum. Bed labels,
+routing and reference positions are derived from the speaker layout tables
+(`src/speaker/speaker_layouts.h`) by
+`src/joc_bitstream/bed_layout_map.{h,cpp}`.
+ADM export and the binaural paths still use object positions only and do not apply
+these speaker target coefficients. The binaural path schedules positions from the
+complete `frame_state`: multiple position blocks and programmes with more than 16
+objects are scheduled block by block at their own time and ramp, and its position
+track list is not limited to 16; ADM export keeps the 15-track single-block view.

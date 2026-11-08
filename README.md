@@ -99,7 +99,7 @@ joc_cli input.eac3 --metadata-only --print-metadata summary   # 只解析并打�
 
 ## 扬声器布局与声道顺序
 
-`--speaker-layout` 只接受下表 11 个布局，PCM/WAV 的声道顺序就是表里的顺序：
+`--speaker-layout` 只接受下表 12 个布局，PCM/WAV 的声道顺序就是表里的顺序：
 
 | 布局 | 声道顺序 |
 |---|---|
@@ -107,6 +107,7 @@ joc_cli input.eac3 --metadata-only --print-metadata summary   # 只解析并打�
 | 3.1 | L, R, C, LFE |
 | 4.0 | L, R, Lrs, Rrs |
 | 5.1 | L, R, C, LFE, Ls, Rs |
+| 6.0 | L, R, Ls, Rs, Lrs, Rrs |
 | 7.1 | L, R, C, LFE, Ls, Rs, Lrs, Rrs |
 | 5.1.2 | L, R, C, LFE, Ls, Rs, Ltm, Rtm |
 | 5.1.4 | L, R, C, LFE, Ls, Rs, Ltf, Rtf, Ltr, Rtr |
@@ -122,12 +123,20 @@ joc_cli input.eac3 --metadata-only --print-metadata summary   # 只解析并打�
 PCM 声道顺序严格按上表，不按掩码位序重排。播放器、ASIO、DAW 或其他设备需要按声道编号自行完成
 输出映射；本项目保证各 PCM 声道的内容和编号符合上表，不保证下游播放器自动识别杜比扬声器位置。
 
-`--speaker-layout` 只接受上表 11 个名字；其它名字按未知布局报错。
+`--speaker-layout` 只接受上表 12 个名字；其它名字按未知布局报错。
 
 扬声器渲染从 OAMD 元数据读取 warp、trim 和 front/back balance；命令行不提供 warp 覆盖。
 warp 0/1 直接渲染；warp 2/3 先渲染到 7.1.x 中间布局，再按 PLIIx 或 Standard（Lo/Ro）
 折回 5.1.x，校准参数始终按最终目标布局选择。原始对象轨迹与双耳渲染不预处理这些控制，
 参数与求值顺序见[数学说明 §12](docs/math.md)。
+
+扬声器渲染还会应用 OAMD 的对象属性：每块增益/inactive、zone/elevation、size/snap/divergence、
+priority 尺寸预算、element 5 位置细化、ISF 基矩阵和 bed distribute。ADM 导出与双耳路径仍按点
+对象放置，不应用这些扬声器目标系数。
+
+对象位置的调度按完整 `frame_state` 进行：扬声器与双耳渲染都接受多 position block 和超过 16
+个对象的节目，按各块的时间与 ramp 逐个调度；双耳渲染的音频输入仍是 1 LFE + 15 对象，多出的
+位置轨道只跟踪不参与声像。ADM 导出仍使用 15 轨、单 block 的对象位置视图，超出时按变体报错。
 
 ## 库集成
 
@@ -164,17 +173,41 @@ tests/       单元测试（CTest，自足，不需要外部素材）
 docs/        数学说明、双耳渲染流程与 SIMD 派发
 ```
 
-`src/` 下 8 个文件是 JustOneCacophony 原生库的逐字节副本，永不修改（见
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)）。
+`src/` 下的 QMF/双耳表与 JOC Huffman 表按公开标准实现；来源记录见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+ISF 压缩基系数与布局描述以查表方式提供：表数据写在生成头文件 `src/oamd/isf_tables.h` 中，
+与代码一起编译进二进制，运行时不读取数据文件。gain、size、priority、位置、divergence
+与差分/细化值都在代码中计算，size 核由扬声器布局的 region 几何生成，bed 路由由布局表推导。
+
+## 数学实现
+
+主要文档化阶段：
+
+- dense JOC 差分还原与去量化；
+- 参数带到 64 个 QMF 子带的映射；
+- 跨帧参数插值（无上一帧时硬切，对象消失后按零矩阵发布）；
+- 帧级 JOC 状态机（正常 / 保持 / 硬切 / 核心直通）；
+- analysis / inverse QMF、环绕声道延迟与 FIR 状态；
+- LFE 1217-sample 延迟与逐点 clipgain 斜坡；
+- OAMD Q15 坐标转换；
+- 基于目标布局 region 的等功率声像；
+- OAMD 元数据应用（每块增益与 inactive、zone/elevation、size 核、snap、divergence、位置细化、priority 尺寸预算、ISF 矩阵、bed 分配）；
+- 布局位置补偿与逐样本增益斜坡；
+- float32 与 PCM24 输出量化；
+- Rosella 与编译好的 `.jochrtf` 双耳渲染，含 exactly-once delay/phase 与 special LFE。
+
+解码与渲染所用的公式见[数学说明](docs/math.md)。
 
 ## 兼容性说明
 
 ### `joc_clipgain` 的施加方式
 
-`joc_clipgain` 在**分析端**并入分析标量：`标量 = 1/16 × g`（`g = 1 + (y/32)·2^(x−4)`，8 bit 字段
-`x:3 | y:5`）。出口的 ×16 抵消 1/16，净效果是 `×g`，因此 clamp 处在增益**之后**
+`joc_clipgain` 在**分析端**并入分析标量：`标量 = 1/16 × g`（`g = 2^(x−4)·(1 + y/32)`，8 bit 字段
+`x:3 | y:5`，值域 0.0625..15.75）。出口的 ×16 抵消 1/16，净效果是 `×g`，因此 clamp 处在增益**之后**
 （`clamp(16·IQMF·g_interp)`）。标量按帧保存在两个槽里：本帧前 256 个采样从上一帧值线性过渡、之后为
-常数，复位后的第一帧直接取新值。`g = 1` 时插值恒等，且 `clamp(x)·1 == clamp(x·1)`。
+常数，复位后的第一帧直接取新值。`g = 1` 时插值恒等，且 `clamp(x)·1 == clamp(x·1)`。LFE 走独立
+通路，但使用同一个完整 `g` 的逐点斜坡，并乘在 1217-sample 延迟之前。
 
 `object_delay_samples` 默认 **1473**，与既有实现的行为保持一致；它是可配置字段，改动它会
 改变 OAMD/ADM 时间对齐。上游调查认为该值应为 0，本项目为保持逐字节等价暂不改默认值。
@@ -202,8 +235,24 @@ OAMD 与 JOC 载荷 groupid 相同且 ID14 能完整解析的优先，其次只�
 其余记入 diagnostics（`emdf/extra_container_ignored`）。额外那一对在 10 槽 ADM 骨架上的落位
 （$k=1\to6/7$、$k\in\{2,4\}\to8/9$）会被记录，但床通道按现行契约不作为输出通道。
 
-音频帧内完全没有 JOC EMDF 时（例如编码器没写首帧元数据），该帧的对象通道静音，
-QMF 分析与合成状态照常推进，并在统计里单独计数。
+### 帧状态与 JOC 解码状态机
+
+每个帧都带一个状态，非零状态按诊断报告。非零状态使该帧不能用于渲染，渲染器因此保持上一帧矩阵或输出
+核心 PCM 直通，而不还原该帧的矩阵：2 不支持的下混配置，3 对象数截断到 15，4 未知参数带索引，
+5 非法 `offset_ts`，6 字节对齐后存在尾随数据。文件任务对 `joc_dmx_config_idx` 超出 0..4 的
+输入更早在元数据扫描阶段按不支持变体拒绝。状态 3 仍给出截断后的对象列表（供诊断），状态 2、4
+在出错的头字段处停止解析。
+
+渲染随后按帧级状态机运行：正常、保持、硬切、核心直通。正常渲染期间出现 JOC 参数不可用的帧时
+进入保持，继续发布上一帧末的矩阵；连续六个不可用帧只把内部保持状态推进一档、仍保持；出现有效
+帧后重新对齐序号。渲染器离开初始状态后序号回到 0、序号不匹配、或声明的核心声道数变化都
+触发硬切：所有对象矩阵清零、每个对象的 previous 状态置零，核心声道数变化还清空 LFE 延迟环
+但保留 clipgain 斜坡状态。首个有效帧之前，渲染器输出核心 PCM 直通。
+
+音频帧内完全没有 JOC EMDF 时（例如编码器没写首帧元数据），该帧一律走直通路径：8 路核心平面
+L、R、C、LFE、Ls、Rs、(Lrs, Rrs) 按 identity 写入输出槽 0..7，每路延迟 1217 采样，槽 8..15
+保持零，8 平面历史照常推进。这类帧在统计里单独计数；不含 JOC 元数据（ID11 + ID14）的 E-AC-3
+输入不在支持范围。保持或直通期间没有新参数时，分析标量与 LFE 斜坡沿用当前保持的 clipgain。
 
 ## 许可
 

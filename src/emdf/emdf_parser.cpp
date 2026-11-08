@@ -102,9 +102,15 @@ Status parse_at(const std::uint8_t* data, std::size_t size, std::size_t start_bi
         }
 
         const std::uint32_t has_sample_offset = reader.read(1);
-        std::uint16_t sample_offset = 0;
+        std::uint32_t sample_offset = 0;
         if (has_sample_offset != 0u) {
-            sample_offset = static_cast<std::uint16_t>(reader.read(12) >> 1);
+            std::uint32_t value = 0;
+            if (!bits::variable_bits(reader, 11, 8, &value)) {
+                return reader.error() == JOC_ERR_BITSTREAM_TRUNCATED
+                           ? truncated_fail(reader)
+                           : syntax_fail(reader.error_message());
+            }
+            sample_offset = value;
         }
         if (reader.read(1) != 0u) {
             std::uint32_t ignored = 0;

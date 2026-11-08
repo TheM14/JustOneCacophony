@@ -24,7 +24,7 @@ cache，不是交换格式。
 ```powershell
 joc_cli input.m4a --binaural `
     --compiled-hrtf-cache path\to\subject.jochrtf `
-    --kernels data\rosella_kernels.npz `
+    --kernels path\to\rosella_kernels.npz `
     --jochrtf-room on `
     --binaural-mode mid --binaural-tail-seconds 5.0
 joc_cli input.m4a --binaural --personalized-headphone HRTF\binaural.personalized_headphone
@@ -78,7 +78,7 @@ joc_cli input.m4a --binaural --personalized-headphone HRTF\binaural.personalized
 ridge 为 `1e-3`，SH ridge 为 `1e-5`。同方向 measurement 先合并，再用球面 Voronoi
 面积权重做 ridge fit。
 
-固定表位于 `data/rosella_kernels.npz`，实现公开标准化的滤波器组，各表可由如下
+固定表按公开标准化的滤波器组实现并编译进源码，各表可由如下
 公式计算。
 
 hybrid 分析核定义于 [3GPP TS 26.405 / ETSI TS 126 405](https://www.etsi.org/deliver/etsi_ts/126400_126499/126405/06.00.00_60/ts_126405v060000p.pdf)
@@ -106,9 +106,8 @@ $8+4+4$ 子带划分）：
 
 $$Y_p = \sum_{q\in C_p}\Bigl(\mathrm{Re}X_q + j\,s_q\,\mathrm{Im}X_q\Bigr),\qquad s_q\in\{\pm1\}$$
 
-loader 校验 archive 和每个数组的 SHA-256；table version、所有数组 hash 与
-77 个 band-center 参考值都属于 cache key。标准可公开获取不等于获准实施相关
-专利；更多来源信息见 [`data/README.md`](../data/README.md) 与
+固定表在编译期确定，运行时不加载外部 archive，也不参与缓存键。标准可公开
+获取不等于获准实施相关专利；来源与权利边界见
 [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)。
 
 ## `.jochrtf`

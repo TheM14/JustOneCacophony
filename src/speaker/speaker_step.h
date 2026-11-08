@@ -9,6 +9,7 @@
 #include "foundation/status.h"
 #include "oamd/oamd_parser.h"
 #include "speaker/speaker_layout_lookup.h"
+#include "speaker/speaker_meta.h"
 #include "speaker/speaker_trim.h"
 
 namespace joc::speaker {
@@ -32,6 +33,16 @@ struct SpeakerStep {
     // 对象槽 → Q15 方位；bed_override 为 false 的槽仍按 OAMD 坐标声像。
     std::uint16_t bed_positions[oamd::kObjects][oamd::kAxes] = {};
     bool bed_override[oamd::kObjects] = {};
+    // Metadata path: a frame that carries the full per-object block state
+    // switches the speaker output to the metadata renderer.  The programme trim
+    // element and its raw global mode stay here because the metadata path needs
+    // the per-object bypass flags and the ISF compensation mode.
+    MetaRenderer meta;
+    bool meta_configured = false;
+    bool meta_engaged = false;
+    oamd::OamdTrim trim{};
+    bool has_trim = false;
+    std::uint32_t raw_trim_mode = 0;
 };
 
 Status step(SpeakerStep* context, const std::vector<float>& objects16_planar,

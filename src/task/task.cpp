@@ -348,7 +348,7 @@ Status probe_atmos_trim(const std::string& path, std::uint64_t max_frames,
                 continue;
             }
             oamd::OamdUpdate update;
-            if (!oamd::parse_id11(bytes.data(), bytes.size(), &update).ok() ||
+            if (!oamd::parse_id11_state(bytes.data(), bytes.size(), &update).ok() ||
                 !update.has_trim) {
                 continue;
             }
@@ -1429,6 +1429,11 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                 return finalize_with_error(seeded.code(), "render", seeded.message());
             }
             speaker.controls_ready = true;
+            // The metadata path needs the programme trim before its own event
+            // arrives; the probe above read it from the leading frames.
+            speaker.trim = initial_trim;
+            speaker.has_trim = true;
+            speaker.raw_trim_mode = initial_trim.global_trim_mode;
         }
         bus.emit(JOC_EV_RENDERER_INITIALIZED, JOC_STAGE_RENDER, JOC_LOG_INFO,
                  fmt("speaker renderer: %s, %u channels", speaker.layout.name,
@@ -1590,6 +1595,9 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
     // container that is not this frame's JOC metadata.
     std::uint64_t missing_joc_frames = 0;
     std::uint64_t objects_clamped_frames = 0;
+    std::uint64_t bad_parameter_band_frames = 0;
+    std::uint64_t bad_offset_ts_frames = 0;
+    std::uint64_t trailing_data_frames = 0;
     std::uint64_t extra_container_frames = 0;
     std::uint64_t chanmap_pair_mismatch_frames = 0;
     std::uint64_t bed_mask_mismatch_frames = 0;
@@ -1660,6 +1668,19 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                         if (params.objects_clamped != 0u) {
                             ++objects_clamped_frames;
                         }
+                        switch (params.status) {
+                        case JOC_FRAME_STATUS_BAD_PARAMETER_BAND:
+                            ++bad_parameter_band_frames;
+                            break;
+                        case JOC_FRAME_STATUS_BAD_OFFSET_TS:
+                            ++bad_offset_ts_frames;
+                            break;
+                        case JOC_FRAME_STATUS_TRAILING_DATA:
+                            ++trailing_data_frames;
+                            break;
+                        default:
+                            break;
+                        }
                     } else {
                         ++missing_joc_frames;
                     }
@@ -1691,8 +1712,9 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                     }
                     std::string dsp_error;
                     const Status rebuilt = ::joc::joc::rebuild_objects16(
-                        rebuilder, params, bed5.data(), lfe.data(), gain, &objects16,
-                        &dsp_error);
+                        rebuilder, params, bed5.data(), lfe.data(),
+                        static_cast<std::uint32_t>(resolved_core_channels), has_joc, gain,
+                        &objects16, &dsp_error);
                     if (!rebuilt.ok()) {
                         return Status::fail(rebuilt.code(), "joc", dsp_error);
                     }
@@ -1819,8 +1841,16 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                             stream_done = true;
                             break;
                         }
+                        // The speaker and binaural renderers consume the full per-object
+                        // block state (multi-block and every declared object); the ADM
+                        // export path keeps the reference's 15-track single-block view.
+                        const bool full_metadata_state = speaker_enabled || binaural_enabled;
                         const Status oamd =
-                            ::joc::oamd::parse_id11(bytes.data(), bytes.size(), &job.update);
+                            full_metadata_state
+                                ? ::joc::oamd::parse_id11_state(bytes.data(), bytes.size(),
+                                                               &job.update)
+                                : ::joc::oamd::parse_id11(bytes.data(), bytes.size(),
+                                                          &job.update);
                         if (!oamd.ok()) {
                             failures.record(produced, StageRank::kJoc, oamd.code(), oamd.stage(),
                                             "frame " + std::to_string(produced) + ": " +
@@ -2166,11 +2196,28 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
     joiner.shutdown(false);
     if (missing_joc_frames != 0u) {
         bus.warning(std::to_string(missing_joc_frames) +
-                    " audio frame(s) carried no JOC payload; their object channels stay silent");
+                    " audio frame(s) carried no JOC payload; their core PCM was passed "
+                    "through (8 core planes, 1217-sample delay)");
     }
     if (objects_clamped_frames != 0u) {
         bus.warning(std::to_string(objects_clamped_frames) +
-                    " audio frame(s) declared more than 15 objects; the count was clamped to 15");
+                    " audio frame(s) declared more than 15 objects; the count was clamped "
+                    "to 15 and the frame took the invalid-frame path");
+    }
+    if (bad_parameter_band_frames != 0u) {
+        bus.warning(std::to_string(bad_parameter_band_frames) +
+                    " audio frame(s) declared an unknown JOC parameter-band count; the "
+                    "frame took the invalid-frame path");
+    }
+    if (bad_offset_ts_frames != 0u) {
+        bus.warning(std::to_string(bad_offset_ts_frames) +
+                    " audio frame(s) carried an invalid JOC offset_ts value; the frame "
+                    "took the invalid-frame path");
+    }
+    if (trailing_data_frames != 0u) {
+        bus.warning(std::to_string(trailing_data_frames) +
+                    " audio frame(s) carried JOC data after the byte-alignment padding; "
+                    "the frame took the invalid-frame path");
     }
     if (extra_container_frames != 0u) {
         bus.warning(std::to_string(extra_container_frames) +

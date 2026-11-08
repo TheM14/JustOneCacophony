@@ -147,13 +147,15 @@ $$
 
 $$
 G_{\mathrm{clip}}=
-1+\frac{y}{32}2^{x-4}.
+2^{x-4}\left(1+\frac{y}{32}\right).
 $$
 
-它并入分析端标量 $S=\frac{1}{16}G_{\mathrm{clip}}$，乘在核心 bed 的每个采样上（QMF 分析之前）；
+值域为 $[0.0625,15.75]$；$x=4$ 时化为 $1+y/32$。它并入分析端标量
+$S=\frac{1}{16}G_{\mathrm{clip}}$，乘在核心 bed 的每个采样上（QMF 分析之前）；
 对象 inverse QMF 之后的 $\times16$ 抵消 $1/16$，净效果是乘 $G_{\mathrm{clip}}$，因此钳位 $[-1,1]$
 处在增益**之后**。标量按帧保留两个槽，本帧前 256 个采样从上一帧值线性过渡到本帧值、之后为常数，
-复位后的第一帧直接取新值。LFE 走旁通通路，不参与该标量。
+复位后的第一帧直接取新值。LFE 走独立通路，但使用同一个完整 $G_{\mathrm{clip}}$ 的逐点斜坡：
+斜坡在进入 1217-sample 延迟之前乘到 LFE 采样上，见 §8。
 
 ## 3. 参数带展开与时间插值
 
@@ -188,7 +190,12 @@ $$
 
 ### 3.2 单数据点插值
 
-令上一帧末值为 $P_{o,c,b}$，当前目标值为 $D_{o,c,p(b)}$。对时槽 $t=0\ldots23$：
+令上一帧末值为 $P_{o,c,b}$，当前目标值为 $D_{o,c,p(b)}$。对象没有 previous 状态时
+（整条流第一帧或对象首次出现）：单数据点情形 24 个时槽恒为 $D_{o,c,p(b)}$（硬切，
+不从零淡入）；双数据点情形前 12 个时槽为 $D_0$，后 12 个时槽按 §3.3 的第二段公式
+从 $D_0$ 插值到 $D_1$（把该节的 $P$ 取为 $D_0$）。
+
+有 previous 状态时，对时槽 $t=0\ldots23$：
 
 $$
 \alpha_t=\frac{t+1}{24},
@@ -206,11 +213,28 @@ $$
 M_{o,c,b,23}=D_{o,c,p(b)}.
 $$
 
-该值随后成为下一帧的 previous 状态。
+该值随后成为下一帧的 previous 状态。对象 present 由 1 变 0 后，从该帧起继续按全零矩阵发布，
+并把 previous 更新为零矩阵，直到它重新 present=1。
 
 ### 3.3 多数据点
 
-当一帧含两个数据点时，`offset_ts` 给出分段边界。每一段在上一目标和下一目标之间使用相同的线性关系；阶跃模式则在指定时槽直接切换目标。
+`offset_ts` 给出各数据点开始生效的时隙序号，取原始 5 bit 值（合法范围 $0\ldots23$）；
+同一对象的数据点必须严格递增。默认模式（`slope_idx=0`）下，两个数据点 $D_0,D_1$ 的插值为
+
+$$
+M_{o,c,b,t}=
+\begin{cases}
+(1-\alpha_t)P_{o,c,b}+\alpha_tD_{0}, & t=0\ldots10,\ \alpha_t=\dfrac{t+1}{12},\\[1mm]
+D_{0}, & t=11,\\[1mm]
+(1-\beta_t)D_{0}+\beta_tD_{1}, & t=12\ldots23,\ \beta_t=\dfrac{t-11}{12}.
+\end{cases}
+$$
+
+没有 previous 状态时同样使用上面的公式，只是把 $P_{o,c,b}$ 取为 $D_0$。
+
+阶跃模式（`slope_idx=1`）在指定时槽直接切换目标：$t<o_0$ 保持上一帧末值 $P_{o,c,b}$
+（没有 previous 时取 $D_0$），$o_0\le t<o_1$ 取 $D_0$，$t\ge o_1$ 取 $D_1$；
+单数据点时 $t<o_0$ 保持 $P$、$t\ge o_0$ 取 $D_0$。
 
 ## 4. 核心 PCM 的 analysis QMF
 
@@ -334,14 +358,19 @@ $$
 
 ## 8. LFE 路径
 
-LFE 不经过对象矩阵或 inverse QMF，而是使用 1217-sample 延迟。输入与输出端的比例因子抵消后：
+LFE 不经过对象矩阵或 inverse QMF。核心 LFE 先乘逐点增益斜坡 $G[n]$（与 §2.4 同一个完整
+$G_{\mathrm{clip}}$：$n<256$ 时 $G[n]=G_{\mathrm{old}}+n(G_{\mathrm{new}}-G_{\mathrm{old}})/256$，
+$n\ge256$ 时 $G[n]=G_{\mathrm{new}}$，首帧或复位后 $G_{\mathrm{old}}=G_{\mathrm{new}}$），
+再进入 1217-sample 延迟；读出后只做钳位，不再乘任何增益：
 
 $$
 y_{\mathrm{LFE}}[n]=
 \mathrm{clip}\left(
-x_{\mathrm{LFE,core}}[n-1217],-1,1
+x_{\mathrm{LFE,core}}[n-1217]\cdot G[n-1217],-1,1
 \right).
 $$
+
+其中 $G[k]$ 取输入采样 $k$ 所在帧内的位置，即 $k\bmod1536$。
 
 ## 9. OAMD 坐标
 
@@ -355,7 +384,7 @@ q_N(k)=
 \right).
 $$
 
-OAR 坐标为
+归一化房间坐标为
 
 $$
 u=\frac{q_1}{32768},
@@ -774,3 +803,38 @@ $$
 - 多个 OAMD position block 必须按其时间顺序调度。
 - limiter 属于独立后处理，不包含在上述混音公式中。
 - trim 与前后平衡只作用于扬声器渲染；双耳渲染不读取它们。
+
+## 16. OAMD 元数据应用（扬声器路径）
+
+扬声器渲染把对象 PCM 映射到目标布局时，除几何声像外还应用 OAMD 的对象属性：
+
+- 每块整数增益 `Qg`（单位增益 4096）与 `inactive`；增益在生成目标系数时乘一次，
+  LFE 使用所属元数据对象的增益/活动状态；
+- basic/render 状态 0/1/2/3 的完整块展开、同对象前一块继承与局部 mask 更新；
+- `zone_constraints_idx` 选择区域，映射为 `[0,1,2,3,4,5,6,0]`；`enable_elevation=0`
+  在位置补偿和尺寸扩散前令 z=0；
+- `object_size_idx` 的 5 bit 尺寸、`size_curve` 分段线性映射与尺寸扩散核；
+  尺寸核按分组等功率声像、S448 权重和幂和，在运行时用区域几何生成：
+  20/20/8 个虚拟点、20 个尺寸节点、35/4 个位置节点，边界表为
+  X(0)、X(1)、Y(0)、Y(1)、Z(1)；
+- `snap` 的首个最大系数扬声器吸附、`divergence` 的左右两点合成、
+  element 5 的高精度位置补充；
+- `default_priority`/`priority_bits` 在 size 数量预算不足时决定保留尺寸的对象；
+- `isf_idx` 的 ISF 基矩阵（可含负系数，不做逐列归一化）与逐 basis 补偿；
+- `b_bed_chan_distribute` 的 bed 标签候选筛选、权重归一化、缺失声道 fallback 和
+  直达/distribute 的补偿。
+
+ISF 路径把 N 路 ISF object audio essences 按 `isf_config` 的 M.U.L.Z 顺序组成
+列向量 t，按 `isf_idx` 选输入配置、按目标输出布局选矩阵 M，再计算 y = M·t：
+每个 ISF 声道按矩阵对应的一行分配到目标扬声器，LFE 不参与矩阵、直接旁路，
+每个 basis 另有补偿。矩阵系数与布局描述通过查表获得，表数据写在编译进源码的
+`src/oamd/isf_tables.h` 中，运行时不读取数据文件。
+
+gain、size、priority、位置、divergence 与差分/细化值由 `src/oamd/oamd_parser.*`
+按公式或固定常量计算，size 扩散核由 `src/oamd/oamd_math.*` 从区域几何生成
+（分组等功率声像 + S448 权重 + 幂和）。bed 标签、路由和参考位置由
+`src/joc_bitstream/bed_layout_map.*` 从 `src/speaker/speaker_layouts.h` 的布局表
+推导。
+ADM 导出与双耳路径仍只使用对象位置，不应用这些扬声器目标系数。双耳路径按完整
+`frame_state` 调度位置：多 position block 与超过 16 个对象的节目都按各块的时间与 ramp
+逐个调度，双耳位置轨道数不限于 16；ADM 导出保持 15 轨单 block 视图。

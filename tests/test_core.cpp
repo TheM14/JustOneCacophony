@@ -19,6 +19,8 @@
 #include "hrtf/jochrtf.h"
 #include "hrtf/rosella_model.h"
 #include "hrtf/rosella_renderer.h"
+#include "joc_bitstream/joc_huffman_tables.h"
+#include "joc_bitstream/joc_parser.h"
 #include "foundation/mini_json.h"
 #include "foundation/sha256.h"
 #include "io/inflate.h"
@@ -33,6 +35,7 @@
 #include "speaker/speaker_trim.h"
 #include "stream/stream.h"
 #include "task/task.h"
+#include "timeline/position_timeline.h"
 
 namespace {
 
@@ -580,8 +583,8 @@ void test_speaker_warp_and_trim() {
     CHECK(joc::speaker::parameters_from_oamd(nullptr, layout514, &automatic514).ok());
 
     // Warp 0 leaves the floor Y alone; warp 1 doubles it before the clamp.
-    const std::vector<double> warp0 = {0.9126902722074105, 0, 0, 0, 0.18155106823708969, 0};
-    const std::vector<double> warp1 = {0.85973219419392444, 0, 0, 0, 0.35612480624995158, 0};
+    const std::vector<double> warp0 = {0.85973646214220434, 0, 0, 0, 0.35611450268596406, 0};
+    const std::vector<double> warp1 = {0.65801380052399572, 0, 0, 0, 0.65801380052399572, 0};
     const std::vector<double> clamped = {0, 0, 0, 0, 0.70794578438413791, 0};
     check_gains(speaker_gains(layout51, automatic51, 0, 4096, 0), warp0);
     ejoc_speaker_controls warped = automatic51;
@@ -605,10 +608,10 @@ void test_speaker_warp_and_trim() {
     explicit_controls.surround_db = -6.0;
     explicit_controls.listener_balance = 9.0 / 16.0;
     explicit_controls.overhead_balance = -9.0 / 16.0;
-    const std::vector<double> trimmed = {0.68117911059016056, 0, 0, 0, 0.41744281702545366, 0};
+    const std::vector<double> trimmed = {0.36269933962647599, 0, 0, 0, 0.71183753429070229, 0};
     check_gains(speaker_gains(layout51, explicit_controls, 0, 4096, 0), trimmed);
     // Per-object bypass keeps warp but drops balance and trim.
-    const std::vector<double> bypassed = {0.92387494614065435, 0, 0, 0, 0.38269450465561039, 0};
+    const std::vector<double> bypassed = {0.70710678118654757, 0, 0, 0, 0.70710678118654757, 0};
     check_gains(speaker_gains(layout51, explicit_controls, 0, 4096, 0, true), bypassed);
 
     // Centre trim is local to the front-centre region; height trim scales with Z.
@@ -789,7 +792,7 @@ void test_speaker_step_trim_events() {
     update.trim.global_trim_mode = 0;
     update.trim.object_count = 16;
     CHECK(joc::speaker::step(&step, frame, &update, &error).ok());
-    const std::vector<double> warp1 = {0.85973219419392444, 0, 0, 0, 0.35612480624995158, 0};
+    const std::vector<double> warp1 = {0.65801380052399572, 0, 0, 0, 0.65801380052399572, 0};
     std::vector<double> gains(step.layout.channel_count);
     for (std::uint32_t channel = 0; channel < step.layout.channel_count; ++channel) {
         gains[channel] = step.output[read + channel];
@@ -803,8 +806,8 @@ void test_speaker_step_trim_events() {
     for (std::uint32_t channel = 0; channel < step.layout.channel_count; ++channel) {
         gains[channel] = step.output[read + channel];
     }
-    const std::vector<double> half_warp1 = {0.9461247896349676, 0, 0, 0,
-                                            0.18820181552760662, 0};
+    const std::vector<double> half_warp1 = {0.89123112643513935, 0, 0, 0,
+                                            0.36916001977848539, 0};
     check_gains(gains, half_warp1);
 
     // A new trim element switches the controls back to warp 0.
@@ -818,8 +821,8 @@ void test_speaker_step_trim_events() {
     for (std::uint32_t channel = 0; channel < step.layout.channel_count; ++channel) {
         gains[channel] = step.output[read + channel];
     }
-    const std::vector<double> half_warp0 = {0.96001622724230795, 0, 0, 0,
-                                            0.094556249720175942, 0};
+    const std::vector<double> half_warp0 = {0.94612591737884011, 0, 0, 0,
+                                            0.18819614606507579, 0};
     check_gains(gains, half_warp0);
 
     // A warp 2 element renders through the expanded layout and folds.
@@ -1399,8 +1402,20 @@ void test_clipgain_first_frame_uses_its_own_gain() {
     // A fresh handle takes the current gain with no transition.
     CHECK(peak > 1.0e-3f);
     CHECK(scaled);
-    // LFE bypasses the scalar, so its samples are bit-identical.
-    CHECK(std::memcmp(unity.data(), doubled.data(), sizeof(float) * EJOC_FRAME_SAMPLES) == 0);
+    // The LFE now carries the same full clipgain: a fresh ring starts with 1217
+    // zero samples and the rest scales by the frame's gain (2x is exact).
+    bool lfe_scaled = true;
+    for (int sample = 0; sample < EJOC_FRAME_SAMPLES; ++sample) {
+        if (doubled[static_cast<std::size_t>(sample)] !=
+            2.0f * unity[static_cast<std::size_t>(sample)]) {
+            lfe_scaled = false;
+            break;
+        }
+    }
+    CHECK(lfe_scaled);
+    for (int sample = 0; sample < JOC_LFE_DELAY_SAMPLES; ++sample) {
+        CHECK(unity[static_cast<std::size_t>(sample)] == 0.0f);
+    }
 }
 
 void test_clipgain_change_applies_to_the_current_frame() {
@@ -1480,6 +1495,698 @@ void test_clipgain_reset_clears_the_previous_gain() {
                       sizeof(float) * after_reset.size()) == 0);
 }
 
+// ---------------------------------------------------------------------------
+// JOC frame-level core: clipgain formula, frame status, offset_ts validation,
+// LFE clipgain ramp, 8-plane passthrough, seq state machine and the
+// no-previous-state interpolation rules.
+// ---------------------------------------------------------------------------
+
+struct JocBitWriter {
+    std::vector<std::uint8_t> bytes;
+    std::size_t bit_count = 0;
+
+    void write(std::uint32_t value, int count) {
+        for (int index = count - 1; index >= 0; --index) {
+            if ((bit_count & 7u) == 0u) {
+                bytes.push_back(0u);
+            }
+            if (((value >> index) & 1u) != 0u) {
+                bytes.back() |= static_cast<std::uint8_t>(1u << (7u - (bit_count & 7u)));
+            }
+            ++bit_count;
+        }
+    }
+};
+
+bool huffman_path(const int (*nodes)[2], int count, int value, std::vector<int>* path) {
+    struct Entry {
+        int node;
+        std::vector<int> path;
+    };
+    std::vector<Entry> queue;
+    queue.push_back({0, {}});
+    for (std::size_t index = 0; index < queue.size() && index < 4096u; ++index) {
+        const int node = queue[index].node;
+        if (node < 0) {
+            if (-node - 1 == value) {
+                *path = queue[index].path;
+                return true;
+            }
+            continue;
+        }
+        if (node >= count) {
+            continue;
+        }
+        std::vector<int> left = queue[index].path;
+        left.push_back(0);
+        queue.push_back({nodes[node][0], std::move(left)});
+        std::vector<int> right = queue[index].path;
+        right.push_back(1);
+        queue.push_back({nodes[node][1], std::move(right)});
+    }
+    return false;
+}
+
+void write_huffman_symbol(JocBitWriter* writer, const int (*nodes)[2], int count, int value) {
+    std::vector<int> path;
+    CHECK(huffman_path(nodes, count, value, &path));
+    for (const int bit : path) {
+        writer->write(static_cast<std::uint32_t>(bit), 1);
+    }
+}
+
+// One synthetic ID14 payload with at most one present object (object 0), one
+// parameter band, dense syntax and 5 core channels.
+struct Id14Spec {
+    std::uint8_t dmx_config_idx = 3;
+    std::uint32_t num_objects_bits = 0;  // declares one object
+    std::uint8_t ext_config_idx = 0;
+    std::uint8_t clipgain_x = 4;
+    std::uint8_t clipgain_y = 0;
+    std::uint32_t seq = 1;
+    bool present = false;
+    std::uint8_t n_bands_idx = 0;  // one parameter band
+    std::uint8_t sparse = 0;
+    std::uint8_t quant = 0;
+    std::uint8_t slope = 0;
+    bool two_data_points = false;
+    std::uint8_t offset0 = 0;
+    std::uint8_t offset1 = 0;
+    bool trailing = false;
+};
+
+std::vector<std::uint8_t> make_id14_payload(const Id14Spec& spec) {
+    JocBitWriter writer;
+    writer.write(spec.dmx_config_idx, 3);
+    writer.write(spec.num_objects_bits, 6);
+    writer.write(spec.ext_config_idx, 3);
+    writer.write(spec.clipgain_x, 3);
+    writer.write(spec.clipgain_y, 5);
+    writer.write(spec.seq, 10);
+    const std::uint32_t declared = spec.num_objects_bits + 1u;
+    const std::uint32_t objects = declared > 15u ? 15u : declared;
+    for (std::uint32_t object = 0; object < objects; ++object) {
+        const bool present = object == 0u && spec.present;
+        writer.write(present ? 1u : 0u, 1);
+        if (!present) {
+            continue;
+        }
+        writer.write(spec.n_bands_idx, 3);
+        writer.write(spec.sparse, 1);
+        writer.write(spec.quant, 1);
+        writer.write(spec.slope, 1);
+        writer.write(spec.two_data_points ? 1u : 0u, 1);
+        if (spec.slope == 1u) {
+            writer.write(spec.offset0, 5);
+            if (spec.two_data_points) {
+                writer.write(spec.offset1, 5);
+            }
+        }
+    }
+    if (spec.present && spec.sparse == 0u) {
+        constexpr int kCount = static_cast<int>(sizeof(joc_huff_code_coarse_generic) /
+                                                sizeof(joc_huff_code_coarse_generic[0]));
+        const int points = spec.two_data_points ? 2 : 1;
+        for (int point = 0; point < points; ++point) {
+            for (int channel = 0; channel < 5; ++channel) {
+                write_huffman_symbol(&writer, joc_huff_code_coarse_generic, kCount, 0);
+            }
+        }
+    }
+    while ((writer.bit_count & 7u) != 0u) {
+        writer.write(0u, 1);
+    }
+    if (spec.trailing) {
+        writer.bytes.push_back(0u);
+        writer.bytes.push_back(0u);
+    }
+    return writer.bytes;
+}
+
+void test_joc_clipgain_formula() {
+    struct Case {
+        std::uint8_t x;
+        std::uint8_t y;
+        double expected;
+    };
+    const Case cases[] = {
+        {0, 0, 0.0625}, {2, 8, 0.3125}, {3, 0, 0.5}, {4, 0, 1.0},
+        {4, 16, 1.5},   {5, 16, 3.0},   {7, 31, 15.75},
+    };
+    for (const Case& item : cases) {
+        Id14Spec spec;
+        spec.clipgain_x = item.x;
+        spec.clipgain_y = item.y;
+        spec.seq = 7;
+        const std::vector<std::uint8_t> payload = make_id14_payload(spec);
+        joc_frame_params params{};
+        CHECK(joc::joc::parse_id14(payload.data(), payload.size(), &params, nullptr).ok());
+        CHECK(params.status == JOC_FRAME_STATUS_OK);
+        CHECK(params.clipgain == item.expected);
+        CHECK(params.seq_count == 7u);
+        CHECK(params.n_channels == 5u);
+    }
+}
+
+void test_joc_parse_status_and_offset_ts() {
+    // Unsupported downmix configuration: status 2, and the object syntax is not
+    // expanded because the core channel count is unknown.
+    {
+        Id14Spec spec;
+        spec.dmx_config_idx = 5;
+        const std::vector<std::uint8_t> payload = make_id14_payload(spec);
+        joc_frame_params params{};
+        CHECK(joc::joc::parse_id14(payload.data(), payload.size(), &params, nullptr).ok());
+        CHECK(params.status == JOC_FRAME_STATUS_UNSUPPORTED_DMX);
+        CHECK(params.n_channels == 0u);
+        CHECK(params.n_objects == 0u);
+    }
+    // More than 15 declared objects: the count is clamped and the
+    // corresponding frame status is reported, while the frame still parses.
+    {
+        Id14Spec spec;
+        spec.num_objects_bits = 15;  // declares 16 objects
+        const std::vector<std::uint8_t> payload = make_id14_payload(spec);
+        joc_frame_params params{};
+        CHECK(joc::joc::parse_id14(payload.data(), payload.size(), &params, nullptr).ok());
+        CHECK(params.status == JOC_FRAME_STATUS_OBJECTS_CLAMPED);
+        CHECK(params.objects_clamped == 1u);
+        CHECK(params.n_objects == 15u);
+        CHECK(params.n_channels == 5u);
+    }
+    // Legal raw 5-bit offset_ts values stay as coded (no +1).
+    {
+        Id14Spec spec;
+        spec.present = true;
+        spec.slope = 1;
+        spec.two_data_points = true;
+        spec.offset0 = 5;
+        spec.offset1 = 10;
+        const std::vector<std::uint8_t> payload = make_id14_payload(spec);
+        joc_frame_params params{};
+        CHECK(joc::joc::parse_id14(payload.data(), payload.size(), &params, nullptr).ok());
+        CHECK(params.status == JOC_FRAME_STATUS_OK);
+        CHECK(params.objects[0].offset_ts[0] == 5u);
+        CHECK(params.objects[0].offset_ts[1] == 10u);
+        CHECK(params.objects[0].n_dpoints == 2u);
+        CHECK((params.present_mask & 1u) != 0u);
+    }
+    // offset_ts outside 0..23 -> status 5.
+    {
+        Id14Spec spec;
+        spec.present = true;
+        spec.slope = 1;
+        spec.two_data_points = true;
+        spec.offset0 = 24;
+        spec.offset1 = 25;
+        const std::vector<std::uint8_t> payload = make_id14_payload(spec);
+        joc_frame_params params{};
+        CHECK(joc::joc::parse_id14(payload.data(), payload.size(), &params, nullptr).ok());
+        CHECK(params.status == JOC_FRAME_STATUS_BAD_OFFSET_TS);
+        CHECK(params.objects[0].offset_ts[0] == 24u);
+    }
+    // Non-increasing offset_ts -> status 5.
+    {
+        Id14Spec spec;
+        spec.present = true;
+        spec.slope = 1;
+        spec.two_data_points = true;
+        spec.offset0 = 10;
+        spec.offset1 = 10;
+        const std::vector<std::uint8_t> payload = make_id14_payload(spec);
+        joc_frame_params params{};
+        CHECK(joc::joc::parse_id14(payload.data(), payload.size(), &params, nullptr).ok());
+        CHECK(params.status == JOC_FRAME_STATUS_BAD_OFFSET_TS);
+    }
+    // Data after the byte alignment of joc_data -> status 6.
+    {
+        Id14Spec spec;
+        spec.present = true;
+        spec.trailing = true;
+        const std::vector<std::uint8_t> payload = make_id14_payload(spec);
+        joc_frame_params params{};
+        CHECK(joc::joc::parse_id14(payload.data(), payload.size(), &params, nullptr).ok());
+        CHECK(params.status == JOC_FRAME_STATUS_TRAILING_DATA);
+        CHECK(params.trailing_bits > 0u);
+    }
+    // The same payload without the extra bytes is a normal frame.
+    {
+        Id14Spec spec;
+        spec.present = true;
+        const std::vector<std::uint8_t> payload = make_id14_payload(spec);
+        joc_frame_params params{};
+        CHECK(joc::joc::parse_id14(payload.data(), payload.size(), &params, nullptr).ok());
+        CHECK(params.status == JOC_FRAME_STATUS_OK);
+        CHECK(params.objects[0].n_bands == 1u);
+        CHECK(params.present_mask == 1u);
+    }
+}
+
+// Synthetic audio frames driven through the frame-level kernel.
+struct FrameCase {
+    ejoc_renderer_handle handle = nullptr;
+    std::vector<float> bed;
+    std::vector<float> lfe;
+    std::uint8_t n_bands[EJOC_MAX_OBJECTS] = {};
+    std::uint8_t n_dpoints[EJOC_MAX_OBJECTS] = {};
+    std::uint8_t slope[EJOC_MAX_OBJECTS] = {};
+    std::uint8_t offsets[EJOC_MAX_OBJECTS * EJOC_MAX_DPOINTS] = {};
+    std::vector<double> dq;
+    std::vector<float> out;
+
+    FrameCase()
+        : bed(static_cast<std::size_t>(EJOC_MAX_CORE_CHANNELS) * EJOC_FRAME_SAMPLES, 0.0f),
+          lfe(EJOC_FRAME_SAMPLES, 0.0f),
+          dq(static_cast<std::size_t>(EJOC_MAX_OBJECTS) * EJOC_MAX_DPOINTS *
+                 EJOC_MAX_CORE_CHANNELS * EJOC_MAX_PARAMETER_BANDS,
+             0.0),
+          out(static_cast<std::size_t>(EJOC_OUTPUT_CHANNELS) * EJOC_FRAME_SAMPLES, 0.0f) {}
+
+    ~FrameCase() {
+        if (handle != nullptr) {
+            ejoc_renderer_destroy(handle);
+        }
+    }
+
+    void create() {
+        handle = ejoc_renderer_create();
+        ejoc_renderer_set_threads(handle, 1);
+    }
+
+    static std::size_t dq_index(int object, int point, int channel, int band) {
+        return static_cast<std::size_t>(
+            (((object * EJOC_MAX_DPOINTS + point) * EJOC_MAX_CORE_CHANNELS + channel) *
+                 EJOC_MAX_PARAMETER_BANDS) +
+            band);
+    }
+
+    float at(int channel, int sample) const {
+        return out[static_cast<std::size_t>(channel) * EJOC_FRAME_SAMPLES + sample];
+    }
+
+    bool silent_slots(int first_channel, int last_channel) const {
+        for (int channel = first_channel; channel <= last_channel; ++channel) {
+            for (int sample = 0; sample < EJOC_FRAME_SAMPLES; ++sample) {
+                if (at(channel, sample) != 0.0f) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    bool render(std::uint32_t core_channels, std::uint32_t declared_channels,
+                std::uint32_t status, std::uint32_t seq, bool has_metadata,
+                std::uint32_t object_mask, double clipgain) {
+        ejoc_frame_input input{};
+        input.struct_size = sizeof(input);
+        input.struct_version = EJOC_FRAME_INPUT_VERSION;
+        input.bed_planar = bed.data();
+        input.lfe = lfe.data();
+        input.core_channel_count = core_channels;
+        input.declared_core_channels = declared_channels;
+        input.phase_shift = 0u;
+        input.phase_shift_valid = 1u;
+        input.frame_status = status;
+        input.seq = seq;
+        input.has_metadata = has_metadata ? 1u : 0u;
+        input.object_mask = object_mask;
+        input.n_bands = n_bands;
+        input.n_dpoints = n_dpoints;
+        input.slope_idx = slope;
+        input.offset_ts = offsets;
+        input.dq = dq.data();
+        input.clipgain = clipgain;
+        input.output_scale = 1.0f;
+        input.output16_planar = out.data();
+        std::fill(out.begin(), out.end(), 0.0f);
+        return ejoc_renderer_render_frame(handle, &input) == 0;
+    }
+};
+
+void fill_frame_bed(FrameCase* frame, float step, float lfe_value) {
+    for (std::uint32_t channel = 0; channel < EJOC_MAX_CORE_CHANNELS; ++channel) {
+        for (int sample = 0; sample < EJOC_FRAME_SAMPLES; ++sample) {
+            frame->bed[static_cast<std::size_t>(channel) * EJOC_FRAME_SAMPLES + sample] =
+                step * static_cast<float>(channel + 1u);
+        }
+    }
+    for (int sample = 0; sample < EJOC_FRAME_SAMPLES; ++sample) {
+        frame->lfe[sample] = lfe_value;
+    }
+}
+
+bool near(float value, float expected, float tolerance) {
+    return std::fabs(value - expected) <= tolerance;
+}
+
+void test_joc_lfe_clipgain_ramp() {
+    FrameCase frame;
+    frame.create();
+    fill_frame_bed(&frame, 0.01f, 0.1f);
+    // First frame: gain 1, the delay ring is empty.
+    CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 1u, true, 0u, 1.0));
+    for (int sample = 0; sample < JOC_LFE_DELAY_SAMPLES; ++sample) {
+        CHECK(frame.at(0, sample) == 0.0f);
+    }
+    for (int sample = JOC_LFE_DELAY_SAMPLES; sample < EJOC_FRAME_SAMPLES; ++sample) {
+        CHECK(frame.at(0, sample) == 0.1f);
+    }
+    // Second frame: gain 2 ramps over the frame-local first 256 samples before the
+    // delay; the read-out of the first frame is untouched by the new gain.
+    frame.lfe.assign(EJOC_FRAME_SAMPLES, 0.2f);
+    CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 2u, true, 0u, 2.0));
+    for (int sample = 0; sample < JOC_LFE_DELAY_SAMPLES; ++sample) {
+        CHECK(frame.at(0, sample) == 0.1f);
+    }
+    for (int input = 0; input < static_cast<int>(EJOC_FRAME_SAMPLES) - static_cast<int>(JOC_LFE_DELAY_SAMPLES); ++input) {
+        const double gain = input < 256
+                                ? 1.0 + static_cast<double>(input) * ((2.0 - 1.0) / 256.0)
+                                : 2.0;
+        const double scaled = static_cast<double>(frame.lfe[static_cast<std::size_t>(input)]) *
+                              gain;
+        const double clipped = scaled < -1.0 ? -1.0 : (scaled > 1.0 ? 1.0 : scaled);
+        CHECK(frame.at(0, JOC_LFE_DELAY_SAMPLES + input) ==
+              static_cast<float>(clipped));
+    }
+    // A held frame (invalid status while normal) reuses the held clipgain: the
+    // analysis scalar was 1/16*2, so the LFE gain stays 2 with no new ramp.
+    frame.lfe.assign(EJOC_FRAME_SAMPLES, 0.3f);
+    CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 5u, 3u, true, 0u, 2.0));
+    for (int sample = 0; sample < JOC_LFE_DELAY_SAMPLES; ++sample) {
+        CHECK(frame.at(0, sample) == 0.4f);
+    }
+    for (int sample = JOC_LFE_DELAY_SAMPLES; sample < EJOC_FRAME_SAMPLES; ++sample) {
+        CHECK(frame.at(0, sample) == 0.6f);
+    }
+}
+
+void test_joc_passthrough_8_plane_layout() {
+    // 5-channel core: slots 0..5 = L,R,C,LFE,Ls,Rs and slots 6..7 stay zero.
+    {
+        FrameCase frame;
+        frame.create();
+        fill_frame_bed(&frame, 0.1f, 0.25f);
+        CHECK(frame.render(EJOC_CORE_CHANNELS, 0u, EJOC_FRAME_STATUS_NO_METADATA, 0u, false,
+                           0u, 1.0));
+        float expected[8] = {};
+        for (int channel = 0; channel < 3; ++channel) {
+            expected[channel] = frame.bed[static_cast<std::size_t>(channel) * EJOC_FRAME_SAMPLES];
+        }
+        expected[3] = frame.lfe[0];
+        for (int index = 0; index < 2; ++index) {
+            expected[4 + index] =
+                frame.bed[static_cast<std::size_t>(3 + index) * EJOC_FRAME_SAMPLES];
+        }
+        for (int channel = 0; channel < 8; ++channel) {
+            for (int sample = 0; sample < JOC_LFE_DELAY_SAMPLES; ++sample) {
+                CHECK(frame.at(channel, sample) == 0.0f);
+            }
+            for (int sample = JOC_LFE_DELAY_SAMPLES; sample < EJOC_FRAME_SAMPLES; ++sample) {
+                CHECK(frame.at(channel, sample) == expected[channel]);
+            }
+        }
+        CHECK(frame.silent_slots(8, EJOC_OUTPUT_CHANNELS - 1));
+        // The 8-plane history is kept every frame: the next passthrough frame
+        // reads the previous frame's last 1217 samples.
+        fill_frame_bed(&frame, 0.05f, 0.125f);
+        CHECK(frame.render(EJOC_CORE_CHANNELS, 0u, EJOC_FRAME_STATUS_NO_METADATA, 0u, false,
+                           0u, 1.0));
+        float previous[8] = {};
+        float current[8] = {};
+        for (int channel = 0; channel < 3; ++channel) {
+            current[channel] = frame.bed[static_cast<std::size_t>(channel) * EJOC_FRAME_SAMPLES];
+        }
+        current[3] = frame.lfe[0];
+        for (int index = 0; index < 2; ++index) {
+            current[4 + index] =
+                frame.bed[static_cast<std::size_t>(3 + index) * EJOC_FRAME_SAMPLES];
+        }
+        previous[0] = 0.1f;
+        previous[1] = 0.2f;
+        previous[2] = 0.3f;
+        previous[3] = 0.25f;
+        previous[4] = 0.4f;
+        previous[5] = 0.5f;
+        for (int channel = 0; channel < 8; ++channel) {
+            for (int sample = 0; sample < JOC_LFE_DELAY_SAMPLES; ++sample) {
+                CHECK(frame.at(channel, sample) == previous[channel]);
+            }
+            for (int sample = JOC_LFE_DELAY_SAMPLES; sample < EJOC_FRAME_SAMPLES; ++sample) {
+                CHECK(frame.at(channel, sample) == current[channel]);
+            }
+        }
+    }
+    // 7-channel core: the extra pair is written to slots 6 and 7.
+    {
+        FrameCase frame;
+        frame.create();
+        fill_frame_bed(&frame, 0.01f, 0.07f);
+        CHECK(frame.render(EJOC_MAX_CORE_CHANNELS, 0u, EJOC_FRAME_STATUS_NO_METADATA, 0u,
+                           false, 0u, 1.0));
+        float expected[8] = {};
+        for (int channel = 0; channel < 3; ++channel) {
+            expected[channel] = frame.bed[static_cast<std::size_t>(channel) * EJOC_FRAME_SAMPLES];
+        }
+        expected[3] = frame.lfe[0];
+        for (int index = 0; index < 4; ++index) {
+            expected[4 + index] =
+                frame.bed[static_cast<std::size_t>(3 + index) * EJOC_FRAME_SAMPLES];
+        }
+        for (int channel = 0; channel < 8; ++channel) {
+            for (int sample = JOC_LFE_DELAY_SAMPLES; sample < EJOC_FRAME_SAMPLES; ++sample) {
+                CHECK(frame.at(channel, sample) == expected[channel]);
+            }
+        }
+        CHECK(frame.silent_slots(8, EJOC_OUTPUT_CHANNELS - 1));
+    }
+}
+
+// One present object that passes core channel 0 through with an all-ones matrix,
+// so normal rendering produces a non-zero object slot and every other mode does
+// not.
+void configure_passthrough_object(FrameCase* frame) {
+    frame->n_bands[0] = 1;
+    frame->n_dpoints[0] = 1;
+    frame->dq[FrameCase::dq_index(0, 0, 0, 0)] = 1.0;
+}
+
+float object_peak(const FrameCase& frame, int object_channel) {
+    float peak = 0.0f;
+    for (int sample = 0; sample < EJOC_FRAME_SAMPLES; ++sample) {
+        peak = std::max(peak, std::fabs(frame.at(object_channel, sample)));
+    }
+    return peak;
+}
+
+void test_joc_frame_state_machine() {
+    // seq 0 on the first frame is not a hard cut, and a mismatch later is.
+    {
+        FrameCase frame;
+        frame.create();
+        for (int sample = 0; sample < EJOC_FRAME_SAMPLES; ++sample) {
+            frame.bed[static_cast<std::size_t>(sample)] =
+                static_cast<float>(0.2 * std::sin(static_cast<double>(sample) * 0.05));
+        }
+        configure_passthrough_object(&frame);
+        CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 0u, true, 1u, 1.0));
+        CHECK(object_peak(frame, 1) > 1.0e-3f);
+        // Expected seq becomes 1; seq 2 is a mismatch -> hard cut publishes zeros.
+        CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 2u, true, 1u, 1.0));
+        CHECK(frame.silent_slots(0, EJOC_OUTPUT_CHANNELS - 1));
+        // The next valid frame resyncs and renders normally again.
+        CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 3u, true, 1u, 1.0));
+        CHECK(object_peak(frame, 1) > 1.0e-3f);
+        // A seq that restarts at 0 is a hard cut as well.
+        CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 0u, true, 1u, 1.0));
+        CHECK(frame.silent_slots(0, EJOC_OUTPUT_CHANNELS - 1));
+    }
+    // A frame without JOC metadata always passes the core through, even while
+    // the renderer is in its normal state.
+    {
+        FrameCase frame;
+        frame.create();
+        fill_frame_bed(&frame, 0.1f, 0.2f);
+        configure_passthrough_object(&frame);
+        CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 1u, true, 1u, 1.0));
+        CHECK(object_peak(frame, 1) > 1.0e-3f);
+        CHECK(frame.render(EJOC_CORE_CHANNELS, 0u, EJOC_FRAME_STATUS_NO_METADATA, 0u, false,
+                           1u, 1.0));
+        CHECK(frame.silent_slots(8, EJOC_OUTPUT_CHANNELS - 1));
+        CHECK(frame.at(0, EJOC_FRAME_SAMPLES - 1) != 0.0f);
+    }
+    // Invalid frames hold the previous matrices; after six of them the state
+    // machine stays in hold and a valid frame still resyncs.
+    {
+        FrameCase frame;
+        frame.create();
+        for (int sample = 0; sample < EJOC_FRAME_SAMPLES; ++sample) {
+            frame.bed[static_cast<std::size_t>(sample)] =
+                static_cast<float>(0.2 * std::sin(static_cast<double>(sample) * 0.05));
+        }
+        configure_passthrough_object(&frame);
+        CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 1u, true, 1u, 1.0));
+        CHECK(object_peak(frame, 1) > 1.0e-3f);
+        for (int invalid = 0; invalid < 6; ++invalid) {
+            CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 5u, 2u, true, 1u, 1.0));
+            CHECK(object_peak(frame, 1) > 1.0e-3f);
+        }
+        CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 100u, true, 1u, 1.0));
+        CHECK(object_peak(frame, 1) > 1.0e-3f);
+    }
+    // A declared core-channel-count change is a hard cut that clears the LFE
+    // ring: the next frame reads only the samples written after the change.
+    {
+        FrameCase frame;
+        frame.create();
+        fill_frame_bed(&frame, 0.1f, 0.1f);
+        configure_passthrough_object(&frame);
+        CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 1u, true, 1u, 1.0));
+        frame.lfe.assign(EJOC_FRAME_SAMPLES, 0.5f);
+        // The frame that declares the change keeps its own clipgain (2.0) even
+        // though it renders as a hard cut: it clears the LFE ring and refills it
+        // with the new gain before the next frame reads it out.
+        CHECK(frame.render(EJOC_MAX_CORE_CHANNELS, EJOC_MAX_CORE_CHANNELS, 0u, 2u, true, 1u,
+                           2.0));
+        CHECK(frame.silent_slots(0, EJOC_OUTPUT_CHANNELS - 1));
+        CHECK(frame.render(EJOC_MAX_CORE_CHANNELS, EJOC_MAX_CORE_CHANNELS, 0u, 3u, true, 1u,
+                           1.0));
+        CHECK(near(frame.at(0, 0), 1.0f, 1.0e-6f));
+        CHECK(near(frame.at(0, JOC_LFE_DELAY_SAMPLES), 1.0f, 1.0e-6f));
+        // Samples past the 256-sample ramp use the frame's own gain again.
+        CHECK(near(frame.at(0, JOC_LFE_DELAY_SAMPLES + 300), 0.5f, 1.0e-6f));
+    }
+}
+
+void test_joc_no_previous_interpolation() {
+    auto prepare = [](FrameCase* frame) {
+        frame->create();
+        for (int sample = 0; sample < EJOC_FRAME_SAMPLES; ++sample) {
+            frame->bed[static_cast<std::size_t>(sample)] =
+                static_cast<float>(0.2 * std::sin(static_cast<double>(sample) * 0.05));
+        }
+        frame->n_bands[0] = 1;
+        frame->dq[FrameCase::dq_index(0, 0, 0, 0)] = 0.0;
+    };
+
+    // A two-data-point frame without previous state keeps dp0 in the first half
+    // and still interpolates dp0 -> dp1 in the second half, exactly like the
+    // same frame with a previous state equal to dp0.
+    {
+        FrameCase with_previous;
+        prepare(&with_previous);
+        with_previous.n_dpoints[0] = 1;
+        CHECK(with_previous.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 1u, true, 1u,
+                                   1.0));
+
+        FrameCase without_previous;
+        prepare(&without_previous);
+        CHECK(without_previous.render(EJOC_CORE_CHANNELS, 0u,
+                                      EJOC_FRAME_STATUS_NO_METADATA, 0u, false, 1u, 1.0));
+
+        for (FrameCase* frame : {&with_previous, &without_previous}) {
+            frame->n_dpoints[0] = 2;
+            frame->dq[FrameCase::dq_index(0, 0, 0, 0)] = 0.0;
+            frame->dq[FrameCase::dq_index(0, 1, 0, 0)] = 1.0;
+            CHECK(frame->render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 2u, true, 1u,
+                                1.0));
+        }
+        CHECK(with_previous.out == without_previous.out);
+    }
+    // A single data point without previous state is a hard cut, not a fade from
+    // zero: the same target with a previous state of zero ramps instead.
+    {
+        FrameCase with_previous;
+        prepare(&with_previous);
+        with_previous.n_dpoints[0] = 1;
+        CHECK(with_previous.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 1u, true, 1u,
+                                   1.0));
+
+        FrameCase without_previous;
+        prepare(&without_previous);
+        CHECK(without_previous.render(EJOC_CORE_CHANNELS, 0u,
+                                      EJOC_FRAME_STATUS_NO_METADATA, 0u, false, 1u, 1.0));
+
+        for (FrameCase* frame : {&with_previous, &without_previous}) {
+            frame->n_dpoints[0] = 1;
+            frame->dq[FrameCase::dq_index(0, 0, 0, 0)] = 1.0;
+            CHECK(frame->render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 2u, true, 1u,
+                                1.0));
+        }
+        CHECK(with_previous.out != without_previous.out);
+    }
+    // An object that disappears keeps being published as an all-zero matrix:
+    // the synthesis state still advances, so only the window tail of the
+    // preceding frame is left in the object slot.
+    {
+        FrameCase frame;
+        frame.create();
+        fill_frame_bed(&frame, 0.1f, 0.1f);
+        configure_passthrough_object(&frame);
+        CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 1u, true, 1u, 1.0));
+        CHECK(object_peak(frame, 1) > 1.0e-3f);
+        CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 2u, true, 0u, 1.0));
+        for (int sample = 640; sample < EJOC_FRAME_SAMPLES; ++sample) {
+            CHECK(frame.at(1, sample) == 0.0f);
+        }
+    }
+}
+
+// The binaural position timeline consumes the full OAMD frame state: multi-block
+// payloads and programmes past the 16-slot legacy view are scheduled instead of
+// being rejected, and a renderer with a different source count can read more
+// tracks than the fifteen JOC object sources.
+void test_binaural_timeline_full_frame_state() {
+    // Two position blocks in one object element: the legacy frame_update() view
+    // rejects this, the full frame state schedules both blocks.
+    const std::vector<std::uint8_t> multiblock = from_hex("0104600800450132831d6a00");
+    joc::oamd::OamdUpdate update;
+    CHECK(joc::oamd::parse_id11_state(multiblock.data(), multiblock.size(), &update).ok());
+    CHECK(update.has_frame_state);
+    CHECK(update.frame_state.block_count == 2);
+    joc::timeline::OamdPositionTimeline timeline;
+    CHECK(timeline.submit_update(update, 0, 0, 1473, 0).ok());
+    CHECK(timeline.initialized());
+    CHECK(timeline.payload_count() == 1);
+    double positions[joc::timeline::kTimelineObjects][3] = {};
+    CHECK(timeline.positions_at(0, &positions[0][0], joc::timeline::kTimelineObjects).ok());
+
+    // Seventeen declared objects: the timeline grows one track per object instead
+    // of stopping at the 16-slot legacy view.
+    const char* many_objects_hex =
+        "21044E600022A29808054530100A8A60201514C0402A29808054530100A8A60201514C040"
+        "2A29808054530100A8A60201514C0402A29808054530100A8A60201514C0402A2980800";
+    const std::vector<std::uint8_t> many_objects = from_hex(many_objects_hex);
+    joc::oamd::OamdUpdate many;
+    CHECK(joc::oamd::parse_id11_state(many_objects.data(), many_objects.size(), &many).ok());
+    CHECK(many.frame_state.object_count == 17);
+    joc::timeline::OamdPositionTimeline wide;
+    CHECK(wide.submit_update(many, 0, 0, 1473, 0).ok());
+    CHECK(wide.object_count() == 16);
+    double wide_positions[16][3] = {};
+    CHECK(wide.positions_at(0, &wide_positions[0][0], 16).ok());
+    CHECK(wide.positions_at(0, &wide_positions[0][0], 17).code() ==
+          JOC_ERR_INVALID_ARGUMENT);
+
+    // The legacy slot view still works and matches the frame-state path for a
+    // single-block payload.
+    const std::vector<std::uint8_t> single = from_hex("0304680004545313880D45301000");
+    joc::oamd::OamdUpdate parsed;
+    CHECK(joc::oamd::parse_id11_state(single.data(), single.size(), &parsed).ok());
+    joc::timeline::OamdPositionTimeline full;
+    joc::timeline::OamdPositionTimeline legacy;
+    CHECK(full.submit_update(parsed, 0, 0, 1473, 0).ok());
+    joc::oamd::OamdUpdate slot_view = parsed;
+    slot_view.has_frame_state = false;
+    CHECK(legacy.submit_update(slot_view, 0, 0, 1473, 0).ok());
+    double frame_position[3] = {};
+    double slot_position[3] = {};
+    CHECK(full.positions_at(0, frame_position, 1).ok());
+    CHECK(legacy.positions_at(0, slot_position, 1).ok());
+    CHECK(frame_position[0] == slot_position[0] && frame_position[1] == slot_position[1] &&
+          frame_position[2] == slot_position[2]);
+}
+
 int main() {
     test_sha256();
     test_crc32_and_inflate();
@@ -1510,6 +2217,13 @@ int main() {
     test_clipgain_first_frame_uses_its_own_gain();
     test_clipgain_change_applies_to_the_current_frame();
     test_clipgain_reset_clears_the_previous_gain();
+    test_joc_clipgain_formula();
+    test_joc_parse_status_and_offset_ts();
+    test_joc_lfe_clipgain_ramp();
+    test_joc_passthrough_8_plane_layout();
+    test_joc_frame_state_machine();
+    test_joc_no_previous_interpolation();
+    test_binaural_timeline_full_frame_state();
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

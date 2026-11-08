@@ -98,7 +98,8 @@ Status JochrtfRuntime::open(const hrtf::Field& field, const hrtf::Kernels& kerne
 Status JochrtfRuntime::process_block() {
     double positions[timeline::kTimelineObjects][3] = {};
     const Status queried = timeline_.positions_at(static_cast<std::int64_t>(processed_samples_),
-                                                  positions);
+                                                  &positions[0][0],
+                                                  timeline::kTimelineObjects);
     if (!queried.ok()) {
         return queried;
     }

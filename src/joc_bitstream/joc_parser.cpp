@@ -182,6 +182,55 @@ std::int16_t num_bands_for_index(std::uint32_t num_bands_idx) {
     return -1;
 }
 
+namespace {
+
+// Reads the 12-bit joc_header at the start of the payload.  Mirrors
+// parse_joc_header(): a downmix configuration outside 0..4 is a frame status,
+// not an exception, because a metadata scan records it as an unsupported
+// variant while the frame itself stays classified.
+Status parse_id14_header(const std::uint8_t* payload, std::size_t payload_size,
+                         joc_frame_params* out) {
+    bits::BitReader reader(payload, payload_size);
+    out->dmx_config_idx = static_cast<std::uint8_t>(reader.read(3));
+    out->num_objects_bits = static_cast<std::uint8_t>(reader.read(6));
+    out->ext_config_idx = static_cast<std::uint8_t>(reader.read(3));
+    if (reader.failed()) {
+        return truncated_fail(reader);
+    }
+    const std::int16_t n_channels = num_channels_for_config(out->dmx_config_idx);
+    if (n_channels < 0) {
+        // The core channel count decides how the object syntax expands, so an
+        // unknown configuration stops the parse after the header fields.
+        out->status = JOC_FRAME_STATUS_UNSUPPORTED_DMX;
+        out->objects_clamped = 0u;
+        out->n_objects = 0u;
+        return Status::success();
+    }
+    out->n_channels = static_cast<std::uint8_t>(n_channels);
+    const std::uint32_t declared = static_cast<std::uint32_t>(out->num_objects_bits) + 1u;
+    out->objects_clamped = declared > JOC_MAX_OBJECTS ? 1u : 0u;
+    out->n_objects = static_cast<std::uint8_t>(
+        std::min<std::uint32_t>(declared, static_cast<std::uint32_t>(JOC_MAX_OBJECTS)));
+    if (out->objects_clamped != 0u) {
+        out->status = JOC_FRAME_STATUS_OBJECTS_CLAMPED;
+    }
+    return Status::success();
+}
+
+// Records where joc_data ends and the first trailing bytes, like _tail_info().
+void tail_info(joc_frame_params* out, const bits::BitReader& reader, const std::uint8_t* payload,
+               std::size_t payload_size) {
+    out->data_end_bits = static_cast<std::uint32_t>(reader.position());
+    out->trailing_bits = static_cast<std::uint32_t>(payload_size * 8u - reader.position());
+    const std::size_t tail_offset = reader.position() / 8u;
+    if (tail_offset < payload_size) {
+        const std::size_t tail_bytes = std::min<std::size_t>(8u, payload_size - tail_offset);
+        std::memcpy(out->tail_bytes, payload + tail_offset, tail_bytes);
+    }
+}
+
+}  // namespace
+
 Status parse_id14(const std::uint8_t* payload, std::size_t payload_size, joc_frame_params* out,
                   FrameSymbols* symbols) {
     if (payload == nullptr || out == nullptr) {
@@ -195,45 +244,53 @@ Status parse_id14(const std::uint8_t* payload, std::size_t payload_size, joc_fra
     FrameSymbols& capture = (symbols != nullptr) ? *symbols : local_symbols;
     std::memset(&capture, 0, sizeof(capture));
 
-    bits::BitReader reader(payload, payload_size);
-
-    out->dmx_config_idx = static_cast<std::uint8_t>(reader.read(3));
-    out->num_objects_bits = static_cast<std::uint8_t>(reader.read(6));
-    out->ext_config_idx = static_cast<std::uint8_t>(reader.read(3));
-
-    const std::uint32_t declared_objects = static_cast<std::uint32_t>(out->num_objects_bits) + 1u;
-    const std::int16_t n_channels = num_channels_for_config(out->dmx_config_idx);
-    if (n_channels < 0) {
-        return syntax_fail("unknown JOC downmix configuration " +
-                           std::to_string(out->dmx_config_idx));
+    const Status header = parse_id14_header(payload, payload_size, out);
+    if (!header.ok()) {
+        return header;
     }
-    out->n_channels = static_cast<std::uint8_t>(n_channels);
-    // A declared object count above 15 is clamped to 15: the frame is parsed for
-    // 15 objects only, and the clamp is reported separately.
-    out->objects_clamped = declared_objects > JOC_MAX_OBJECTS ? 1u : 0u;
-    const std::uint32_t n_objects =
-        std::min<std::uint32_t>(declared_objects, JOC_MAX_OBJECTS);
-    out->n_objects = static_cast<std::uint8_t>(n_objects);
 
+    bits::BitReader reader(payload, payload_size);
+    reader.skip(12);
     out->clipgain_x_bits = static_cast<std::uint8_t>(reader.read(3));
     out->clipgain_y_bits = static_cast<std::uint8_t>(reader.read(5));
     out->seq_count = reader.read(10);
-    // clipgain = 1 + (y/32) * 2^(x-4); ldexp builds the power of two exactly
-    // over the whole legal range.
-    out->clipgain = 1.0 + static_cast<double>(out->clipgain_y_bits) / 32.0 *
-                              std::ldexp(1.0, static_cast<int>(out->clipgain_x_bits) - 4);
+    if (reader.failed()) {
+        return truncated_fail(reader);
+    }
+    // clipgain = 2^(x-4) * (1 + y/32); ldexp builds the power of two exactly
+    // over the whole legal range, so the result is bit-exact to the reference.
+    out->clipgain = std::ldexp(1.0, static_cast<int>(out->clipgain_x_bits) - 4) *
+                    (1.0 + static_cast<double>(out->clipgain_y_bits) / 32.0);
+
+    if (out->status == JOC_FRAME_STATUS_UNSUPPORTED_DMX) {
+        tail_info(out, reader, payload, payload_size);
+        return Status::success();
+    }
+    const std::int16_t n_channels = num_channels_for_config(out->dmx_config_idx);
+    const std::uint32_t n_objects = out->n_objects;
 
     for (std::uint32_t obj = 0; obj < n_objects; ++obj) {
         joc_object_params& info = out->objects[obj];
         info.present = static_cast<std::uint8_t>(reader.read(1));
+        if (reader.failed()) {
+            return truncated_fail(reader);
+        }
         if (info.present == 0u) {
             continue;
         }
         info.num_bands_idx = static_cast<std::uint8_t>(reader.read(3));
+        if (reader.failed()) {
+            return truncated_fail(reader);
+        }
         const std::int16_t bands = num_bands_for_index(info.num_bands_idx);
         if (bands < 0) {
-            return syntax_fail("unknown JOC num_bands index " +
-                               std::to_string(info.num_bands_idx));
+            // The symbol count depends on the parameter-band count, so the rest
+            // of the payload cannot be parsed.
+            if (out->status == JOC_FRAME_STATUS_OK) {
+                out->status = JOC_FRAME_STATUS_BAD_PARAMETER_BAND;
+            }
+            tail_info(out, reader, payload, payload_size);
+            return Status::success();
         }
         info.n_bands = static_cast<std::uint8_t>(bands);
         info.sparse = static_cast<std::uint8_t>(reader.read(1));
@@ -241,16 +298,42 @@ Status parse_id14(const std::uint8_t* payload, std::size_t payload_size, joc_fra
         info.slope_idx = static_cast<std::uint8_t>(reader.read(1));
         info.num_dpoints_bits = static_cast<std::uint8_t>(reader.read(1));
         info.n_dpoints = static_cast<std::uint8_t>(info.num_dpoints_bits + 1u);
+        if (reader.failed()) {
+            return truncated_fail(reader);
+        }
         if (info.slope_idx == 1u) {
             for (std::uint32_t dp = 0; dp < info.n_dpoints; ++dp) {
-                info.offset_ts[dp] = static_cast<std::uint8_t>(reader.read(5) + 1u);
+                info.offset_ts[dp] = static_cast<std::uint8_t>(reader.read(5));
+            }
+            if (reader.failed()) {
+                return truncated_fail(reader);
+            }
+            // offset_ts is the raw 5-bit slot index (legal range 0..23) and one
+            // object's data points must be strictly increasing.
+            bool invalid = false;
+            for (std::uint32_t dp = 0; dp < info.n_dpoints; ++dp) {
+                if (info.offset_ts[dp] >= JOC_TIMESLOTS) {
+                    invalid = true;
+                    break;
+                }
+            }
+            if (!invalid && info.n_dpoints > 1u) {
+                for (std::uint32_t dp = 1; dp < info.n_dpoints; ++dp) {
+                    if (info.offset_ts[dp] <= info.offset_ts[dp - 1u]) {
+                        invalid = true;
+                        break;
+                    }
+                }
+            }
+            if (invalid && out->status == JOC_FRAME_STATUS_OK) {
+                out->status = JOC_FRAME_STATUS_BAD_OFFSET_TS;
             }
         }
     }
-    if (reader.failed()) {
-        return truncated_fail(reader);
-    }
 
+    // joc_data (Huffman): dense reads MTX per channel and band, sparse reads IDX
+    // then VEC.  A frame whose status is already non-zero dequantizes below but
+    // is never rendered, so a misaligned parse cannot reach the DSP.
     for (std::uint32_t obj = 0; obj < n_objects; ++obj) {
         const joc_object_params& info = out->objects[obj];
         if (info.present == 0u) {
@@ -300,12 +383,16 @@ Status parse_id14(const std::uint8_t* payload, std::size_t payload_size, joc_fra
         }
     }
 
-    out->data_end_bits = static_cast<std::uint32_t>(reader.position());
-    out->trailing_bits = static_cast<std::uint32_t>(payload_size * 8u - reader.position());
-    const std::size_t tail_offset = reader.position() / 8u;
-    if (tail_offset < payload_size) {
-        const std::size_t tail_bytes = std::min<std::size_t>(8u, payload_size - tail_offset);
-        std::memcpy(out->tail_bytes, payload + tail_offset, tail_bytes);
+    tail_info(out, reader, payload, payload_size);
+    if (out->status == JOC_FRAME_STATUS_OK && out->ext_config_idx == 0u) {
+        // The tail pads with zero bits up to the next byte; a whole byte after
+        // that alignment is unexpected data.
+        const std::uint32_t pad =
+            (8u - (static_cast<std::uint32_t>(reader.position()) % 8u)) % 8u;
+        const std::uint32_t total_bits = static_cast<std::uint32_t>(payload_size * 8u);
+        if (total_bits > static_cast<std::uint32_t>(reader.position()) + pad) {
+            out->status = JOC_FRAME_STATUS_TRAILING_DATA;
+        }
     }
 
     for (std::uint32_t obj = 0; obj < n_objects; ++obj) {
@@ -313,8 +400,7 @@ Status parse_id14(const std::uint8_t* payload, std::size_t payload_size, joc_fra
         if (info.present == 0u) {
             continue;
         }
-        std::uint32_t mask_bit = 1u << obj;
-        out->present_mask |= mask_bit;
+        out->present_mask |= 1u << obj;
 
         const std::int64_t nquant = (info.quant_idx == 0u) ? 96 : 192;
         std::int64_t q[JOC_MAX_DPOINTS][JOC_MAX_CORE_CHANNELS][JOC_MAX_PARAMETER_BANDS] = {};
@@ -372,7 +458,13 @@ int score_container_as_joc(const std::uint8_t* data, std::size_t size,
     if (emdf::extract_payload_bytes(data, size, *payload, &bytes).ok()) {
         joc_frame_params params;
         FrameSymbols symbols;
-        parses = parse_id14(bytes.data(), bytes.size(), &params, &symbols).ok();
+        if (parse_id14(bytes.data(), bytes.size(), &params, &symbols).ok()) {
+            // The reference scores a payload by the frame status: an unsupported
+            // downmix configuration (2) or an unknown parameter-band count (4)
+            // leaves the syntax unparsable and must not win the container choice.
+            parses = params.status != JOC_FRAME_STATUS_UNSUPPORTED_DMX &&
+                     params.status != JOC_FRAME_STATUS_BAD_PARAMETER_BAND;
+        }
     }
     const bool associated = oamd->has_group_id != 0u && payload->has_group_id != 0u &&
                             oamd->group_id == payload->group_id;
@@ -406,7 +498,20 @@ Status parse_eac3_frame(const std::uint8_t* frame, std::size_t frame_size, joc_f
     if (!extract.ok()) {
         return extract;
     }
-    return parse_id14(bytes.data(), bytes.size(), out, symbols);
+    const Status parsed = parse_id14(bytes.data(), bytes.size(), out, symbols);
+    if (!parsed.ok()) {
+        return parsed;
+    }
+    // A metadata scan rejects an unsupported downmix configuration outright: the
+    // core channel count decides how every later frame is expanded, so this is a
+    // variant error rather than a per-frame status.
+    if (out->status == JOC_FRAME_STATUS_UNSUPPORTED_DMX) {
+        const std::string message =
+            "downmix_config_unsupported: ID14 declares joc_dmx_config_idx=" +
+            std::to_string(out->dmx_config_idx) + " (legal values are 0..4)";
+        return Status::fail(JOC_ERR_JOC_UNSUPPORTED_VARIANT, stage::kJoc, message);
+    }
+    return Status::success();
 }
 
 Status check_id14_padding(const std::uint8_t* payload, std::size_t payload_size,
@@ -416,6 +521,17 @@ Status check_id14_padding(const std::uint8_t* payload, std::size_t payload_size,
     const Status status = parse_id14(payload, payload_size, &params, &symbols);
     if (!status.ok()) {
         return status;
+    }
+    // The two statuses that stop the parse early leave the payload without a
+    // joc_data end position, so they keep reporting the syntax failure they
+    // reported before the frame-status split.
+    if (params.status == JOC_FRAME_STATUS_UNSUPPORTED_DMX) {
+        return Status::fail(JOC_ERR_JOC_UNSUPPORTED_VARIANT, stage::kJoc,
+                            "downmix_config_unsupported: joc_dmx_config_idx outside 0..4");
+    }
+    if (params.status == JOC_FRAME_STATUS_BAD_PARAMETER_BAND) {
+        return Status::fail(JOC_ERR_JOC_SYNTAX, stage::kJoc,
+                            "unknown JOC num_bands index stops the payload");
     }
     if (out_trailing_bits != nullptr) {
         *out_trailing_bits = params.trailing_bits;
@@ -861,6 +977,7 @@ Status check_cross_layer(const joc_frame_params& params, const eac3::Frame* core
                          std::uint16_t chanmap,
                          const std::vector<oamd::BedAssignment>* bed_assignments,
                          std::string* error, CrossLayerNotes* notes) {
+    (void)has_dependent;
     const std::uint8_t config_idx = params.dmx_config_idx;
     const int core_channels = params.n_channels;
     std::vector<Position> wanted;

@@ -83,7 +83,7 @@ struct Options {
 };
 
 const char* kLayoutChoices =
-    "2.0 3.1 4.0 5.1 7.1 5.1.2 5.1.4 7.1.2 7.1.4 9.1.4 9.1.6";
+    "2.0 3.1 4.0 5.1 7.1 5.1.2 5.1.4 7.1.2 7.1.4 9.1.4 9.1.6 6.0";
 
 void print_usage() {
     std::printf(
@@ -97,7 +97,7 @@ void print_usage() {
         "  input                 输入 .m4a/.eac3/.ec3\n"
         "\n"
         "模式（默认输出 ADM BWF）:\n"
-        "  --speaker-layout L    直接扬声器渲染布局，例如 2.0、5.1、7.1.2\n"
+        "  --speaker-layout L    直接扬声器渲染布局，例如 2.0、5.1、6.0、7.1.2\n"
         "                        可选值: %s\n"
         "  --binaural            直接双耳渲染；不生成临时 ADM BWF\n"
         "\n"

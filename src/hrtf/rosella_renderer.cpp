@@ -1120,7 +1120,8 @@ struct RosellaRuntime::Impl {
     // rosella_binaural_renderer._set_block_parameters.
     Status set_block_parameters(std::int64_t sample) {
         double positions[timeline::kTimelineObjects][3] = {};
-        Status status = timeline.positions_at(sample, positions);
+        Status status = timeline.positions_at(sample, &positions[0][0],
+                                              timeline::kTimelineObjects);
         if (!status.ok()) {
             return status;
         }

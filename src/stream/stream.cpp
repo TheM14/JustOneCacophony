@@ -343,7 +343,14 @@ Status Stream::push_eac3(const std::uint8_t* data, std::size_t size, std::size_t
             if (!extracted.ok()) {
                 return extracted;
             }
-            const Status oamd = oamd::parse_id11(bytes.data(), bytes.size(), &pending_frame_.update);
+            // Speaker and binaural consume the full per-object block state; the
+            // other stream paths keep the reference's legacy single-block view.
+            const bool full_metadata_state = speaker_enabled_ || binaural_enabled_;
+            const Status oamd =
+                full_metadata_state ? oamd::parse_id11_state(bytes.data(), bytes.size(),
+                                                             &pending_frame_.update)
+                                    : oamd::parse_id11(bytes.data(), bytes.size(),
+                                                       &pending_frame_.update);
             if (!oamd.ok()) {
                 return oamd;
             }
@@ -536,8 +543,10 @@ Status Stream::process_ready_frames(bool drain_all) {
         compact_bed_pending();
 
         std::string error;
-        const Status rebuilt = joc::rebuild_objects16(rebuilder_, entry.params, bed5_.data(),
-                                                      lfe_.data(), gain_, &objects16_, &error);
+        const Status rebuilt = joc::rebuild_objects16(
+            rebuilder_, entry.params, bed5_.data(), lfe_.data(),
+            static_cast<std::uint32_t>(core_channels), entry.has_joc, gain_, &objects16_,
+            &error);
         if (!rebuilt.ok()) {
             return Status::fail(rebuilt.code(), stage::kDsp, error);
         }

@@ -36,9 +36,9 @@
 
 #include "joc_version.h"
 
-#define JOC_ABI_VERSION 5u
-#define JOC_FRAME_PARAMS_VERSION 1u
-#define JOC_EMDF_INFO_VERSION 1u
+#define JOC_ABI_VERSION 6u
+#define JOC_FRAME_PARAMS_VERSION 2u
+#define JOC_EMDF_INFO_VERSION 2u
 #define JOC_TASK_CONFIG_VERSION 4u
 #define JOC_TASK_RESULT_VERSION 2u
 #define JOC_EVENT_VERSION 1u
@@ -152,8 +152,7 @@ JOC_API const char* JOC_CALL joc_last_error_detail(void);
 typedef struct joc_emdf_payload_info {
     uint8_t  id;
     uint8_t  reserved[3];
-    uint16_t sample_offset;      /* EMDF outer smpoffst, 11 bits */
-    uint16_t reserved2;
+    uint32_t sample_offset;      /* EMDF outer smpoffst: variable_bits(11)    */
     uint32_t bit_offset;
     uint32_t size;               /* payload bytes */
 } joc_emdf_payload_info;
@@ -170,7 +169,8 @@ typedef struct joc_emdf_info {
 
 /* Per-object ID14/JOC descriptor plus its dequantized matrix.
  * dq[dp][ch][pb] is zero filled outside [0,n_dpoints) x [0,n_channels) x
- * [0,n_bands).  Absent objects are entirely zero. */
+ * [0,n_bands).  Absent objects are entirely zero.  offset_ts holds the raw
+ * 5-bit JOC offsets (legal range 0..23, strictly increasing per object). */
 typedef struct joc_object_params {
     uint8_t  present;
     uint8_t  num_bands_idx;
@@ -185,6 +185,21 @@ typedef struct joc_object_params {
     double   dq[JOC_MAX_DPOINTS][JOC_MAX_CORE_CHANNELS][JOC_MAX_PARAMETER_BANDS];
 } joc_object_params;
 
+/* Per-frame JOC parse status (joc_frame_params.status).  A non-zero status makes
+ * the frame invalid for rendering: the renderer holds the previous matrices or
+ * passes the core PCM through instead of decoding the matrix.  Only status 3
+ * still carries a complete object list (object count clamped to 15) for
+ * diagnostics; statuses 2 and 4 stop the parse after the failing header field. */
+enum {
+    JOC_FRAME_STATUS_OK = 0,
+    JOC_FRAME_STATUS_UNSUPPORTED_DMX = 2,    /* joc_dmx_config_idx outside 0..4  */
+    JOC_FRAME_STATUS_OBJECTS_CLAMPED = 3,    /* declared object count above 15   */
+    JOC_FRAME_STATUS_BAD_PARAMETER_BAND = 4, /* unknown num_bands index          */
+    JOC_FRAME_STATUS_BAD_OFFSET_TS = 5,      /* offset_ts outside 0..23 or not   */
+                                             /* strictly increasing              */
+    JOC_FRAME_STATUS_TRAILING_DATA = 6       /* bytes after joc_data alignment   */
+};
+
 typedef struct joc_frame_params {
     uint32_t struct_size;
     uint32_t struct_version;
@@ -196,12 +211,14 @@ typedef struct joc_frame_params {
     uint8_t  clipgain_x_bits;
     uint8_t  clipgain_y_bits;
     uint8_t  objects_clamped;    /* num_objects_bits+1 exceeded 15            */
-    uint32_t seq_count;          /* 10-bit JOC sequence counter, parsed only  */
+    uint32_t seq_count;          /* 10-bit JOC sequence counter              */
     uint32_t present_mask;       /* bit i == object i present */
+    uint8_t  status;             /* JOC_FRAME_STATUS_*                       */
+    uint8_t  reserved[3];
     uint32_t data_end_bits;      /* bit position just after joc_data          */
     uint32_t trailing_bits;      /* bits left after joc_data (padding/ext)    */
     uint8_t  tail_bytes[8];      /* first up to 8 trailing bytes, for A/B     */
-    double   clipgain;           /* 1 + (y/32) * 2^(x-4), bit-exact           */
+    double   clipgain;           /* 2^(x-4) * (1 + y/32), bit-exact           */
     joc_object_params objects[JOC_MAX_OBJECTS];
 } joc_frame_params;
 

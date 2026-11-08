@@ -37,18 +37,52 @@ Status step(SpeakerStep* context, const std::vector<float>& objects16_planar,
         }
         context->controls_ready = true;
     }
+    if (update != nullptr && update->has_trim) {
+        const Status status =
+            parameters_from_oamd(&update->trim, context->layout, &context->controls);
+        if (!status.ok()) {
+            if (error != nullptr) {
+                *error = status.message();
+            }
+            return status;
+        }
+        context->trim = update->trim;
+        context->has_trim = true;
+        context->raw_trim_mode = update->trim.global_trim_mode;
+    }
+
+    const bool metadata_frame =
+        update != nullptr && update->has_frame_state &&
+        update->frame_state.object_count != 0u;
+    if (metadata_frame || context->meta_engaged) {
+        if (!context->meta_configured) {
+            const Status configured = context->meta.configure(context->layout);
+            if (!configured.ok()) {
+                if (error != nullptr) {
+                    *error = configured.message();
+                }
+                return configured;
+            }
+            context->meta_configured = true;
+        }
+        const oamd::OamdTrim* trim = context->has_trim ? &context->trim : nullptr;
+        const Status processed = context->meta.process_frame(
+            context->handle, context->interleaved.data(), JOC_FRAME_SAMPLES,
+            metadata_frame ? update : nullptr, context->metadata_offset,
+            context->controls, trim, context->raw_trim_mode, 0u,
+            context->output.data());
+        if (!processed.ok()) {
+            if (error != nullptr) {
+                *error = processed.message();
+            }
+            return processed;
+        }
+        context->meta_engaged = context->meta.engaged();
+        return Status::success();
+    }
+
     std::uint32_t ramp = 0;
     if (update != nullptr) {
-        if (update->has_trim) {
-            const Status status = parameters_from_oamd(&update->trim, context->layout,
-                                                        &context->controls);
-            if (!status.ok()) {
-                if (error != nullptr) {
-                    *error = status.message();
-                }
-                return status;
-            }
-        }
         context->state.apply(*update);
         ramp = update->ramp_duration_samples;
         context->last_block_offset = update->block_offset_samples;

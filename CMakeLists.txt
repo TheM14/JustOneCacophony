@@ -81,11 +81,13 @@ if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja" AND NOT CMAKE_CL_SHOWINCLUDES_PREFIX
         "messages in the language CMake probes for.")
 endif()
 
-# Verbatim copies of the upstream native library; see THIRD_PARTY_NOTICES.md.
-# These files are never edited: they are the validated DSP kernels.
+# Sources copied verbatim from the upstream native library; see
+# THIRD_PARTY_NOTICES.md.  binaural_renderer.cpp is still an unmodified copy and
+# is never edited; the unchanged reused headers include/eac3joc_core.h and
+# src/joc_bitstream/joc_huffman_tables.h belong to the same set.  The JOC core,
+# the speaker renderer and the remaining tables started as copies and are
+# maintained in-tree now, so they are listed as internal sources below.
 set(JOC_REUSED_SOURCES
-    src/joc_core/eac3joc_core.cpp
-    src/speaker/speaker_renderer.cpp
     src/binaural/binaural_renderer.cpp
 )
 
@@ -119,8 +121,12 @@ set(JOC_INTERNAL_SOURCES
     src/io/zip_reader.cpp
     src/joc_bitstream/bed_layout_map.cpp
     src/joc_bitstream/joc_parser.cpp
+    src/joc_core/eac3joc_core.cpp
     src/joc_core/objects16.cpp
+    src/oamd/oamd_math.cpp
+    src/oamd/oamd_params.cpp
     src/oamd/oamd_parser.cpp
+    src/speaker/speaker_renderer.cpp
     src/speaker/speaker_layout_lookup.cpp
     src/speaker/speaker_step.cpp
     src/speaker/speaker_trim.cpp
@@ -236,6 +242,12 @@ if(JOC_BUILD_TESTS OR JOC_BUILD_DEVTOOLS)
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
     )
     target_link_libraries(joc_core_impl PUBLIC Threads::Threads)
+    # The same sources back both the shared library and this static archive.  In
+    # the archive the C entry points are plain definitions: EJOC_STATIC stops the
+    # kernel sources that carry their own EJOC_BUILD_DLL define from marking them
+    # as dllexports, which would collide with the DLL import library in a link
+    # that uses both libraries (the tests do).
+    target_compile_definitions(joc_core_impl PUBLIC EJOC_STATIC)
 endif()
 
 add_library(joc_core SHARED
@@ -291,6 +303,10 @@ if(JOC_BUILD_TESTS)
     target_link_libraries(joc_rosella_filterbank_tests PRIVATE joc_core_impl)
     target_include_directories(joc_rosella_filterbank_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     add_test(NAME rosella_filterbank COMMAND joc_rosella_filterbank_tests)
+    add_executable(joc_oamd_metadata_tests tests/test_oamd_metadata.cpp)
+    target_link_libraries(joc_oamd_metadata_tests PRIVATE joc_core_impl)
+    target_include_directories(joc_oamd_metadata_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    add_test(NAME oamd_metadata COMMAND joc_oamd_metadata_tests)
     # The public headers must stay valid C and C++: these targets exist to prove it.
     add_library(joc_headers_c OBJECT tests/test_headers.c)
     target_include_directories(joc_headers_c PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -317,7 +333,8 @@ if(JOC_BUILD_TESTS OR JOC_BUILD_DEVTOOLS)
     list(APPEND JOC_MSVC_TARGETS joc_core_impl)
 endif()
 if(JOC_BUILD_TESTS)
-    list(APPEND JOC_MSVC_TARGETS joc_tests joc_rosella_filterbank_tests joc_headers_c joc_headers_cpp)
+    list(APPEND JOC_MSVC_TARGETS joc_tests joc_rosella_filterbank_tests
+         joc_oamd_metadata_tests joc_headers_c joc_headers_cpp)
 endif()
 if(JOC_BUILD_DEVTOOLS)
 endif()
@@ -358,6 +375,7 @@ target_sources(joc_core PRIVATE
     include/eac3joc_core.h
     src/joc_bitstream/joc_huffman_tables.h
     src/joc_core/qmf_tables.h
+    src/oamd/oamd_parser.h
     src/speaker/speaker_layouts.h
 )
 

@@ -113,7 +113,7 @@ This build adds `--bed` (pre-decoded
 
 ## Speaker layouts and channel order
 
-`--speaker-layout` accepts the eleven layouts below, and the PCM/WAV channel order is the order in
+`--speaker-layout` accepts the twelve layouts below, and the PCM/WAV channel order is the order in
 the table:
 
 | Layout | Channel order |
@@ -122,6 +122,7 @@ the table:
 | 3.1 | L, R, C, LFE |
 | 4.0 | L, R, Lrs, Rrs |
 | 5.1 | L, R, C, LFE, Ls, Rs |
+| 6.0 | L, R, Ls, Rs, Lrs, Rrs |
 | 7.1 | L, R, C, LFE, Ls, Rs, Lrs, Rrs |
 | 5.1.2 | L, R, C, LFE, Ls, Rs, Ltm, Rtm |
 | 5.1.4 | L, R, C, LFE, Ls, Rs, Ltf, Rtf, Ltr, Rtr |
@@ -140,7 +141,7 @@ into mask-bit order. Players, ASIO, DAWs and other devices have to map the chann
 themselves; this project guarantees the content and numbering of each PCM channel, not that a
 downstream player recognises Dolby speaker positions on its own.
 
-`--speaker-layout` accepts only the eleven names in the table; anything else fails as an unknown
+`--speaker-layout` accepts only the twelve names in the table; anything else fails as an unknown
 layout.
 
 Speaker rendering reads warp, trim and front/back balance from the OAMD metadata; the CLI has no
@@ -148,6 +149,18 @@ warp override. Warp 0/1 render directly; warp 2/3 render to a 7.1.x intermediate
 then fold back to 5.1.x with PLIIx or Standard (Lo/Ro) coefficients, and calibration always
 follows the final target layout. Source trajectories and binaural rendering do not pre-apply
 these controls; see [mathematics §12](docs/math.en.md) for the parameters and evaluation order.
+
+Speaker rendering also applies the OAMD object attributes: per-block gain/inactive,
+zone/elevation, size/snap/divergence, the priority size budget, element 5 position
+refinement, ISF basis matrices, and bed distribution. ADM export and the binaural
+paths still place point objects and do not apply these speaker target coefficients.
+
+Object position updates are scheduled from the complete `frame_state`: speaker and
+binaural rendering both accept multiple position blocks and programmes with more than
+16 objects and schedule every block at its own time and ramp. The binaural audio input
+is still one LFE plus fifteen object sources; the extra position tracks are followed
+but not panned. ADM export keeps the 15-track single-block position view and rejects
+anything larger as an unsupported variant.
 
 ## Library integration
 
@@ -191,18 +204,49 @@ tests/       unit tests (CTest, self-contained, no external data)
 docs/        mathematics, the binaural rendering flow and SIMD dispatch
 ```
 
-Eight files under `src/` are byte-identical copies of the upstream JustOneCacophony
-native library and are never edited (see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)).
+The QMF and binaural tables and the JOC Huffman tables under `src/` are written from
+publicly documented standards; [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) records
+their sources.
+
+The ISF compressed base coefficients and layout descriptors are obtained from
+lookup tables stored in the generated header (`src/oamd/isf_tables.h`), which is
+compiled into the binary with the code, so nothing reads a data file at run
+time. Gain, size, priority, position, divergence, delta and refinement values are
+computed in code, while the size kernel is generated from the speaker layout
+region geometry and bed routing is derived from those layouts.
+
+## Mathematical implementation
+
+The main documented stages are:
+
+- dense JOC differential reconstruction and dequantization;
+- parameter-band mapping to 64 QMF subbands;
+- cross-frame parameter interpolation (hard cut when no previous state exists, zero-matrix publishing after an object disappears);
+- the frame-level JOC state machine (normal, hold, hard cut, core passthrough);
+- analysis/inverse QMF, surround delay, and FIR state;
+- the 1217-sample LFE delay with its sample-wise clipgain ramp;
+- OAMD Q15 coordinate conversion;
+- equal-power panning over target-layout regions;
+- OAMD metadata application (per-block gain and inactive, zone/elevation, size kernel, snap, divergence, position refinement, priority size budget, ISF matrices, bed distribution);
+- layout-dependent position compensation and sample-wise gain ramps;
+- float32 and PCM24 output quantization;
+- Rosella and compiled `.jochrtf` binaural rendering, with exactly-once delay/phase and special LFE.
+
+See the [mathematical notes](docs/math.en.md) for the equations used by the decoding
+and rendering process.
 
 ## Compatibility note
 
 ### How `joc_clipgain` is applied
 
-`joc_clipgain` is folded into the **analysis-side scalar**: `scalar = 1/16 x g` (`g = 1 + (y/32)·2^(x-4)`,
-from the 8-bit field `x:3 | y:5`). The x16 at the output cancels the 1/16, so the net effect is a multiply
-by `g` and the clamp therefore sits **after** the gain (`clamp(16·IQMF·g_interp)`). The scalar is kept in
-two per-frame slots: the first 256 samples of a frame ramp linearly from the previous value, the rest stays
-constant, and the first frame after a reset takes the new value directly. For `g = 1` the interpolation is the identity and `clamp(x)·1 == clamp(x·1)`.
+`joc_clipgain` is folded into the **analysis-side scalar**: `scalar = 1/16 x g`, with
+`g = 2^(x-4)·(1 + y/32)` from the 8-bit field `x:3 | y:5`; the range is 0.0625..15.75. The x16 at the
+output cancels the 1/16, so the net effect is a multiply by `g` and the clamp therefore sits **after**
+the gain (`clamp(16·IQMF·g_interp)`). The scalar is kept in two per-frame slots: the first 256 samples
+of a frame ramp linearly from the previous value, the rest stays constant, and the first frame after a
+reset takes the new value directly. For `g = 1` the interpolation is the identity and
+`clamp(x)·1 == clamp(x·1)`. LFE bypasses the analysis but applies the same full `g` as a sample-wise
+ramp before its 1217-sample delay.
 
 `object_delay_samples` defaults to **1473**, preserving the behaviour of the existing
 implementation; it is a configurable field and changing it changes the OAMD/ADM time
@@ -239,9 +283,33 @@ only a unique best score is used and the others are recorded as a diagnostic
 $k\in\{2,4\}\to8/9$) is recorded, but bed channels are not output channels under the current
 contract.
 
-An audio frame with no JOC EMDF at all (for example when the encoder wrote none for the first
-frame) emits silent object channels while the QMF analysis and synthesis state keep advancing,
-and it is counted separately in the statistics.
+### Frame status and the JOC decode state machine
+
+Every frame carries a status; a non-zero status is reported as a diagnostic. A non-zero status
+makes the frame invalid for rendering, so the renderer holds the previous matrices or passes the
+core PCM through instead of decoding that frame's matrix: 2 unsupported downmix configuration,
+3 object count clamped to 15, 4 unknown parameter-band index, 5 invalid `offset_ts`, and 6
+trailing data after byte padding. A file task refuses a `joc_dmx_config_idx` outside 0..4
+earlier, in the metadata scan, as an unsupported variant. Status 3 still yields the clamped
+object list for diagnostics, while status 2 and 4 stop the parse at the failing header field.
+
+Rendering then runs a per-frame state machine: normal, hold, hard cut, and core passthrough. An
+unusable-JOC frame that arrives during normal rendering enters hold, where the previous frame-end
+matrices keep being published; six consecutive unusable frames move the internal hold state on but
+stay in hold, and a valid frame resynchronises the sequence number. A sequence number of 0 after
+the renderer left its initial state, a sequence mismatch, or a change of the declared core channel
+count is a hard cut: every object matrix is zeroed and each object's previous state becomes
+the zero matrix, while a core channel count change also clears the LFE delay ring but keeps
+the clipgain ramp state. Before the first valid frame the renderer passes the core PCM
+through.
+
+A frame with no JOC EMDF at all (for example when the encoder wrote none for the first frame)
+always takes the passthrough path: the eight core planes L, R, C, LFE, Ls, Rs, (Lrs, Rrs) are
+written to output slots 0..7 by identity, each delayed by 1217 samples, slots 8..15 stay zero,
+and the 8-plane history keeps advancing. Those frames are counted separately in the statistics,
+and E-AC-3 input without JOC metadata (ID11 + ID14) is outside the supported scope. While hold or
+passthrough runs without fresh parameters, the analysis scalar and the LFE ramp keep the
+currently held clipgain.
 
 ## License
 
