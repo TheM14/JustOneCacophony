@@ -165,7 +165,8 @@ class JocRenderer:
     def _advance_state(self, status, seq):
         """按 seq 推进状态机，返回进入本帧前的 ``state``。
 
-        status：0 正常；2..6 解析层无效；8 无元数据；9 核心声道数变化。
+        status：0 正常；2..7 解析层无效（7 = ID14 载荷在 joc_data 内提前结束）；
+        8 无元数据；9 核心声道数变化。
         """
         pre_state = self._state
         valid = status in (0, STATUS_CORE_CHANNEL_CHANGE)

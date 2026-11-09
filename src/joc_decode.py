@@ -46,14 +46,28 @@ JOC_DENSE_OFFSET = {0: 48, 1: 96}
 JOC_SPARSE_OFFSET = {0: 50, 1: 100}
 
 
+class JocTruncatedPayload(ValueError):
+    """载荷在语法读完之前用尽比特（例如 ID14 的 joc_data 被编码器写短）。
+
+    属于 ``ValueError`` 子类：现有把 ``IndexError``/``ValueError`` 当作“载荷不可用”
+    的调用点（容器候选打分等）不需要改动。
+    """
+
+
 class BR:
-    """MSB-first 位读取器；位置以载荷内的 bit offset 表示。"""
+    """MSB-first 位读取器；位置以载荷内的 bit offset 表示。
+
+    越界抛出 :class:`JocTruncatedPayload`，而不是让 bytes 下标抛 IndexError。
+    """
 
     def __init__(self, data, pos=0):
         self.d = data
         self.p = pos
 
     def bits(self, n):
+        if self.p + n > len(self.d) * 8:
+            raise JocTruncatedPayload(
+                f"位流越界: 需要 {n} bit @bit{self.p}，载荷共 {len(self.d) * 8} bit")
         v = 0
         for _ in range(n):
             v = (v << 1) | ((self.d[self.p >> 3] >> (7 - (self.p & 7))) & 1)
@@ -123,11 +137,42 @@ def parse_joc(payload):
     """解析 id14 载荷（joc() 位流），返回字段 dict 与整帧状态 ``status``。
 
     status：0 正常；2 downmix 配置不受支持；3 对象数超过 15 被截断；
-    4 参数带索引越界；5 offset_ts 非法；6 ext_config_idx=0 时对齐后仍有多余数据。
+    4 参数带索引越界；5 offset_ts 非法；6 ext_config_idx=0 时对齐后仍有多余数据；
+    7 载荷在 joc_data 内提前结束（头与对象参数完整，只缺对象矩阵）。状态 7 是可
+    分类的坏帧：渲染器按无效帧保持上一帧矩阵，而不是中断播放。
     """
     br = BR(payload)
     out = parse_joc_header(payload, strict=False)
     br.p = 12
+    try:
+        return _parse_joc_body(payload, br, out)
+    except JocTruncatedPayload:
+        # 头（12 bit）之后的越界才可分类；头之前的越界在 parse_joc_header 里抛出，
+        # 那种载荷无法识别为 JOC 帧。
+        return _truncated_payload(payload, br, out)
+
+
+def _truncated_payload(payload, br, out):
+    """把 joc_data 内的越界归为整帧状态 7，保留已解析的头与对象参数。"""
+    out["status"] = 7
+    out.setdefault("clipgain_x_bits", 0)
+    out.setdefault("clipgain_y_bits", 0)
+    out.setdefault("clipgain", 1.0)
+    out.setdefault("seq_count_bits", 0)
+    objs = out.setdefault("objs", [])
+    while len(objs) < out.get("n_objects", 0):
+        objs.append({"present": 0})
+    for o in objs:
+        o.setdefault("present", 0)
+        if o["present"] and "n_bands" not in o:
+            # 参数区没读完的对象记为未出现，下游不会读到半成品字段。
+            o["present"] = 0
+    _tail_info(out, br, payload)
+    return out
+
+
+def _parse_joc_body(payload, br, out):
+    """从 clipgain 字段开始解析 joc() 载荷；比特越界抛 JocTruncatedPayload。"""
     out["clipgain_x_bits"] = br.bits(3)
     out["clipgain_y_bits"] = br.bits(5)
     out["seq_count_bits"] = br.bits(10)

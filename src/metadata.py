@@ -25,7 +25,8 @@ def _joc_pair_score(container):
     （ID14 声明的对象数超出其字节所能容纳的范围、ID11 未声明 groupid）既不是一对
     合法载荷，也不可能是本帧的 JOC 参数。
 
-    2 = 两个载荷 groupid 相同且 ID14 完整解析；1 = ID14 完整解析；0 = 其余。
+    2 = 两个载荷 groupid 相同且 ID14 完整解析；1 = ID14 完整解析；0 = 其余，
+    包括在 joc_data 内提前结束的载荷（状态 7）：它缺对象矩阵，不应赢得容器选择。
     """
     payload = container.payloads.get(14)
     if payload is None or 11 not in container.payloads:
@@ -33,7 +34,7 @@ def _joc_pair_score(container):
     parses = False
     try:
         parsed = parse_joc(payload)
-        parses = parsed["status"] not in (2, 4)
+        parses = parsed["status"] not in (2, 4, 7)
     except (IndexError, ValueError):
         parses = False
     group_ids = getattr(container, "group_ids", None) or {}
@@ -457,6 +458,7 @@ def inspect(index, limit=None, print_frames=False):
     active = Counter()
     band_totals = Counter()
     sparse_counts = Counter()
+    statuses = Counter()
     clipgains = []
     for seq, row in enumerate(rows):
         frame_number = int(row.get("frame", seq))
@@ -549,6 +551,7 @@ def inspect(index, limit=None, print_frames=False):
         active[len(rec["objects_present"])] += 1
         band_totals.update({int(k): v for k, v in rec["parameter_bands"].items()})
         sparse_counts[len(rec["sparse_objects"])] += 1
+        statuses[parsed["status"]] += 1
         clipgains.append(float(parsed["clipgain"]))
         if print_frames:
             print(json.dumps(rec, ensure_ascii=False, separators=(",", ":")))
@@ -568,6 +571,7 @@ def inspect(index, limit=None, print_frames=False):
              "objects": k[3], "frames": count}
             for k, count in sorted(configs.items())
         ],
+        "frame_status_histogram": {str(k): v for k, v in sorted(statuses.items())},
         "active_object_count_histogram": {str(k): v for k, v in sorted(active.items())},
         "parameter_band_totals": {str(k): v for k, v in sorted(band_totals.items())},
         "sparse_object_count_histogram": {str(k): v for k, v in sorted(sparse_counts.items())},
