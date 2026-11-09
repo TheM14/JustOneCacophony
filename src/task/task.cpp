@@ -1594,6 +1594,7 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
     // count was clamped to 15, and frames whose syncframe carried a second EMDF
     // container that is not this frame's JOC metadata.
     std::uint64_t missing_joc_frames = 0;
+    std::uint64_t truncated_joc_frames = 0;
     std::uint64_t objects_clamped_frames = 0;
     std::uint64_t bad_parameter_band_frames = 0;
     std::uint64_t bad_offset_ts_frames = 0;
@@ -1677,6 +1678,9 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                             break;
                         case JOC_FRAME_STATUS_TRAILING_DATA:
                             ++trailing_data_frames;
+                            break;
+                        case JOC_FRAME_STATUS_TRUNCATED:
+                            ++truncated_joc_frames;
                             break;
                         default:
                             break;
@@ -2218,6 +2222,11 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
         bus.warning(std::to_string(trailing_data_frames) +
                     " audio frame(s) carried JOC data after the byte-alignment padding; "
                     "the frame took the invalid-frame path");
+    }
+    if (truncated_joc_frames != 0u) {
+        bus.warning(std::to_string(truncated_joc_frames) +
+                    " audio frame(s) carried a JOC payload that ends inside joc_data; "
+                    "the frame took the invalid-frame path and held the previous matrices");
     }
     if (extra_container_frames != 0u) {
         bus.warning(std::to_string(extra_container_frames) +

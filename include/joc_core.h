@@ -190,9 +190,10 @@ typedef struct joc_object_params {
 
 /* Per-frame JOC parse status (joc_frame_params.status).  A non-zero status makes
  * the frame invalid for rendering: the renderer holds the previous matrices or
- * passes the core PCM through instead of decoding the matrix.  Only status 3
- * still carries a complete object list (object count clamped to 15) for
- * diagnostics; statuses 2 and 4 stop the parse after the failing header field. */
+ * passes the core PCM through instead of decoding the matrix.  Statuses 3 and 7
+ * still carry the complete header and object list for diagnostics; statuses 2
+ * and 4 stop the parse after the failing header field, and 7 stops inside
+ * joc_data, so only the per-object matrices are missing there. */
 enum {
     JOC_FRAME_STATUS_OK = 0,
     JOC_FRAME_STATUS_UNSUPPORTED_DMX = 2,    /* joc_dmx_config_idx outside 0..4  */
@@ -200,7 +201,11 @@ enum {
     JOC_FRAME_STATUS_BAD_PARAMETER_BAND = 4, /* unknown num_bands index          */
     JOC_FRAME_STATUS_BAD_OFFSET_TS = 5,      /* offset_ts outside 0..23 or not   */
                                              /* strictly increasing              */
-    JOC_FRAME_STATUS_TRAILING_DATA = 6       /* bytes after joc_data alignment   */
+    JOC_FRAME_STATUS_TRAILING_DATA = 6,      /* bytes after joc_data alignment   */
+    /* The ID14 payload ends before its joc_data is complete.  The header,
+     * clipgain, sequence counter and object parameters are intact, so the frame
+     * stays classified and is concealed by holding the previous matrices. */
+    JOC_FRAME_STATUS_TRUNCATED = 7
 };
 
 typedef struct joc_frame_params {
@@ -225,12 +230,18 @@ typedef struct joc_frame_params {
     joc_object_params objects[JOC_MAX_OBJECTS];
 } joc_frame_params;
 
-/* Parse an EMDF ID14 (JOC) payload. */
+/* Parse an EMDF ID14 (JOC) payload.  A payload that ends inside joc_data is a
+ * damaged frame rather than a transport error: the call succeeds, the header and
+ * object parameters are filled in, and out_params->status is
+ * JOC_FRAME_STATUS_TRUNCATED.  A payload too short for the 12-bit joc_header is
+ * unclassifiable and stays JOC_ERR_BITSTREAM_TRUNCATED. */
 JOC_API joc_error JOC_CALL joc_parse_id14(const uint8_t* payload, size_t payload_size,
                                           joc_frame_params* out_params);
 
 /* Locate the contiguous JOC EMDF container inside one E-AC-3 syncframe and
- * parse its ID14 payload.  out_emdf may be NULL. */
+ * parse its ID14 payload.  out_emdf may be NULL.  A damaged ID14 payload is
+ * reported through out_params->status like joc_parse_id14(); an incomplete
+ * container stays a transport error. */
 JOC_API joc_error JOC_CALL joc_parse_eac3_frame(const uint8_t* frame, size_t frame_size,
                                                 joc_frame_params* out_params,
                                                 joc_emdf_info* out_emdf);
@@ -251,7 +262,8 @@ JOC_API joc_error JOC_CALL joc_eac3_frame_bytes(const uint8_t* data, size_t size
 
 /* Strict trailing-bit check for the JOC payload (A/B robustness corpus).
  * Returns JOC_ERR_BITSTREAM_PADDING when more than 7 bits are left over or the
- * leftover bits are not zero. */
+ * leftover bits are not zero, and JOC_ERR_BITSTREAM_TRUNCATED when the payload
+ * ends inside joc_data. */
 JOC_API joc_error JOC_CALL joc_check_id14_padding(const uint8_t* payload, size_t payload_size,
                                                   uint32_t* out_trailing_bits);
 

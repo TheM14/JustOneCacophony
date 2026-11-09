@@ -229,6 +229,28 @@ void tail_info(joc_frame_params* out, const bits::BitReader& reader, const std::
     }
 }
 
+// A payload that runs out of bits after the joc_header is a damaged but
+// identifiable JOC frame: the header, clipgain, sequence counter and object
+// parameters are intact, so the frame keeps its identity and the renderer can
+// hold the previous matrices instead of stopping the stream.  A payload that
+// ends before the header cannot be classified and stays a transport error; a
+// Huffman walk that leaves the tree is a syntax error, never a truncation.
+Status truncated_frame(const bits::BitReader& reader, joc_frame_params* out,
+                       const std::uint8_t* payload, std::size_t payload_size) {
+    if (reader.error() != JOC_ERR_BITSTREAM_TRUNCATED) {
+        return syntax_fail(reader.error_message());
+    }
+    out->status = JOC_FRAME_STATUS_TRUNCATED;
+    out->present_mask = 0u;
+    for (std::uint32_t obj = 0; obj < out->n_objects; ++obj) {
+        if (out->objects[obj].present != 0u) {
+            out->present_mask |= 1u << obj;
+        }
+    }
+    tail_info(out, reader, payload, payload_size);
+    return Status::success();
+}
+
 }  // namespace
 
 Status parse_id14(const std::uint8_t* payload, std::size_t payload_size, joc_frame_params* out,
@@ -255,7 +277,7 @@ Status parse_id14(const std::uint8_t* payload, std::size_t payload_size, joc_fra
     out->clipgain_y_bits = static_cast<std::uint8_t>(reader.read(5));
     out->seq_count = reader.read(10);
     if (reader.failed()) {
-        return truncated_fail(reader);
+        return truncated_frame(reader, out, payload, payload_size);
     }
     // clipgain = 2^(x-4) * (1 + y/32); ldexp builds the power of two exactly
     // over the whole legal range, so the result is bit-exact to the reference.
@@ -273,14 +295,14 @@ Status parse_id14(const std::uint8_t* payload, std::size_t payload_size, joc_fra
         joc_object_params& info = out->objects[obj];
         info.present = static_cast<std::uint8_t>(reader.read(1));
         if (reader.failed()) {
-            return truncated_fail(reader);
+            return truncated_frame(reader, out, payload, payload_size);
         }
         if (info.present == 0u) {
             continue;
         }
         info.num_bands_idx = static_cast<std::uint8_t>(reader.read(3));
         if (reader.failed()) {
-            return truncated_fail(reader);
+            return truncated_frame(reader, out, payload, payload_size);
         }
         const std::int16_t bands = num_bands_for_index(info.num_bands_idx);
         if (bands < 0) {
@@ -299,14 +321,14 @@ Status parse_id14(const std::uint8_t* payload, std::size_t payload_size, joc_fra
         info.num_dpoints_bits = static_cast<std::uint8_t>(reader.read(1));
         info.n_dpoints = static_cast<std::uint8_t>(info.num_dpoints_bits + 1u);
         if (reader.failed()) {
-            return truncated_fail(reader);
+            return truncated_frame(reader, out, payload, payload_size);
         }
         if (info.slope_idx == 1u) {
             for (std::uint32_t dp = 0; dp < info.n_dpoints; ++dp) {
                 info.offset_ts[dp] = static_cast<std::uint8_t>(reader.read(5));
             }
             if (reader.failed()) {
-                return truncated_fail(reader);
+                return truncated_frame(reader, out, payload, payload_size);
             }
             // offset_ts is the raw 5-bit slot index (legal range 0..23) and one
             // object's data points must be strictly increasing.
@@ -350,13 +372,13 @@ Status parse_id14(const std::uint8_t* payload, std::size_t payload_size, joc_fra
                 const Tree idx_tree = select_tree(info.quant_idx, SymbolKind::Idx, n_channels);
                 const std::uint32_t first = reader.read(3);
                 if (reader.failed()) {
-                    return truncated_fail(reader);
+                    return truncated_frame(reader, out, payload, payload_size);
                 }
                 symbol->idx[dp][0] = static_cast<std::uint8_t>(first);
                 for (int pb = 1; pb < info.n_bands; ++pb) {
                     std::int16_t value = 0;
                     if (!huff_decode(idx_tree, reader, &value)) {
-                        return truncated_fail(reader);
+                        return truncated_frame(reader, out, payload, payload_size);
                     }
                     symbol->idx[dp][pb] = static_cast<std::uint8_t>(value);
                 }
@@ -364,7 +386,7 @@ Status parse_id14(const std::uint8_t* payload, std::size_t payload_size, joc_fra
                 for (int pb = 0; pb < info.n_bands; ++pb) {
                     std::int16_t value = 0;
                     if (!huff_decode(vec_tree, reader, &value)) {
-                        return truncated_fail(reader);
+                        return truncated_frame(reader, out, payload, payload_size);
                     }
                     symbol->vec[dp][pb] = value;
                 }
@@ -374,7 +396,7 @@ Status parse_id14(const std::uint8_t* payload, std::size_t payload_size, joc_fra
                     for (int pb = 0; pb < info.n_bands; ++pb) {
                         std::int16_t value = 0;
                         if (!huff_decode(mtx_tree, reader, &value)) {
-                            return truncated_fail(reader);
+                            return truncated_frame(reader, out, payload, payload_size);
                         }
                         symbol->mtx[dp][ch][pb] = value;
                     }
@@ -460,10 +482,13 @@ int score_container_as_joc(const std::uint8_t* data, std::size_t size,
         FrameSymbols symbols;
         if (parse_id14(bytes.data(), bytes.size(), &params, &symbols).ok()) {
             // The reference scores a payload by the frame status: an unsupported
-            // downmix configuration (2) or an unknown parameter-band count (4)
-            // leaves the syntax unparsable and must not win the container choice.
+            // downmix configuration (2), an unknown parameter-band count (4) or a
+            // payload that ends inside joc_data (7) must not win the container
+            // choice, because another candidate may carry the frame's complete
+            // metadata.
             parses = params.status != JOC_FRAME_STATUS_UNSUPPORTED_DMX &&
-                     params.status != JOC_FRAME_STATUS_BAD_PARAMETER_BAND;
+                     params.status != JOC_FRAME_STATUS_BAD_PARAMETER_BAND &&
+                     params.status != JOC_FRAME_STATUS_TRUNCATED;
         }
     }
     const bool associated = oamd->has_group_id != 0u && payload->has_group_id != 0u &&
@@ -522,9 +547,9 @@ Status check_id14_padding(const std::uint8_t* payload, std::size_t payload_size,
     if (!status.ok()) {
         return status;
     }
-    // The two statuses that stop the parse early leave the payload without a
-    // joc_data end position, so they keep reporting the syntax failure they
-    // reported before the frame-status split.
+    // The statuses that stop the parse early leave the payload without a
+    // joc_data end position, so they keep reporting the failure they reported
+    // before the frame-status split.
     if (params.status == JOC_FRAME_STATUS_UNSUPPORTED_DMX) {
         return Status::fail(JOC_ERR_JOC_UNSUPPORTED_VARIANT, stage::kJoc,
                             "downmix_config_unsupported: joc_dmx_config_idx outside 0..4");
@@ -532,6 +557,10 @@ Status check_id14_padding(const std::uint8_t* payload, std::size_t payload_size,
     if (params.status == JOC_FRAME_STATUS_BAD_PARAMETER_BAND) {
         return Status::fail(JOC_ERR_JOC_SYNTAX, stage::kJoc,
                             "unknown JOC num_bands index stops the payload");
+    }
+    if (params.status == JOC_FRAME_STATUS_TRUNCATED) {
+        return Status::fail(JOC_ERR_BITSTREAM_TRUNCATED, stage::kJoc,
+                            "the ID14 payload ends before its joc_data is complete");
     }
     if (out_trailing_bits != nullptr) {
         *out_trailing_bits = params.trailing_bits;

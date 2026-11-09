@@ -999,7 +999,7 @@ private:
             if (status != EJOC_FRAME_STATUS_NO_METADATA) {
                 return fail("a frame without JOC metadata must use frame_status 8");
             }
-        } else if (status != 0u && (status < 2u || status > 6u)) {
+        } else if (status != 0u && (status < 2u || status > 7u)) {
             return fail("frame_status is not a JOC parse status");
         }
         if ((input.object_mask & ~((1u << EJOC_MAX_OBJECTS) - 1u)) != 0u) {

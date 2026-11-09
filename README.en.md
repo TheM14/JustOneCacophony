@@ -288,10 +288,20 @@ contract.
 Every frame carries a status; a non-zero status is reported as a diagnostic. A non-zero status
 makes the frame invalid for rendering, so the renderer holds the previous matrices or passes the
 core PCM through instead of decoding that frame's matrix: 2 unsupported downmix configuration,
-3 object count clamped to 15, 4 unknown parameter-band index, 5 invalid `offset_ts`, and 6
-trailing data after byte padding. A file task refuses a `joc_dmx_config_idx` outside 0..4
-earlier, in the metadata scan, as an unsupported variant. Status 3 still yields the clamped
-object list for diagnostics, while status 2 and 4 stop the parse at the failing header field.
+3 object count clamped to 15, 4 unknown parameter-band index, 5 invalid `offset_ts`, 6 trailing
+data after byte padding, and 7 an ID14 payload that ends inside `joc_data`. A file task refuses a
+`joc_dmx_config_idx` outside 0..4 earlier, in the metadata scan, as an unsupported variant.
+Status 3 still yields the clamped object list for diagnostics, status 2 and 4 stop the parse at
+the failing header field, and status 7 keeps the complete header, clipgain, sequence counter and
+object parameters, with only the object matrices missing.
+
+Status 7 is classified only when the EMDF container itself is complete: a container length past
+the syncframe, or a payload too short for the 12-bit `joc_header`, stays a transport error, and
+the file task and stream API additionally require the container's ID11 payload to parse. A
+complete container whose payload ends inside `joc_data` takes the invalid-frame path (the
+previous matrices are held), so decoding continues instead of stopping; the stream statistics
+count those frames in `truncated_joc_frames`, and `joc_check_id14_padding` still reports
+`JOC_ERR_BITSTREAM_TRUNCATED` for them.
 
 Rendering then runs a per-frame state machine: normal, hold, hard cut, and core passthrough. An
 unusable-JOC frame that arrives during normal rendering enters hold, where the previous frame-end
@@ -307,7 +317,9 @@ A frame with no JOC EMDF at all (for example when the encoder wrote none for the
 always takes the passthrough path: the eight core planes L, R, C, LFE, Ls, Rs, (Lrs, Rrs) are
 written to output slots 0..7 by identity, each delayed by 1217 samples, slots 8..15 stay zero,
 and the 8-plane history keeps advancing. Those frames are counted separately in the statistics,
-and E-AC-3 input without JOC metadata (ID11 + ID14) is outside the supported scope. While hold or
+and E-AC-3 input without JOC metadata (ID11 + ID14) is outside the supported scope. A frame whose
+ID14 payload ended inside `joc_data` is not one of these: it takes the hold path above and is
+counted separately in the stream statistics (`truncated_joc_frames`). While hold or
 passthrough runs without fresh parameters, the analysis scalar and the LFE ramp keep the
 currently held clipgain.
 

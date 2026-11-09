@@ -9,8 +9,8 @@
 #define JOC_VERSION_H
 
 #define JOC_VERSION_MAJOR 1
-#define JOC_VERSION_MINOR 2
+#define JOC_VERSION_MINOR 3
 #define JOC_VERSION_PATCH 0
-#define JOC_VERSION_STRING "1.2.0"
+#define JOC_VERSION_STRING "1.3.0"
 
 #endif /* JOC_VERSION_H */

@@ -1,3 +1,4 @@
+#include <cstddef>
 #include <cstring>
 #include <string>
 
@@ -140,8 +141,13 @@ joc_error JOC_CALL joc_stream_reset(joc_stream* stream) {
 }
 
 joc_error JOC_CALL joc_stream_status(const joc_stream* stream, joc_stream_status_info* out) {
+    // The info struct only grows by appending fields, so a caller built against
+    // the previous size still gets every field it knows about.
+    constexpr uint32_t kSizeBeforeTruncatedFrames = static_cast<uint32_t>(
+        offsetof(joc_stream_status_info, truncated_joc_frames));
     if (stream == nullptr || out == nullptr ||
-        out->struct_size != sizeof(joc_stream_status_info)) {
+        (out->struct_size != sizeof(joc_stream_status_info) &&
+         out->struct_size != kSizeBeforeTruncatedFrames)) {
         return JOC_ERR_INVALID_ARGUMENT;
     }
     const joc::stream::Info& info = stream->instance.info();
@@ -160,6 +166,9 @@ joc_error JOC_CALL joc_stream_status(const joc_stream* stream, joc_stream_status
     out->bed_mask_mismatch_frames = info.bed_mask_mismatch_frames;
     out->output_channels = info.output_channels;
     out->ended = info.ended;
+    if (out->struct_size > kSizeBeforeTruncatedFrames) {
+        out->truncated_joc_frames = info.truncated_joc_frames;
+    }
     return JOC_OK;
 }
 

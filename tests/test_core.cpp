@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <filesystem>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -1376,6 +1377,41 @@ bool clipgain_process(ejoc_renderer_handle handle, const ClipGainInputs& in, dou
                                  out->data()) == 0;
 }
 
+// The status struct only grows by appending fields: both the current size and
+// the size that ended at `ended` are accepted, and an unrelated size is rejected.
+void test_stream_status_struct_sizes() {
+    joc_stream_config config{};
+    config.struct_size = sizeof(config);
+    config.struct_version = 1;
+    config.input = JOC_STREAM_IN_EAC3;
+    config.output = JOC_STREAM_OUT_SPEAKER;
+    config.speaker_layout_name = "7.1";
+    joc_stream* stream = nullptr;
+    CHECK(joc_stream_create(&config, &stream) == JOC_OK);
+    CHECK(stream != nullptr);
+    if (stream == nullptr) {
+        return;
+    }
+    joc_stream_status_info legacy{};
+    legacy.struct_size =
+        static_cast<std::uint32_t>(offsetof(joc_stream_status_info, truncated_joc_frames));
+    legacy.struct_version = 1;
+    CHECK(joc_stream_status(stream, &legacy) == JOC_OK);
+    CHECK(legacy.output_channels == 8u);
+    CHECK(legacy.truncated_joc_frames == 0u);
+    joc_stream_status_info current{};
+    current.struct_size = sizeof(current);
+    current.struct_version = 1;
+    CHECK(joc_stream_status(stream, &current) == JOC_OK);
+    CHECK(current.output_channels == 8u);
+    CHECK(current.truncated_joc_frames == 0u);
+    joc_stream_status_info rejected{};
+    rejected.struct_size = 64;
+    rejected.struct_version = 1;
+    CHECK(joc_stream_status(stream, &rejected) == JOC_ERR_INVALID_ARGUMENT);
+    CHECK(joc_stream_destroy(stream) == JOC_OK);
+}
+
 void test_clipgain_first_frame_uses_its_own_gain() {
     const ClipGainInputs in;
     std::vector<float> unity;
@@ -1742,6 +1778,129 @@ void test_joc_parse_status_and_offset_ts() {
     }
 }
 
+// Helpers for the truncated-payload tests.  The container is byte aligned and
+// carries one ID11 and one ID14 payload, the shape a JOC syncframe carries; the
+// bytes are not a real E-AC-3 frame because the container scan only needs the
+// EMDF syncword.
+std::vector<std::uint8_t> make_joc_emdf_container(const std::vector<std::uint8_t>& oamd,
+                                                  const std::vector<std::uint8_t>& joc) {
+    JocBitWriter body;
+    body.write(0, 2);  // emdf_version
+    body.write(0, 3);  // key_id
+    for (int index = 0; index < 2; ++index) {
+        const bool first = index == 0;
+        const std::vector<std::uint8_t>& payload = first ? oamd : joc;
+        body.write(first ? 11u : 14u, 5);
+        body.write(0, 1);  // has_sample_offset
+        body.write(0, 1);  // has_duration
+        body.write(1, 1);  // has_group_id
+        body.write(0, 2);  // group_id, one variable_bits(2) group
+        body.write(0, 1);  // end of the variable_bits chain
+        body.write(0, 1);  // has_codec_data
+        body.write(0, 1);  // discard_unknown_payload
+        body.write(1, 1);  // payload_frame_aligned
+        body.write(0, 2);  // alignment padding
+        body.write(0, 7);  // alignment padding
+        // The test payloads are shorter than 256 bytes: one variable_bits group.
+        body.write(static_cast<std::uint32_t>(payload.size()), 8);
+        body.write(0, 1);
+        for (const std::uint8_t byte : payload) {
+            body.write(byte, 8);
+        }
+    }
+    body.write(0, 5);  // payload id 0 terminates the container
+    std::vector<std::uint8_t> out;
+    out.push_back(0x58);
+    out.push_back(0x38);
+    const std::size_t length = (body.bit_count + 7u) / 8u;
+    out.push_back(static_cast<std::uint8_t>((length >> 8) & 0xFFu));
+    out.push_back(static_cast<std::uint8_t>(length & 0xFFu));
+    out.insert(out.end(), body.bytes.begin(), body.bytes.end());
+    return out;
+}
+
+// A JOC payload that ends inside joc_data is a damaged frame, not a transport
+// error: the header and object parameters stay available, so the frame keeps
+// its classification and the renderer can hold the previous matrices.  A
+// payload too short to hold the joc_header is not classifiable.
+void test_joc_truncated_payload_status() {
+    Id14Spec spec;
+    spec.present = true;
+    const std::vector<std::uint8_t> full = make_id14_payload(spec);
+    joc_frame_params parsed{};
+    CHECK(joc::joc::parse_id14(full.data(), full.size(), &parsed, nullptr).ok());
+    CHECK(parsed.status == JOC_FRAME_STATUS_OK);
+
+    // Drop the last byte: object 0's five dense MTX symbols no longer fit.
+    std::vector<std::uint8_t> cut(full.begin(), full.end() - 1);
+    joc_frame_params params{};
+    CHECK(joc::joc::parse_id14(cut.data(), cut.size(), &params, nullptr).ok());
+    CHECK(params.status == JOC_FRAME_STATUS_TRUNCATED);
+    CHECK(params.dmx_config_idx == 3u);
+    CHECK(params.n_channels == 5u);
+    CHECK(params.n_objects == 1u);
+    CHECK(params.objects[0].present == 1u);
+    CHECK(params.objects[0].n_bands == 1u);
+    CHECK(params.objects[0].n_dpoints == 1u);
+    CHECK(params.present_mask == 1u);
+    CHECK(params.data_end_bits == cut.size() * 8u);
+
+    // One byte cannot even hold the 12-bit joc_header, so the payload stays an
+    // unclassifiable transport error.
+    std::vector<std::uint8_t> headerless(full.begin(), full.begin() + 1);
+    joc_frame_params headerless_params{};
+    CHECK(joc::joc::parse_id14(headerless.data(), headerless.size(), &headerless_params,
+                               nullptr)
+              .code() == JOC_ERR_BITSTREAM_TRUNCATED);
+
+    // The strict padding verifier keeps reporting the truncation.
+    std::uint32_t trailing = 0;
+    CHECK(joc::joc::check_id14_padding(cut.data(), cut.size(), &trailing).code() ==
+          JOC_ERR_BITSTREAM_TRUNCATED);
+}
+
+// The container layer passes a truncated ID14 payload up as a frame status while
+// a broken container transport stays fatal.
+void test_eac3_frame_truncated_joc_payload() {
+    Id14Spec spec;
+    spec.present = true;
+    const std::vector<std::uint8_t> oamd(8, 0);
+    std::vector<std::uint8_t> joc = make_id14_payload(spec);
+    {
+        const std::vector<std::uint8_t> frame = make_joc_emdf_container(oamd, joc);
+        joc_frame_params params{};
+        CHECK(joc::joc::parse_eac3_frame(frame.data(), frame.size(), &params, nullptr, nullptr)
+                  .ok());
+        CHECK(params.status == JOC_FRAME_STATUS_OK);
+    }
+    {
+        joc.pop_back();
+        const std::vector<std::uint8_t> frame = make_joc_emdf_container(oamd, joc);
+        joc_frame_params params{};
+        joc::emdf::Container container;
+        CHECK(joc::joc::parse_eac3_frame(frame.data(), frame.size(), &params, &container,
+                                        nullptr)
+                  .ok());
+        CHECK(params.status == JOC_FRAME_STATUS_TRUNCATED);
+        CHECK(params.present_mask == 1u);
+        CHECK(container.find(joc::emdf::kIdJoc) != nullptr);
+        CHECK(container.find(joc::emdf::kIdOamd) != nullptr);
+    }
+    {
+        // The same container with a declared length past the buffer is still a
+        // transport error, not a frame status.
+        joc = make_id14_payload(spec);
+        std::vector<std::uint8_t> frame = make_joc_emdf_container(oamd, joc);
+        frame[2] = 0x7F;
+        frame[3] = 0xFF;
+        joc_frame_params params{};
+        const joc::Status status =
+            joc::joc::parse_eac3_frame(frame.data(), frame.size(), &params, nullptr, nullptr);
+        CHECK(!status.ok());
+        CHECK(status.code() == JOC_ERR_EMDF_TRANSPORT);
+    }
+}
+
 // Synthetic audio frames driven through the frame-level kernel.
 struct FrameCase {
     ejoc_renderer_handle handle = nullptr;
@@ -2058,6 +2217,26 @@ void test_joc_frame_state_machine() {
     }
 }
 
+// The truncated-frame status is a JOC parse status, so the kernel accepts it and
+// renders through the invalid-frame path: the previous matrices are held, the
+// frame produces its 1536 samples, and the next valid frame resynchronises.
+void test_joc_truncated_frame_holds_previous_matrix() {
+    FrameCase frame;
+    frame.create();
+    for (int sample = 0; sample < EJOC_FRAME_SAMPLES; ++sample) {
+        frame.bed[static_cast<std::size_t>(sample)] =
+            static_cast<float>(0.2 * std::sin(static_cast<double>(sample) * 0.05));
+    }
+    configure_passthrough_object(&frame);
+    CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 1u, true, 1u, 1.0));
+    CHECK(object_peak(frame, 1) > 1.0e-3f);
+    CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, JOC_FRAME_STATUS_TRUNCATED, 2u,
+                       true, 1u, 1.0));
+    CHECK(object_peak(frame, 1) > 1.0e-3f);
+    CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 3u, true, 1u, 1.0));
+    CHECK(object_peak(frame, 1) > 1.0e-3f);
+}
+
 void test_joc_no_previous_interpolation() {
     auto prepare = [](FrameCase* frame) {
         frame->create();
@@ -2214,14 +2393,18 @@ int main() {
     test_rosella_model_errors();
     test_rosella_filterbank_config();
     test_stream_render_ahead();
+    test_stream_status_struct_sizes();
     test_clipgain_first_frame_uses_its_own_gain();
     test_clipgain_change_applies_to_the_current_frame();
     test_clipgain_reset_clears_the_previous_gain();
     test_joc_clipgain_formula();
     test_joc_parse_status_and_offset_ts();
+    test_joc_truncated_payload_status();
+    test_eac3_frame_truncated_joc_payload();
     test_joc_lfe_clipgain_ramp();
     test_joc_passthrough_8_plane_layout();
     test_joc_frame_state_machine();
+    test_joc_truncated_frame_holds_previous_matrix();
     test_joc_no_previous_interpolation();
     test_binaural_timeline_full_frame_state();
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);

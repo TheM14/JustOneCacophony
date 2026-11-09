@@ -47,6 +47,9 @@ struct Info {
     std::uint64_t oamd_payloads = 0;
     std::uint64_t oamd_transitions = 0;
     std::uint64_t missing_joc_frames = 0;
+    // Audio frames whose ID14 payload ended inside joc_data; they render as
+    // invalid frames and hold the previous matrices.
+    std::uint64_t truncated_joc_frames = 0;
     std::uint64_t objects_clamped_frames = 0;
     // Audio frames whose syncframe held more than one top-level JOC container and
     // were decoded from the single one that carries a complete joc() payload.

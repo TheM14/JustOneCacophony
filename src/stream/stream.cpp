@@ -246,6 +246,9 @@ Status Stream::flush_pending_frame() {
         if (entry.params.objects_clamped != 0u) {
             ++info_.objects_clamped_frames;
         }
+        if (entry.params.status == JOC_FRAME_STATUS_TRUNCATED) {
+            ++info_.truncated_joc_frames;
+        }
     } else {
         // No JOC metadata for this audio frame: the object channels stay silent
         // while the kernel state still advances for the frame.

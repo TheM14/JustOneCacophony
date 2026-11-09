@@ -97,8 +97,9 @@ typedef struct joc_stream_status_info {
     uint64_t oamd_payloads;
     uint64_t oamd_transitions;
     /* Metadata the renderer had to work around, per audio frame: no JOC payload at
-     * all, a declared object count clamped to 15, and a syncframe carrying a second
-     * EMDF container that is not this frame's JOC metadata. */
+     * all, an ID14 payload that ends inside joc_data (that frame holds the previous
+     * matrices), a declared object count clamped to 15, and a syncframe carrying a
+     * second EMDF container that is not this frame's JOC metadata. */
     uint64_t missing_joc_frames;
     uint64_t objects_clamped_frames;
     uint64_t extra_container_frames;
@@ -108,6 +109,9 @@ typedef struct joc_stream_status_info {
     uint64_t bed_mask_mismatch_frames;
     uint32_t output_channels;
     uint32_t ended; /* 1 after flush() */
+    /* Appended field: joc_stream_status() accepts the size that ends at `ended`
+     * as well, so a caller built against the previous header keeps working. */
+    uint64_t truncated_joc_frames;
 } joc_stream_status_info;
 
 JOC_API joc_error JOC_CALL joc_stream_create(const joc_stream_config* config, joc_stream** out);
