@@ -2138,6 +2138,43 @@ float object_peak(const FrameCase& frame, int object_channel) {
     return peak;
 }
 
+void test_joc_no_metadata_midstream_holds() {
+    // A frame without JOC metadata in the middle of a JOC stream is a damaged
+    // frame, not "no objects": it holds the previous matrices instead of
+    // publishing the core planes.  Before the compatibility change every such
+    // frame went through Passthrough, which produced a step at the frame
+    // boundary and a second one when the metadata came back.
+    {
+        FrameCase frame;
+        frame.create();
+        for (int sample = 0; sample < EJOC_FRAME_SAMPLES; ++sample) {
+            frame.bed[static_cast<std::size_t>(sample)] =
+                static_cast<float>(0.2 * std::sin(static_cast<double>(sample) * 0.05));
+        }
+        configure_passthrough_object(&frame);
+        CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 0u, true, 1u, 1.0));
+        CHECK(object_peak(frame, 1) > 1.0e-3f);
+        CHECK(frame.render(EJOC_CORE_CHANNELS, 0u, EJOC_FRAME_STATUS_NO_METADATA, 0u, false,
+                           0u, 1.0));
+        // Held: the object slot keeps rendering from the previous matrix.
+        CHECK(object_peak(frame, 1) > 1.0e-3f);
+        // The next valid frame resumes normally.
+        CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 1u, true, 1u, 1.0));
+        CHECK(object_peak(frame, 1) > 1.0e-3f);
+    }
+    // A stream that has not rendered a valid frame yet keeps the passthrough:
+    // the core planes are all there is (plain E-AC-3, or a late first JOC frame).
+    {
+        FrameCase frame;
+        frame.create();
+        fill_frame_bed(&frame, 0.1f, 0.25f);
+        CHECK(frame.render(EJOC_CORE_CHANNELS, 0u, EJOC_FRAME_STATUS_NO_METADATA, 0u, false,
+                           0u, 1.0));
+        CHECK(frame.silent_slots(8, EJOC_OUTPUT_CHANNELS - 1));
+        CHECK(!frame.silent_slots(0, 7));
+    }
+}
+
 void test_joc_frame_state_machine() {
     // seq 0 on the first frame is not a hard cut, and a mismatch later is.
     {
@@ -2403,6 +2440,7 @@ int main() {
     test_eac3_frame_truncated_joc_payload();
     test_joc_lfe_clipgain_ramp();
     test_joc_passthrough_8_plane_layout();
+    test_joc_no_metadata_midstream_holds();
     test_joc_frame_state_machine();
     test_joc_truncated_frame_holds_previous_matrix();
     test_joc_no_previous_interpolation();

@@ -800,9 +800,35 @@ private:
         return pre_state;
     }
 
+    // Compatibility note for frames without JOC metadata (status 8).
+    //
+    // The state machine used to map status 8 to Passthrough unconditionally,
+    // including in the middle of a stream.  That is only meaningful before the
+    // first valid JOC frame: a plain E-AC-3 stream (or a stream whose first JOC
+    // frame comes late) has no object state yet, so the core planes are all
+    // there is and the delayed core PCM is the right output.  In the middle of
+    // a JOC stream a frame without metadata is a damaged frame, not "no
+    // objects": the Passthrough output replaces the object render with the core
+    // planes, and the object synthesis restarts from silence on the next frame.
+    // Every such frame therefore produced a step at the frame boundary and a
+    // second one when the metadata came back; encoders that are not careful
+    // with the JOC EMDF container emit exactly those frames.
+    //
+    // After the change status 8 follows the state machine like the other
+    // invalid statuses: state 0 (no valid frame rendered yet) stays Passthrough,
+    // and state 3 (mid-stream) selects Hold, which reuses the previous object
+    // matrices and keeps the bed and object rendering continuous.
+    //
+    // This is a compatibility choice, not a claim about the normative reading
+    // of the specification: a frame without metadata can be argued to be the
+    // Passthrough case.  It exists so that non-standard streams stay click-free;
+    // if the reference behaviour is preferred, re-add the unconditional
+    // Passthrough branch here.
     FrameMode select_mode(const uint32_t status) const noexcept {
         if (status == EJOC_FRAME_STATUS_NO_METADATA) {
-            return FrameMode::Passthrough;
+            // See the note above: only a stream that has not rendered a valid
+            // frame yet has nothing to hold.
+            return state_ == 0u ? FrameMode::Passthrough : FrameMode::Hold;
         }
         if (state_ == 4u) {
             return FrameMode::HardCut;
