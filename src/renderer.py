@@ -432,7 +432,19 @@ class JocRenderer:
         state = self._state
         self._maybe_clear_lfe_ring(status)
 
-        if status == STATUS_NO_METADATA:
+        # 兼容性说明（status 8 无元数据帧的状态机改动）：
+        # 变更前：status 8 无条件走 passthrough，流中途也一样。passthrough 用
+        #   延迟后的 8 路 core 平面替换对象渲染，对象合成在下一帧从静音重新开始，
+        #   于是每个无元数据帧都会在帧界产生一次台阶，元数据恢复时再产生一次；
+        #   对不够标准的编码器（JOC EMDF 容器写得不好）这听起来就是噼啪声。
+        # 变更后：status 8 和其他无效状态一样交给状态机——state 0（还没渲染过
+        #   有效帧，即普通 E-AC-3 或 JOC 首帧之前）仍然 passthrough（核心 PCM
+        #   直通本来就是为这种流准备的）；state 3（流中途）走 hold，沿用上一帧
+        #   的对象矩阵继续渲染，床与对象都保持连续。
+        # 说明：这是为兼容性做的取舍，不代表规范解释一定如此——"无元数据"也可以
+        #   被论证为就是 passthrough 的情形；若要回到参考行为，恢复这里的无条件
+        #   passthrough 分支即可。
+        if status == STATUS_NO_METADATA and state == 0:
             mode = "passthrough"
         elif state == 4:
             mode = "hard_cut"
