@@ -3,7 +3,7 @@ import math
 
 from adm_atmos import q_to_adm_xyz
 from bed_layout import bed_object_positions
-from oamd_bits import JocFieldState, frame_update, parse_trim
+from oamd_bits import JocFieldState, frame_state, frame_update, parse_trim
 from variant_error import UnsupportedVariantError
 
 # 元数据更新时刻按渲染器处理块对齐，与 Dolby 的 processing_block_size 及
@@ -19,12 +19,42 @@ def align_metadata_sample(sample, block_samples=METADATA_BLOCK_SAMPLES):
     return block * ((int(sample) + block // 2 - 1) // block)
 
 
+def _default_meta():
+    """ADM 缺省渲染参数：点源、0 dB、无 divergence。"""
+    return {"gain": 1.0, "size": (0.0, 0.0, 0.0), "divergence": 0.0,
+            "snap": False}
+
+
+def _apply_state(meta, state):
+    """把一帧 OAMD 对象状态合并进跨帧保持的渲染参数。
+
+    语义与 ``PythonSpeakerRenderer`` 的 metadata 路径一致：动态对象 block 0
+    的 gain/size/snap 每帧都显式出现；divergence 只在扩展元素里出现，缺失时
+    渲染器按 0 处理，因此这里也直接取 0，而不是保持旧值。未激活对象由渲染器
+    静音，ADM 对象轨本身仍携带 PCM，必须写 gain=0。
+    """
+    if state.get("kind") != "dynamic":
+        return
+    if state.get("not_active"):
+        meta["gain"] = 0.0
+        return
+    if state.get("render_status") == 1:
+        size = (0.0, 0.0, 0.0)
+        if state.get("size_mode") in (1, 2):
+            size = tuple(min(max(float(value) / 32767.0, 0.0), 1.0)
+                         for value in state.get("size_q", (0, 0, 0)))
+        meta["gain"] = float(state.get("gain_q", 4096)) / 4096.0
+        meta["size"] = size
+        meta["snap"] = bool(state.get("snap", 0))
+    meta["divergence"] = float(state.get("divergence_q", 0)) / 32767.0
+
+
 def _lerp_xyz(start, target, amount):
     return tuple(a + (b - a) * amount for a, b in zip(start, target))
 
 
-def _append_point(points, sample, xyz, interpolation_samples):
-    item = (int(sample), *map(float, xyz), int(interpolation_samples))
+def _append_point(points, sample, xyz, interpolation_samples, meta):
+    item = (int(sample), *map(float, xyz), int(interpolation_samples), dict(meta))
     if points and item[0] == points[-1][0]:
         points[-1] = item
     elif not points or item[0] > points[-1][0]:
@@ -34,15 +64,17 @@ def _append_point(points, sample, xyz, interpolation_samples):
 def _expand_events_dense64(events, total_samples, rate, update_block_samples,
                            object_delay_samples, object_index):
     if not events:
-        return [(0.0, 0.0, 0.0, 0.0, total_samples / float(rate), 0.0)]
+        return [(0.0, 0.0, 0.0, 0.0, total_samples / float(rate), 0.0,
+                 _default_meta())]
 
     block = int(update_block_samples)
     # 初始位置从成品 sample 0 起有效；合成延迟只作用于后续位置变化。
     current = events[0][1]
+    current_meta = events[0][3]
     points = []
-    _append_point(points, 0, current, 0)
+    _append_point(points, 0, current, 0, current_meta)
 
-    for event_index, (coded_start, target, ramp_samples) in enumerate(events[1:], 1):
+    for event_index, (coded_start, target, ramp_samples, meta) in enumerate(events[1:], 1):
         start = align_metadata_sample(coded_start + object_delay_samples, block)
         if start >= total_samples:
             break
@@ -55,12 +87,13 @@ def _expand_events_dense64(events, total_samples, rate, update_block_samples,
 
         # 在运动起点保留上一位置，避免下游把长时间静止段直接连到首个中间点。
         if start > points[-1][0]:
-            _append_point(points, start, current, 0)
+            _append_point(points, start, current, 0, current_meta)
 
         ramp = max(0, int(ramp_samples))
         if ramp == 0:
-            _append_point(points, start, target, 0)
+            _append_point(points, start, target, 0, meta)
             current = target
+            current_meta = meta
             continue
 
         end = start + math.ceil(ramp / block) * block
@@ -91,12 +124,14 @@ def _expand_events_dense64(events, total_samples, rate, update_block_samples,
             sample = start + elapsed
             if sample >= total_samples:
                 break
-            _append_point(points, sample, position, block)
+            _append_point(points, sample, position, block, meta)
             future -= block
         current = target
+        current_meta = meta
 
     blocks = []
-    for point_index, (sample, x, y, z, interpolation_samples) in enumerate(points):
+    for point_index, point in enumerate(points):
+        sample, x, y, z, interpolation_samples, meta = point
         end = points[point_index + 1][0] if point_index + 1 < len(points) else total_samples
         duration_samples = max(0, end - sample)
         if duration_samples == 0:
@@ -104,7 +139,7 @@ def _expand_events_dense64(events, total_samples, rate, update_block_samples,
         interpolation_samples = min(interpolation_samples, duration_samples)
         blocks.append((sample / float(rate), x, y, z,
                        duration_samples / float(rate),
-                       interpolation_samples / float(rate)))
+                       interpolation_samples / float(rate), meta))
     return blocks
 
 
@@ -119,14 +154,16 @@ def _compact_events(events, total_samples, rate, update_block_samples,
     ``[align(start), align(start) + ramp_duration]``.
     """
     if not events:
-        return [(0.0, 0.0, 0.0, 0.0, total_samples / float(rate), 0.0)]
+        return [(0.0, 0.0, 0.0, 0.0, total_samples / float(rate), 0.0,
+                 _default_meta())]
 
     points = []
     current = events[0][1]
-    _append_point(points, 0, current, 0)
+    current_meta = events[0][3]
+    _append_point(points, 0, current, 0, current_meta)
 
     block = int(update_block_samples)
-    for event_index, (coded_start, target, ramp_samples) in enumerate(events[1:], 1):
+    for event_index, (coded_start, target, ramp_samples, meta) in enumerate(events[1:], 1):
         event_start = align_metadata_sample(coded_start + object_delay_samples, block)
         if event_start >= total_samples:
             break
@@ -144,7 +181,7 @@ def _compact_events(events, total_samples, rate, update_block_samples,
                          "previous_sample": points[-1][0]})
 
         if event_index + 1 < len(events):
-            next_coded_start, _, next_ramp_samples = events[event_index + 1]
+            next_coded_start, _, next_ramp_samples = events[event_index + 1][:3]
             next_event_start = align_metadata_sample(
                 next_coded_start + object_delay_samples, block)
             next_block_start = next_event_start
@@ -166,11 +203,13 @@ def _compact_events(events, total_samples, rate, update_block_samples,
         if ramp > available:
             block_target = _lerp_xyz(current, target, available / float(ramp))
             block_interpolation = available
-        _append_point(points, block_start, block_target, block_interpolation)
+        _append_point(points, block_start, block_target, block_interpolation, meta)
         current = target
+        current_meta = meta
 
     blocks = []
-    for point_index, (sample, x, y, z, interpolation_samples) in enumerate(points):
+    for point_index, point in enumerate(points):
+        sample, x, y, z, interpolation_samples, meta = point
         end = points[point_index + 1][0] if point_index + 1 < len(points) else total_samples
         duration_samples = max(0, end - sample)
         if duration_samples == 0:
@@ -178,7 +217,7 @@ def _compact_events(events, total_samples, rate, update_block_samples,
         interpolation_samples = min(interpolation_samples, duration_samples)
         blocks.append((sample / float(rate), x, y, z,
                        duration_samples / float(rate),
-                       interpolation_samples / float(rate)))
+                       interpolation_samples / float(rate), meta))
     return blocks
 
 
@@ -226,13 +265,16 @@ def build_adm_tracks(index, frames=None, rate=48000, frame_samples=1536,
     state = JocFieldState()
     events = [[] for _ in range(15)]
     previous = [None] * 15
+    meta_state = [_default_meta() for _ in range(15)]
 
     for seq, row in enumerate(frames):
         subs = index.subpayloads(row)
         timing = None
+        full = None
         if subs is not None and 11 in subs:
             timing = frame_update(subs[11])
             state.apply(timing["values"])
+            full = frame_state(subs[11])
 
         event_sample = seq * frame_samples
         ramp_samples = 0
@@ -245,9 +287,12 @@ def build_adm_tracks(index, frames=None, rate=48000, frame_samples=1536,
         q = state.q
         for obj in range(1, 16):
             xyz = q_to_adm_xyz(q[(obj, "q1")], q[(obj, "q2")], q[(obj, "q3")])
-            if previous[obj - 1] != xyz:
-                events[obj - 1].append((event_sample, xyz, ramp_samples))
-                previous[obj - 1] = xyz
+            if full is not None and obj < len(full["objects"]):
+                _apply_state(meta_state[obj - 1], full["objects"][obj])
+            meta = dict(meta_state[obj - 1])
+            if previous[obj - 1] != (xyz, meta):
+                events[obj - 1].append((event_sample, xyz, ramp_samples, meta))
+                previous[obj - 1] = (xyz, meta)
 
     total_samples = len(frames) * frame_samples
     # bed 对象在 OAMD 里没有位置字段：位置由声明的 bed 布局决定，整片静止在该方位。
@@ -258,7 +303,7 @@ def build_adm_tracks(index, frames=None, rate=48000, frame_samples=1536,
         if fixed is not None:
             tracks.append((f"JOC_Object_{obj}",
                            [(0.0, fixed[0], fixed[1], fixed[2],
-                             total_samples / float(rate), 0.0)]))
+                             total_samples / float(rate), 0.0, _default_meta())]))
             continue
         tracks.append(
             (f"JOC_Object_{obj}",

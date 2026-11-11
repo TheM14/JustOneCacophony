@@ -85,9 +85,36 @@ def _atmos_master_block(atmos_meta):
     return lines
 
 
-def build_axml(obj_tracks, duration_sec, atmos_meta=None):
-    """obj_tracks: [(name, [(rtime, x, y, z, dur), ...]) ×15]
+def _object_meta_lines(meta):
+    """把 OAMD 的逐对象渲染参数写成 ADM 的 audioBlockFormat 子元素。
 
+    只写 ADM 能表达的字段：size → width/height/depth（相对单位 0..1），
+    gain → gain（线性），divergence → objectDivergence（笛卡尔坐标系用
+    positionRange）。缺省值（size 0、gain 1.0、divergence 0）省略。
+    """
+    if not meta:
+        return []
+    lines = []
+    size = meta.get("size") or (0.0, 0.0, 0.0)
+    # OAMD 的 size 三轴顺序为 width, depth, height。
+    width, depth, height = size
+    if width > 0.0 or depth > 0.0 or height > 0.0:
+        lines.append(f'<width>{width:.6f}</width>')
+        lines.append(f'<height>{height:.6f}</height>')
+        lines.append(f'<depth>{depth:.6f}</depth>')
+    gain = meta.get("gain")
+    if gain is not None and abs(float(gain) - 1.0) > 1e-9:
+        lines.append(f'<gain gainUnit="linear">{float(gain):.6f}</gain>')
+    divergence = meta.get("divergence")
+    if divergence is not None and float(divergence) > 0.0:
+        lines.append(f'<objectDivergence positionRange="{float(divergence):.6f}"/>')
+    return lines
+
+
+def build_axml(obj_tracks, duration_sec, atmos_meta=None):
+    """obj_tracks: [(name, [(rtime, x, y, z, dur, interpolation, meta), ...]) ×15]
+
+    ``meta`` 可省略；给出时写 width/height/depth、gain、objectDivergence。
     ``atmos_meta`` 为 ``oamd_bits.parse_trim`` 的结果；给出时把 trim 与 warp
     写进 ADM。
     """
@@ -153,6 +180,7 @@ def build_axml(obj_tracks, duration_sec, atmos_meta=None):
         for k, keyframe in enumerate(kfs):
             t, x, y, z, dur = keyframe[:5]
             interpolation = keyframe[5] if len(keyframe) > 5 else 0.0
+            meta = keyframe[6] if len(keyframe) > 6 else None
             a(f'<audioBlockFormat audioBlockFormatID="AB_0003{0x1001 + i:04x}_{k + 1:08x}" '
               f'rtime="{ts(t)}" duration="{ts(dur)}">')
             a('<cartesian>1</cartesian>')
@@ -160,6 +188,8 @@ def build_axml(obj_tracks, duration_sec, atmos_meta=None):
             a(f'<position coordinate="Y">{y:.10f}</position>')
             if z != 0:
                 a(f'<position coordinate="Z">{z:.10f}</position>')
+            for line in _object_meta_lines(meta):
+                a(line)
             a(f'<jumpPosition interpolationLength="{interpolation:.5f}">1</jumpPosition>')
             a('</audioBlockFormat>')
         a('</audioChannelFormat>')
