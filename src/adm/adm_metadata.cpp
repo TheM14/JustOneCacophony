@@ -363,6 +363,20 @@ std::string build_axml(const std::vector<Track>& tracks, double duration_sec, st
                 out += "<position coordinate=\"Z\">" + pynum::format_fixed(block.z, 10) +
                        "</position>";
             }
+            const ObjectMetadata& meta = block.meta;
+            if (meta.size[0] > 0.0 || meta.size[1] > 0.0 || meta.size[2] > 0.0) {
+                out += "<width>" + pynum::format_fixed(meta.size[0], 6) + "</width>";
+                out += "<height>" + pynum::format_fixed(meta.size[2], 6) + "</height>";
+                out += "<depth>" + pynum::format_fixed(meta.size[1], 6) + "</depth>";
+            }
+            if (std::fabs(meta.gain - 1.0) > 1e-9) {
+                out += "<gain gainUnit=\"linear\">" + pynum::format_fixed(meta.gain, 6) +
+                       "</gain>";
+            }
+            if (meta.divergence > 0.0) {
+                out += "<objectDivergence positionRange=\"" +
+                       pynum::format_fixed(meta.divergence, 6) + "\"/>";
+            }
             out += "<jumpPosition interpolationLength=\"" +
                    pynum::format_fixed(static_cast<double>(block.interpolation_samples) / scale,
                                        5) +

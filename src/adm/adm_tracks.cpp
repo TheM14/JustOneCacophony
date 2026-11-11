@@ -16,15 +16,22 @@ struct Point {
     double y = 0.0;
     double z = 0.0;
     std::int64_t interpolation_samples = 0;
+    ObjectMetadata meta;
 };
+
+bool same_meta(const ObjectMetadata& left, const ObjectMetadata& right) {
+    return left.gain == right.gain && left.size[0] == right.size[0] &&
+           left.size[1] == right.size[1] && left.size[2] == right.size[2] &&
+           left.divergence == right.divergence && left.snap == right.snap;
+}
 
 // otherwise (the reference drops silently).
 void append_point(std::vector<Point>* points, std::int64_t sample, double x, double y, double z,
-                  std::int64_t interpolation_samples) {
+                  std::int64_t interpolation_samples, const ObjectMetadata& meta) {
     if (!points->empty() && sample == points->back().sample) {
-        points->back() = Point{sample, x, y, z, interpolation_samples};
+        points->back() = Point{sample, x, y, z, interpolation_samples, meta};
     } else if (points->empty() || sample > points->back().sample) {
-        points->push_back(Point{sample, x, y, z, interpolation_samples});
+        points->push_back(Point{sample, x, y, z, interpolation_samples, meta});
     }
 }
 
@@ -52,6 +59,7 @@ void points_to_blocks(const std::vector<Point>& points, std::int64_t total_sampl
         keyframe.z = point.z;
         keyframe.duration_samples = duration;
         keyframe.interpolation_samples = std::min(point.interpolation_samples, duration);
+        keyframe.meta = point.meta;
         out->push_back(keyframe);
     }
 }
@@ -85,7 +93,8 @@ Status expand_compact(const std::vector<OamdEvent>& events, std::int64_t total_s
 
     std::vector<Point> points;
     double current[3] = {events[0].x, events[0].y, events[0].z};
-    append_point(&points, 0, current[0], current[1], current[2], 0);
+    ObjectMetadata current_meta = events[0].meta;
+    append_point(&points, 0, current[0], current[1], current[2], 0, current_meta);
 
     for (std::size_t index = 1; index < events.size(); ++index) {
         const OamdEvent& event = events[index];
@@ -131,10 +140,12 @@ Status expand_compact(const std::vector<OamdEvent>& events, std::int64_t total_s
             target[2] = z;
             interpolation = available;
         }
-        append_point(&points, block_start, target[0], target[1], target[2], interpolation);
+        append_point(&points, block_start, target[0], target[1], target[2], interpolation,
+                     event.meta);
         current[0] = event.x;
         current[1] = event.y;
         current[2] = event.z;
+        current_meta = event.meta;
     }
 
     points_to_blocks(points, total_samples, out);
@@ -156,7 +167,8 @@ Status expand_dense64(const std::vector<OamdEvent>& events, std::int64_t total_s
 
     std::vector<Point> points;
     double current[3] = {events[0].x, events[0].y, events[0].z};
-    append_point(&points, 0, current[0], current[1], current[2], 0);
+    ObjectMetadata current_meta = events[0].meta;
+    append_point(&points, 0, current[0], current[1], current[2], 0, current_meta);
 
     for (std::size_t index = 1; index < events.size(); ++index) {
         const OamdEvent& event = events[index];
@@ -171,14 +183,15 @@ Status expand_dense64(const std::vector<OamdEvent>& events, std::int64_t total_s
                                  points.back().sample);
         }
         if (start > points.back().sample) {
-            append_point(&points, start, current[0], current[1], current[2], 0);
+            append_point(&points, start, current[0], current[1], current[2], 0, current_meta);
         }
         const std::int64_t ramp = std::max<std::int64_t>(0, event.ramp_samples);
         if (ramp == 0) {
-            append_point(&points, start, event.x, event.y, event.z, 0);
+            append_point(&points, start, event.x, event.y, event.z, 0, event.meta);
             current[0] = event.x;
             current[1] = event.y;
             current[2] = event.z;
+            current_meta = event.meta;
             continue;
         }
         const std::int64_t steps = (ramp + update_block_samples - 1) / update_block_samples;
@@ -214,12 +227,13 @@ Status expand_dense64(const std::vector<OamdEvent>& events, std::int64_t total_s
                 break;
             }
             append_point(&points, sample, position[0], position[1], position[2],
-                         update_block_samples);
+                         update_block_samples, event.meta);
             future -= update_block_samples;
         }
         current[0] = event.x;
         current[1] = event.y;
         current[2] = event.z;
+        current_meta = event.meta;
     }
 
     points_to_blocks(points, total_samples, out);
@@ -239,18 +253,52 @@ void TrajectoryBuilder::submit_frame(std::int64_t frame_index, const oamd::OamdU
         if (fixed_[object - 1]) {
             continue;  // 固定 bed 声道：位置由布局给出，不跟 OAMD 更新
         }
+        const int slot = object - 1;
+        // OAMD block 0 对动态对象显式携带 gain/size/snap；divergence 只在扩展
+        // 元素里出现，缺失时按 0 处理，与 speaker 渲染器的逐 payload 语义一致。
+        if (update != nullptr && update->has_frame_state &&
+            static_cast<std::size_t>(object) < update->frame_state.objects.size()) {
+            const oamd::ObjectElementState& element =
+                update->frame_state.objects[static_cast<std::size_t>(object)];
+            if (!element.blocks.empty() && element.kind == oamd::ObjectKind::kDynamic) {
+                const oamd::ObjectRenderState& render = element.blocks[0].render;
+                ObjectMetadata& meta = meta_[slot];
+                if (render.not_active) {
+                    meta.gain = 0.0;
+                } else {
+                    meta.gain = static_cast<double>(render.gain_q) / 4096.0;
+                    if (render.size_mode == 1u || render.size_mode == 2u) {
+                        for (int axis = 0; axis < 3; ++axis) {
+                            meta.size[axis] = std::min(
+                                std::max(static_cast<double>(render.size_q[axis]) / 32767.0, 0.0),
+                                1.0);
+                        }
+                    } else {
+                        meta.size[0] = 0.0;
+                        meta.size[1] = 0.0;
+                        meta.size[2] = 0.0;
+                    }
+                    meta.divergence = static_cast<double>(render.divergence_q) / 32767.0;
+                    meta.snap = render.snap;
+                }
+            }
+        }
         double x = 0.0;
         double y = 0.0;
         double z = 0.0;
         geometry::q_to_adm_xyz(state_.q(object, 0), state_.q(object, 1), state_.q(object, 2), &x,
                                &y, &z);
-        const int slot = object - 1;
-        if (!has_previous_[slot] || previous_[slot][0] != x || previous_[slot][1] != y ||
-            previous_[slot][2] != z) {
-            events_[slot].push_back(OamdEvent{event_sample, x, y, z, ramp_samples});
+        const ObjectMetadata& meta = meta_[slot];
+        const bool position_changed =
+            !has_previous_[slot] || previous_[slot][0] != x || previous_[slot][1] != y ||
+            previous_[slot][2] != z;
+        const bool meta_changed = !has_previous_[slot] || !same_meta(previous_meta_[slot], meta);
+        if (position_changed || meta_changed) {
+            events_[slot].push_back(OamdEvent{event_sample, x, y, z, ramp_samples, meta});
             previous_[slot][0] = x;
             previous_[slot][1] = y;
             previous_[slot][2] = z;
+            previous_meta_[slot] = meta;
             has_previous_[slot] = true;
         }
     }

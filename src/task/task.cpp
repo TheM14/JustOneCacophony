@@ -1845,10 +1845,11 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                             stream_done = true;
                             break;
                         }
-                        // The speaker and binaural renderers consume the full per-object
-                        // block state (multi-block and every declared object); the ADM
-                        // export path keeps the reference's 15-track single-block view.
-                        const bool full_metadata_state = speaker_enabled || binaural_enabled;
+                        // The speaker, binaural and ADM paths consume the full per-object
+                        // block state (multi-block and every declared object); the legacy
+                        // stream/ADM single-block view only needs the slot fields.
+                        const bool full_metadata_state =
+                            speaker_enabled || binaural_enabled || adm_enabled;
                         const Status oamd =
                             full_metadata_state
                                 ? ::joc::oamd::parse_id11_state(bytes.data(), bytes.size(),

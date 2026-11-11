@@ -14,6 +14,15 @@ namespace joc::adm {
 inline constexpr int kObjectCount = 15;
 inline constexpr std::uint32_t kTrackCount = 25;
 
+// Per-block OAMD render metadata the ADM audioBlockFormat can express.
+struct ObjectMetadata {
+    double gain = 1.0;
+    // OAMD order: width, depth, height (relative units 0..1).
+    double size[3] = {0.0, 0.0, 0.0};
+    double divergence = 0.0;
+    bool snap = false;
+};
+
 struct Keyframe {
     std::int64_t rtime_samples = 0;
     double x = 0.0;
@@ -21,6 +30,7 @@ struct Keyframe {
     double z = 0.0;
     std::int64_t duration_samples = 0;
     std::int64_t interpolation_samples = 0;
+    ObjectMetadata meta;
 };
 
 struct Track {

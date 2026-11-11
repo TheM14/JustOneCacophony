@@ -19,6 +19,7 @@ struct OamdEvent {
     double y = 0.0;
     double z = 0.0;
     std::int64_t ramp_samples = 0;
+    ObjectMetadata meta;
 };
 
 enum class TrajectoryMode { Compact, Dense64 };
@@ -62,6 +63,8 @@ private:
     std::vector<OamdEvent> events_[kObjectCount];
     bool has_previous_[kObjectCount] = {};
     double previous_[kObjectCount][3] = {};
+    ObjectMetadata meta_[kObjectCount];
+    ObjectMetadata previous_meta_[kObjectCount];
     bool fixed_[kObjectCount] = {};
     double fixed_xyz_[kObjectCount][3] = {};
 };

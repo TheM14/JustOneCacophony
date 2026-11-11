@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "adm/adm_metadata.h"
+#include "adm/adm_tracks.h"
 #include "eac3_transport/eac3_reader.h"
 #include "eac3joc_core.h"
 #include "foundation/bit_reader.h"
@@ -953,6 +954,60 @@ void test_dbmd_and_axml_trim() {
     CHECK(found < axml.find("</audioFormatExtended>"));
     const std::string plain_axml = joc::adm::build_axml(tracks, 1.0, 48000);
     CHECK(plain_axml.find("<DolbyAtmosMasterFile>") == std::string::npos);
+}
+
+void test_adm_object_metadata() {
+    std::vector<joc::adm::Track> tracks(15);
+    for (std::size_t i = 0; i < tracks.size(); ++i) {
+        tracks[i].name = "obj" + std::to_string(i);
+    }
+    joc::adm::Keyframe block;
+    block.duration_samples = 48000;
+    block.meta.gain = 0.5;
+    block.meta.size[0] = 0.516155;
+    block.meta.size[1] = 0.516155;
+    block.meta.size[2] = 0.516155;
+    block.meta.divergence = 0.25;
+    tracks[1].blocks.push_back(block);
+    const std::string axml = joc::adm::build_axml(tracks, 1.0, 48000);
+    CHECK(axml.find("<width>0.516155</width><height>0.516155</height><depth>0.516155</depth>") !=
+          std::string::npos);
+    CHECK(axml.find("<gain gainUnit=\"linear\">0.500000</gain>") != std::string::npos);
+    CHECK(axml.find("<objectDivergence positionRange=\"0.250000\"/>") != std::string::npos);
+
+    // Default metadata writes no fields.
+    tracks[1].blocks[0].meta = joc::adm::ObjectMetadata{};
+    const std::string plain = joc::adm::build_axml(tracks, 1.0, 48000);
+    CHECK(plain.find("<width>") == std::string::npos);
+    CHECK(plain.find("<gain ") == std::string::npos);
+    CHECK(plain.find("<objectDivergence ") == std::string::npos);
+
+    // TrajectoryBuilder carries block-0 metadata and drops divergence when the
+    // next payload does not send it, matching the speaker renderer.
+    joc::adm::TrajectoryBuilder builder;
+    joc::oamd::OamdUpdate update;
+    update.has_frame_state = true;
+    update.object_count = 3;
+    update.frame_state.object_count = 3;
+    update.frame_state.block_count = 1;
+    update.frame_state.objects.resize(3);
+    auto& element = update.frame_state.objects[2];
+    element.kind = joc::oamd::ObjectKind::kDynamic;
+    element.blocks.resize(1);
+    auto& render = element.blocks[0].render;
+    render.gain_q = 2048;
+    render.size_mode = 1;
+    render.size_q[0] = render.size_q[1] = render.size_q[2] = 16384;
+    render.divergence_q = 16384;
+    builder.submit_frame(0, &update, 0);
+    joc::oamd::OamdUpdate second = update;
+    second.frame_state.objects[2].blocks[0].render.divergence_q = 0;
+    builder.submit_frame(40, &second, 0);
+    std::vector<joc::adm::Track> trajectory;
+    CHECK(builder.build(96000, joc::adm::TrajectoryMode::Compact, &trajectory).ok());
+    CHECK(trajectory[1].blocks.size() >= 2);
+    CHECK(std::fabs(trajectory[1].blocks.front().meta.gain - 0.5) < 1e-12);
+    CHECK(trajectory[1].blocks.back().meta.divergence == 0.0);
 }
 
 void test_int24_packing() {
@@ -2421,6 +2476,7 @@ int main() {
     test_speaker_surround_fold();
     test_speaker_step_trim_events();
     test_dbmd_and_axml_trim();
+    test_adm_object_metadata();
     test_int24_packing();
     test_utf8_paths();
     test_process_runner();
