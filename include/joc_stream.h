@@ -40,7 +40,8 @@ typedef struct joc_stream joc_stream;
 typedef enum joc_stream_input {
     JOC_STREAM_IN_EAC3 = 0,          /* bare E-AC-3 syncframes (the metadata stream) */
     JOC_STREAM_IN_PCM_OBJECTS16 = 1, /* objects16 frames, planar [16][1536] each    */
-    JOC_STREAM_IN_CORE_PCM = 3       /* the 5.1 core PCM of the pushed E-AC-3 frames */
+    JOC_STREAM_IN_CORE_PCM = 3,      /* the 5.1 core PCM of the pushed E-AC-3 frames */
+    JOC_STREAM_IN_PCM_LAYOUT = 4     /* interleaved 48k f32, mapped by pcm_layout */
 } joc_stream_input;
 
 typedef enum joc_stream_output {
@@ -68,6 +69,8 @@ typedef struct joc_stream_config {
      * .jochrtf field (hrtf_path) or a Rosella .personalized_headphone model. */
     const char* personalized_headphone_path; /* Rosella .personalized_headphone input */
     uint32_t jochrtf_room;                   /* non-zero enables the project room */
+    /* PCM_LAYOUT input: "2.0", "5.1", "7.1", or NULL/"" to infer by channels. */
+    const char* pcm_layout;
 } joc_stream_config;
 
 typedef struct joc_stream_buffer {

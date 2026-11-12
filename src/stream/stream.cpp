@@ -6,6 +6,7 @@
 
 #include "adm/adm_metadata.h"
 #include "foundation/status.h"
+#include "virtual_speaker/virtual_speaker.h"
 #include "hrtf/jochrtf.h"
 #include "hrtf/rosella_model.h"
 #include "joc_bitstream/bed_layout_map.h"
@@ -45,6 +46,7 @@ void Stream::reset_state() {
     bed_pending_.clear();
     bed_read_offset_ = 0;
     objects16_.clear();
+    pcm_input_.reset();
     objects_pending_.clear();
     objects_read_offset_ = 0;
     output_.clear();
@@ -77,7 +79,7 @@ Status Stream::create(const Config& config) {
         return Status::fail(JOC_ERR_STATE, stage::kRender, "stream already created");
     }
     config_ = config;
-    if (config_.input > JOC_STREAM_IN_PCM_OBJECTS16 ||
+    if (config_.input > JOC_STREAM_IN_PCM_LAYOUT ||
         config_.output > JOC_STREAM_OUT_BINAURAL) {
         return Status::fail(JOC_ERR_INVALID_CONFIG, stage::kRender, "unknown stream kind");
     }
@@ -87,6 +89,20 @@ Status Stream::create(const Config& config) {
                             "objects16 input with objects16 output would do nothing");
     }
     gain_ = static_cast<float>(std::pow(10.0, config_.gain_db / 20.0));
+    if (config_.input == JOC_STREAM_IN_PCM_LAYOUT && !config_.pcm_layout.empty() &&
+        config_.pcm_layout != "auto") {
+        const virtual_speaker::Layout* layout =
+            virtual_speaker::find_layout(config_.pcm_layout);
+        if (layout == nullptr) {
+            return Status::fail(JOC_ERR_INVALID_CONFIG, stage::kRender,
+                                "unknown PCM layout: " + config_.pcm_layout);
+        }
+        const Status configured =
+            pcm_input_.configure(config_.pcm_layout, layout->channels, config_.gain_db);
+        if (!configured.ok()) {
+            return configured;
+        }
+    }
 
     if (config_.input == JOC_STREAM_IN_EAC3) {
         rebuilder_ = ejoc_renderer_create();
@@ -453,6 +469,47 @@ Status Stream::push_objects16(const float* planar16, std::size_t samples, std::s
     return process_objects16_frames(false);
 }
 
+Status Stream::push_pcm_layout(const float* interleaved, std::size_t samples,
+                               std::uint32_t channels, std::size_t* consumed) {
+    if (consumed != nullptr) {
+        *consumed = 0;
+    }
+    if (interleaved == nullptr || samples == 0u) {
+        return Status::success();
+    }
+    if (pcm_input_.layout() == nullptr) {
+        const Status configured = pcm_input_.configure(config_.pcm_layout,
+                                                       static_cast<int>(channels),
+                                                       config_.gain_db);
+        if (!configured.ok()) {
+            return configured;
+        }
+    } else if (pcm_input_.channels() != static_cast<int>(channels)) {
+        return Status::fail(JOC_ERR_INVALID_ARGUMENT, stage::kRender,
+                            "PCM channel count changed mid-stream");
+    }
+    Status status = pcm_input_.append(interleaved, samples);
+    if (!status.ok()) {
+        return status;
+    }
+    std::size_t processed = 0;
+    while (pcm_input_.frame_ready()) {
+        status = pcm_input_.take_frame(&objects_frame_);
+        if (!status.ok()) {
+            return status;
+        }
+        status = push_objects16(objects_frame_.data(), kFrameSamples, nullptr);
+        if (!status.ok()) {
+            return status;
+        }
+        processed += kFrameSamples;
+    }
+    if (consumed != nullptr) {
+        *consumed = processed;
+    }
+    return Status::success();
+}
+
 Status Stream::process_objects16_frames(bool drain_all) {
     constexpr std::size_t kFrameValues =
         static_cast<std::size_t>(JOC_OUTPUT_CHANNELS) * kFrameSamples;
@@ -590,9 +647,11 @@ Status Stream::render_objects16(const std::vector<float>& objects16) {
     if (speaker_enabled_) {
         std::string error;
         const Status stepped =
-            speaker::step(&speaker_, objects16, pending_metadata_.has_update
-                                                   ? &pending_metadata_.update
-                                                   : nullptr,
+            speaker::step(&speaker_, objects16,
+                          pending_metadata_.has_update
+                              ? &pending_metadata_.update
+                              : (pcm_input_.layout() != nullptr ? &pcm_input_.fixed_update()
+                                                                : nullptr),
                           &error);
         if (!stepped.ok()) {
             return Status::fail(stepped.code(), stage::kRender, error);
@@ -611,7 +670,8 @@ Status Stream::render_objects16(const std::vector<float>& objects16) {
 
     const Status submitted =
         binaural_.submit_frame(objects16.data(),
-                               pending_metadata_.has_update ? &pending_metadata_.update : nullptr,
+                               pending_metadata_.has_update ? &pending_metadata_.update
+                                                   : (pcm_input_.layout() != nullptr ? &pcm_input_.fixed_update() : nullptr),
                                static_cast<std::int64_t>(info_.frames_out),
                                pending_metadata_.outer_offset,
                                static_cast<std::int64_t>(config_.object_delay_samples));
@@ -638,7 +698,8 @@ Status Stream::render_objects16(const std::vector<float>& objects16) {
 Status Stream::render_rosella_objects16(const std::vector<float>& objects16) {
     const Status submitted =
         rosella_.submit_frame(objects16.data(),
-                              pending_metadata_.has_update ? &pending_metadata_.update : nullptr,
+                              pending_metadata_.has_update ? &pending_metadata_.update
+                                                   : (pcm_input_.layout() != nullptr ? &pcm_input_.fixed_update() : nullptr),
                               static_cast<std::int64_t>(info_.frames_out),
                               pending_metadata_.outer_offset,
                               static_cast<std::int64_t>(config_.object_delay_samples));

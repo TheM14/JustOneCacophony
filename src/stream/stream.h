@@ -15,6 +15,7 @@
 #include "joc_stream.h"
 #include "oamd/oamd_parser.h"
 #include "speaker/speaker_step.h"
+#include "virtual_speaker/virtual_speaker.h"
 
 namespace joc::stream {
 
@@ -34,6 +35,7 @@ struct Config {
     // (.jochrtf).
     std::string personalized_headphone_path;
     std::uint32_t jochrtf_room = 1;
+    std::string pcm_layout;
     // Filterbank of the Rosella path; the other binaural inputs ignore it.
     std::uint32_t rosella_filterbank = JOC_ROSELLA_FILTERBANK_PUBLIC;
 };
@@ -99,6 +101,8 @@ public:
     Status push_bed(const float* interleaved, std::size_t samples, std::uint32_t channels,
                     std::size_t* consumed);
     Status push_objects16(const float* planar16, std::size_t samples, std::size_t* consumed);
+    Status push_pcm_layout(const float* interleaved, std::size_t samples, std::uint32_t channels,
+                           std::size_t* consumed);
     Status pull(float* destination, std::size_t capacity_samples, std::size_t* produced);
     Status flush();
     Status reset();
@@ -160,6 +164,9 @@ private:
     std::size_t bed_read_offset_ = 0;
     std::vector<float> bed5_;
     std::vector<float> lfe_;
+    virtual_speaker::Input pcm_input_;
+    oamd::OamdUpdate fixed_update_{};
+    bool has_fixed_update_ = false;
     std::vector<float> objects_pending_;
     std::size_t objects_read_offset_ = 0;
     std::vector<float> objects_frame_;

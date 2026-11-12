@@ -96,6 +96,9 @@ set(JOC_INTERNAL_SOURCES
     src/adm/adm_tracks.cpp
     src/binaural/jochrtf_runtime.cpp
     src/binaural/jochrtf_renderer.cpp
+    src/binaural/multichannel_layout.cpp
+    src/binaural/pcm_resampler.cpp
+    src/virtual_speaker/virtual_speaker.cpp
     src/eac3_transport/eac3_reader.cpp
     src/emdf/emdf_parser.cpp
     src/foundation/bit_reader.cpp
@@ -116,6 +119,7 @@ set(JOC_INTERNAL_SOURCES
     src/io/inflate.cpp
     src/io/npy.cpp
     src/io/npy_writer.cpp
+    src/io/wav_pcm.cpp
     src/io/process.cpp
     src/io/wav_writer.cpp
     src/io/zip_reader.cpp
@@ -248,6 +252,17 @@ if(JOC_BUILD_TESTS OR JOC_BUILD_DEVTOOLS)
     # as dllexports, which would collide with the DLL import library in a link
     # that uses both libraries (the tests do).
     target_compile_definitions(joc_core_impl PUBLIC EJOC_STATIC)
+endif()
+
+if(JOC_BUILD_TESTS OR JOC_BUILD_DEVTOOLS)
+    add_executable(joc_multichannel src/cli/joc_multichannel.cpp)
+    target_link_libraries(joc_multichannel PRIVATE joc_core_impl)
+    target_include_directories(joc_multichannel PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    set_target_properties(joc_multichannel PROPERTIES
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    if(WIN32)
+        target_link_libraries(joc_multichannel PRIVATE shell32)
+    endif()
 endif()
 
 add_library(joc_core SHARED

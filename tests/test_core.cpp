@@ -13,6 +13,8 @@
 
 #include "adm/adm_metadata.h"
 #include "adm/adm_tracks.h"
+#include "binaural/multichannel_layout.h"
+#include "binaural/pcm_resampler.h"
 #include "eac3_transport/eac3_reader.h"
 #include "eac3joc_core.h"
 #include "foundation/bit_reader.h"
@@ -1008,6 +1010,54 @@ void test_adm_object_metadata() {
     CHECK(trajectory[1].blocks.size() >= 2);
     CHECK(std::fabs(trajectory[1].blocks.front().meta.gain - 0.5) < 1e-12);
     CHECK(trajectory[1].blocks.back().meta.divergence == 0.0);
+}
+
+void test_multichannel_binaural_helpers() {
+    const joc::multichannel::Layout* layout = joc::multichannel::find_layout("5.1");
+    CHECK(layout != nullptr);
+    CHECK(layout->channels == 6);
+    double positions[15][3] = {};
+    CHECK(joc::multichannel::object_positions(*layout, positions).ok());
+    CHECK(positions[0][0] == -1.0 && positions[0][1] == 1.0);
+    CHECK(positions[2][0] == 0.0 && positions[2][1] == 1.0);
+    CHECK(positions[3][0] == -1.0 && positions[3][1] == -1.0);
+    const joc::multichannel::Layout* surround = joc::multichannel::detect_layout(8);
+    CHECK(surround != nullptr && std::string(surround->name) == "7.1");
+
+    std::vector<float> pcm(12);
+    for (int index = 0; index < 12; ++index) {
+        pcm[static_cast<std::size_t>(index)] = 0.01f * index;
+    }
+    std::vector<float> objects(16 * 2, 0.0f);
+    CHECK(joc::multichannel::pcm_to_objects16(pcm.data(), 2, *layout, objects.data()).ok());
+    CHECK(objects[0 * 2 + 0] == pcm[3]);
+    CHECK(objects[1 * 2 + 0] == pcm[0]);
+    CHECK(objects[3 * 2 + 0] == pcm[2]);
+    CHECK(objects[4 * 2 + 1] == pcm[10]);
+    CHECK(objects[6 * 2 + 0] == 0.0f);
+
+    std::vector<float> dc(200, 0.5f);
+    std::vector<float> up;
+    CHECK(joc::multichannel::resample_interleaved(dc.data(), 100, 2, 48000, 96000, &up).ok());
+    CHECK(up.size() == 400);
+    CHECK(std::fabs(up[100] - 0.5f) < 1.0e-3f);
+    std::vector<float> down;
+    CHECK(joc::multichannel::resample_interleaved(up.data(), 200, 2, 96000, 48000, &down).ok());
+    CHECK(down.size() == 200);
+    CHECK(std::fabs(down[100] - 0.5f) < 1.0e-3f);
+
+    for (const std::uint32_t rate :
+         {44100u, 88200u, 176400u, 48000u, 96000u, 192000u}) {
+        std::vector<float> input(200, 0.5f);
+        std::vector<float> output;
+        CHECK(joc::multichannel::resample_interleaved(
+                  input.data(), 100, 2, rate, 48000, &output)
+                  .ok());
+        const std::size_t expected = static_cast<std::size_t>(
+            std::llround(100.0 * 48000.0 / static_cast<double>(rate)));
+        CHECK(output.size() == expected * 2);
+        CHECK(std::fabs(output[output.size() / 2] - 0.5f) < 1.0e-3f);
+    }
 }
 
 void test_int24_packing() {
@@ -2477,6 +2527,7 @@ int main() {
     test_speaker_step_trim_events();
     test_dbmd_and_axml_trim();
     test_adm_object_metadata();
+    test_multichannel_binaural_helpers();
     test_int24_packing();
     test_utf8_paths();
     test_process_runner();

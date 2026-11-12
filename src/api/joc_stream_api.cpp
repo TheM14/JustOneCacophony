@@ -46,6 +46,7 @@ joc::stream::Config to_config(const joc_stream_config& config) {
     if (config.rosella_filterbank != 0u) {
         out.rosella_filterbank = config.rosella_filterbank;
     }
+    if (config.pcm_layout != nullptr) { out.pcm_layout = config.pcm_layout; }
     return out;
 }
 
@@ -90,6 +91,19 @@ joc_error JOC_CALL joc_stream_push(joc_stream* stream, const joc_stream_buffer* 
             std::size_t consumed = 0;
             const joc::Status pushed =
                 stream->instance.push_objects16(input->pcm, input->sample_count, &consumed);
+            if (consumed_samples != nullptr) {
+                *consumed_samples = static_cast<std::uint32_t>(consumed);
+            }
+            return pushed;
+        }
+        if (input->kind == JOC_STREAM_IN_PCM_LAYOUT) {
+            if (input->sample_rate != 0u && input->sample_rate != 48000u) {
+                return joc::Status::fail(JOC_ERR_INVALID_ARGUMENT, joc::stage::kRender,
+                                         "PCM layout input must be 48 kHz");
+            }
+            std::size_t consumed = 0;
+            const joc::Status pushed = stream->instance.push_pcm_layout(
+                input->pcm, input->sample_count, input->channels, &consumed);
             if (consumed_samples != nullptr) {
                 *consumed_samples = static_cast<std::uint32_t>(consumed);
             }
