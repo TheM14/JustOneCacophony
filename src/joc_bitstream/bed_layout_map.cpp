@@ -45,8 +45,9 @@ constexpr BedChannel kNonStandardBits[17] = {
 };
 
 // 每个 bed 声道的固定方位：speakerLabel 各自对应唯一的 ADM (X,Y,Z)，与目标扬声器
-// 布局无关。顶部那一行取 ADM 62 级网格的 15/62 与 47/62，即归一化 x 的 0,241943 /
-// 0,758057（Q15 分子 7928 / 24840）；Lw/Rw 的 Y 记作 0,677419，即 42/62 = 21/31。
+// 布局无关。天空声道的 X 取墙边（±1）：点声源的横向声像只在扬声器跨度的端点之间分摊，
+// 取端点仍落在输出布局顶部声道的满功率区里，与顶部声道互相下混的结果一致。Lw/Rw 的 Y
+// 记作 0,677419，即 42/62 = 21/31。LFE/LFE2 不参与摆位，位置记为原点。
 struct ChannelSpec {
     BedChannel channel;
     const char* short_name;
@@ -58,20 +59,20 @@ constexpr ChannelSpec kChannels[] = {
     {BedChannel::kLeft, "L", "RC_L", {-1.0, 1.0, 0.0}},
     {BedChannel::kRight, "R", "RC_R", {1.0, 1.0, 0.0}},
     {BedChannel::kCenter, "C", "RC_C", {0.0, 1.0, 0.0}},
-    {BedChannel::kLfe, "LFE", "RC_LFE", {-1.0, 1.0, -1.0}},
+    {BedChannel::kLfe, "LFE", "RC_LFE", {0.0, 0.0, 0.0}},
     {BedChannel::kLeftSurround, "Ls", "RC_LS", {-1.0, 0.0, 0.0}},
     {BedChannel::kRightSurround, "Rs", "RC_RS", {1.0, 0.0, 0.0}},
     {BedChannel::kLeftRearSurround, "Lrs", "RC_LB", {-1.0, -1.0, 0.0}},
     {BedChannel::kRightRearSurround, "Rrs", "RC_RB", {1.0, -1.0, 0.0}},
-    {BedChannel::kTopFrontLeft, "Ltf", "RC_TFL", {-0.516113, 1.0, 1.0}},
-    {BedChannel::kTopFrontRight, "Rtf", "RC_TFR", {0.516113, 1.0, 1.0}},
-    {BedChannel::kTopSideLeft, "Ltm", "RC_TSL", {-0.516113, 0.0, 1.0}},
-    {BedChannel::kTopSideRight, "Rtm", "RC_TSR", {0.516113, 0.0, 1.0}},
-    {BedChannel::kTopBackLeft, "Ltr", "RC_TBL", {-0.516113, -1.0, 1.0}},
-    {BedChannel::kTopBackRight, "Rtr", "RC_TBR", {0.516113, -1.0, 1.0}},
+    {BedChannel::kTopFrontLeft, "Ltf", "RC_TFL", {-1.0, 1.0, 1.0}},
+    {BedChannel::kTopFrontRight, "Rtf", "RC_TFR", {1.0, 1.0, 1.0}},
+    {BedChannel::kTopSideLeft, "Ltm", "RC_TSL", {-1.0, 0.0, 1.0}},
+    {BedChannel::kTopSideRight, "Rtm", "RC_TSR", {1.0, 0.0, 1.0}},
+    {BedChannel::kTopBackLeft, "Ltr", "RC_TBL", {-1.0, -1.0, 1.0}},
+    {BedChannel::kTopBackRight, "Rtr", "RC_TBR", {1.0, -1.0, 1.0}},
     {BedChannel::kLeftWide, "Lw", "RC_LW", {-1.0, 21.0 / 31.0, 0.0}},
     {BedChannel::kRightWide, "Rw", "RC_RW", {1.0, 21.0 / 31.0, 0.0}},
-    {BedChannel::kLfe2, "LFE2", "RC_LFE2", {1.0, 1.0, -1.0}},
+    {BedChannel::kLfe2, "LFE2", "RC_LFE2", {0.0, 0.0, 0.0}},
 };
 
 const ChannelSpec* spec_of(BedChannel channel) {
