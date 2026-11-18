@@ -188,3 +188,25 @@ class OamdPositionTimeline:
         return np.stack(
             [track.position_at(sample) for track in self.tracks], axis=0
         ).astype(np.float64, copy=False)
+
+class FixedPositionTimeline:
+    """Static 15-object positions for synthesized objects (no OAMD payloads).
+
+    The multichannel path gives every input channel a fixed direction and never
+    submits metadata payloads, so the binaural adapter can query the same
+    ``positions_at`` interface the OAMD timeline exposes.
+    """
+
+    def __init__(self, positions):
+        array = np.asarray(positions, dtype=np.float64)
+        if array.shape != (15, 3):
+            raise ValueError(f"fixed positions must be (15,3), got {array.shape}")
+        if not np.all(np.isfinite(array)):
+            raise ValueError("fixed positions must be finite")
+        self._positions = array.copy()
+        self.payload_count = 0
+        self.transition_count = 0
+
+    def positions_at(self, sample):
+        del sample
+        return self._positions

@@ -82,11 +82,11 @@ BED_CHANNEL_NAMES = {
     "RC_TBL": "Ltr", "RC_TBR": "Rtr", "RC_LW": "Lw", "RC_RW": "Rw",
 }
 
-# 每个 bed 声道的固定方位（ADM 笛卡尔坐标，x 向右、y 向前、z 向上），取自
-# ETSI TS 103 420 V1.2.1 clause B.2.1.4 Table B.10：speakerLabel 各自对应唯一的
-# position(X,Y,Z)，与目标扬声器布局无关。bed 对象在 OAMD 里没有位置字段，位置只由
-# 声明的声道标签决定。
-# Table B.10 把 Lw/Rw 的 Y 记作 0,677419，即 ADM 62 级网格上的 42/62 = 21/31。
+# 每个 bed 声道的固定方位（ADM 笛卡尔坐标，x 向右、y 向前、z 向上）：speakerLabel
+# 各自对应唯一的 position(X,Y,Z)，与目标扬声器布局无关。bed 对象在 OAMD 里没有位置
+# 字段，位置只由声明的声道标签决定。
+# 顶部那一行取 ADM 62 级网格的 15/62 与 47/62，即归一化 x 的 0,241943 / 0,758057
+# （Q15 分子 7928 / 24840）；Lw/Rw 的 Y 记作 0,677419，即 42/62 = 21/31。
 BED_CHANNEL_ADM_POSITION = {
     "RC_L": (-1.0, 1.0, 0.0),
     "RC_R": (1.0, 1.0, 0.0),
@@ -96,12 +96,12 @@ BED_CHANNEL_ADM_POSITION = {
     "RC_RS": (1.0, 0.0, 0.0),
     "RC_LB": (-1.0, -1.0, 0.0),
     "RC_RB": (1.0, -1.0, 0.0),
-    "RC_TFL": (-1.0, 1.0, 1.0),
-    "RC_TFR": (1.0, 1.0, 1.0),
-    "RC_TSL": (-1.0, 0.0, 1.0),
-    "RC_TSR": (1.0, 0.0, 1.0),
-    "RC_TBL": (-1.0, -1.0, 1.0),
-    "RC_TBR": (1.0, -1.0, 1.0),
+    "RC_TFL": (-0.516113, 1.0, 1.0),
+    "RC_TFR": (0.516113, 1.0, 1.0),
+    "RC_TSL": (-0.516113, 0.0, 1.0),
+    "RC_TSR": (0.516113, 0.0, 1.0),
+    "RC_TBL": (-0.516113, -1.0, 1.0),
+    "RC_TBR": (0.516113, -1.0, 1.0),
     "RC_LW": (-1.0, 21.0 / 31.0, 0.0),
     "RC_RW": (1.0, 21.0 / 31.0, 0.0),
     "RC_LFE2": (1.0, 1.0, -1.0),
@@ -273,10 +273,14 @@ ADM_BED_712 = ("L", "R", "C", "LFE", "Ls", "Rs", "Lrs", "Rrs", "Ltf", "Rtf")
 
 
 def adm_xyz_to_q(x, y, z):
-    """ADM 笛卡尔坐标 → OAMD/渲染器使用的 Q15 方位三元组。"""
-    q1 = int(round((float(x) + 1.0) * 0.5 * 32767.0))
-    q2 = int(round((1.0 - float(y)) * 0.5 * 32767.0))
-    q3 = int(round(float(z) * 32767.0))
+    """ADM 笛卡尔坐标 → OAMD/渲染器使用的 Q15 方位三元组。
+
+    Q15 满刻度是 32768（渲染器按 ``q / 32768`` 还原方位），因此用 32768 定标；
+    除满刻度外按四舍五入取整。
+    """
+    q1 = int(round((float(x) + 1.0) * 0.5 * 32768.0))
+    q2 = int(round((1.0 - float(y)) * 0.5 * 32768.0))
+    q3 = int(round(float(z) * 32768.0))
     clamp = lambda value: max(0, min(32767, value))  # noqa: E731
     return clamp(q1), clamp(q2), clamp(q3)
 
@@ -331,7 +335,7 @@ def bed_layout(assignments):
 def bed_object_positions(labels):
     """JOC 对象槽 → 固定 ADM 位置：(1..15) 对应未含 LFE 的 bed 声道。
 
-    positions 由声道标签唯一决定（Table B.10），与目标输出布局无关——同一个 bed 声道
+    positions 由声道标签唯一决定，与目标输出布局无关——同一个 bed 声道
     在扬声器布局和双耳渲染里都落在同一个源位置。返回的字典只包含能给出固定位置的
     标准声道；不是 bed 声道的对象不在其中，仍按 OAMD 坐标渲染。LFE 走独立通路，
     不出现在对象槽里。

@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 
 from bed_layout import bed_object_positions
-from binaural_metadata import OamdPositionTimeline
+from binaural_metadata import FixedPositionTimeline, OamdPositionTimeline
 from rosella_bank import (DEFAULT_FILTERBANK, FILTERBANK_CHOICES, FILTERBANK_NAMES,
                           RosellaBank)
 from rosella_core import RosellaRenderer
@@ -68,7 +68,8 @@ class RosellaBinauralRenderer:
             output_gain: float = 1.0,
             chunk_frames: int = 64,
             room_impulse_slots: int = 4096,
-            bed_channels=None):
+            bed_channels=None,
+            fixed_positions=None):
         if mode not in BINAURAL_PROFILE_NAMES:
             raise ValueError("binaural mode must be near, mid, or far")
         if filterbank not in FILTERBANK_CHOICES:
@@ -117,8 +118,11 @@ class RosellaBinauralRenderer:
             room_impulse_slots=room_impulse_slots)
         self.hybrid_synthesis = self.bank.hybrid_synthesis
         self.qmf_synthesis = self.bank.qmf_synthesis
-        self.timeline = OamdPositionTimeline(
-            15, bed_positions=bed_object_positions(bed_channels or ()))
+        if fixed_positions is not None:
+            self.timeline = FixedPositionTimeline(fixed_positions)
+        else:
+            self.timeline = OamdPositionTimeline(
+                15, bed_positions=bed_object_positions(bed_channels or ()))
 
         self._input_buffer = np.empty(
             (self.chunk_samples, SOURCE_CHANNELS), dtype=np.float64)

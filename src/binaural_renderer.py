@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from binaural_metadata import OamdPositionTimeline
+from binaural_metadata import FixedPositionTimeline, OamdPositionTimeline
 from public_filterbank import ANALYSIS_SYNTHESIS_LATENCY_SAMPLES
 
 
@@ -48,7 +48,8 @@ class JochrtfBinauralRenderer:
             object_delay_samples: int = 1473,
             tail_seconds: float = 5.0,
             chunk_frames: int = 64,
-            bed_channels=None):
+            bed_channels=None,
+            fixed_positions=None):
         required_interface = (
             "source_count", "default_profile", "set_source", "process",
             "finish", "finish_output_capacity", "info")
@@ -79,9 +80,12 @@ class JochrtfBinauralRenderer:
         from bed_layout import bed_object_positions
 
         from sofa_metadata import SofaPositionTimeline
-        timeline_type = SofaPositionTimeline if getattr(backend, "fixed_reference", False) else OamdPositionTimeline
-        self.timeline = timeline_type(
-            15, bed_positions=bed_object_positions(bed_channels or ()))
+        if fixed_positions is not None:
+            self.timeline = FixedPositionTimeline(fixed_positions)
+        else:
+            timeline_type = SofaPositionTimeline if getattr(backend, "fixed_reference", False) else OamdPositionTimeline
+            self.timeline = timeline_type(
+                15, bed_positions=bed_object_positions(bed_channels or ()))
 
         self._input_buffer = np.empty(
             (self.chunk_samples, SOURCE_CHANNELS), dtype=np.float64)
@@ -101,7 +105,8 @@ class JochrtfBinauralRenderer:
             output_gain: float = 1.0,
             chunk_frames: int = 64,
             bed_channels=None,
-            room: bool = False) -> "JochrtfBinauralRenderer":
+            room: bool = False,
+            fixed_positions=None) -> "JochrtfBinauralRenderer":
         from jochrtf_backend import JochrtfBackend
         source = resolve_compiled_hrtf_cache(cache)
         backend = JochrtfBackend.from_compiled_cache(
@@ -116,7 +121,8 @@ class JochrtfBinauralRenderer:
             object_delay_samples=object_delay_samples,
             tail_seconds=tail_seconds,
             chunk_frames=chunk_frames,
-            bed_channels=bed_channels)
+            bed_channels=bed_channels,
+            fixed_positions=fixed_positions)
 
     @property
     def finish_capacity_samples(self) -> int:

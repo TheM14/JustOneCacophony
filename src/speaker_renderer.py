@@ -80,9 +80,9 @@ def _fold_vector(calc, final, warp_mode, vector):
 def bed_object_targets(bed_channels) -> dict[int, tuple[float, float, float]]:
     """JOC 对象槽 → 固定方位 ``(u, v, w)``；只包含 bed 声道。
 
-    bed 声道的方位由声道标签定义（ETSI TS 103 420 Table B.10），与目标扬声器布局
-    无关：同一个声道无论输出哪种布局都落在同一个源位置，再交给与动态对象相同的
-    点声源渲染路径。LFE 不占对象槽，单独处理。
+    bed 声道的方位由声道标签定义，与目标扬声器布局无关：同一个声道无论输出哪种
+    布局都落在同一个源位置，再交给与动态对象相同的点声源渲染路径。LFE 不占对象
+    槽，单独处理。
     """
     from bed_layout import adm_xyz_to_render_coordinates, bed_object_positions
 
