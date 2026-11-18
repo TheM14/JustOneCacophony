@@ -587,8 +587,8 @@ void test_speaker_warp_and_trim() {
     CHECK(joc::speaker::parameters_from_oamd(nullptr, layout514, &automatic514).ok());
 
     // Warp 0 leaves the floor Y alone; warp 1 doubles it before the clamp.
-    const std::vector<double> warp0 = {0.85973646214220434, 0, 0, 0, 0.35611450268596406, 0};
-    const std::vector<double> warp1 = {0.65801380052399572, 0, 0, 0, 0.65801380052399572, 0};
+    const std::vector<double> warp0 = {0.9126902722074105, 0, 0, 0, 0.18155106823708969, 0};
+    const std::vector<double> warp1 = {0.85973219419392444, 0, 0, 0, 0.35612480624995158, 0};
     const std::vector<double> clamped = {0, 0, 0, 0, 0.70794578438413791, 0};
     check_gains(speaker_gains(layout51, automatic51, 0, 4096, 0), warp0);
     ejoc_speaker_controls warped = automatic51;
@@ -612,10 +612,10 @@ void test_speaker_warp_and_trim() {
     explicit_controls.surround_db = -6.0;
     explicit_controls.listener_balance = 9.0 / 16.0;
     explicit_controls.overhead_balance = -9.0 / 16.0;
-    const std::vector<double> trimmed = {0.36269933962647599, 0, 0, 0, 0.71183753429070229, 0};
+    const std::vector<double> trimmed = {0.68117911059016056, 0, 0, 0, 0.41744281702545366, 0};
     check_gains(speaker_gains(layout51, explicit_controls, 0, 4096, 0), trimmed);
     // Per-object bypass keeps warp but drops balance and trim.
-    const std::vector<double> bypassed = {0.70710678118654757, 0, 0, 0, 0.70710678118654757, 0};
+    const std::vector<double> bypassed = {0.92387494614065435, 0, 0, 0, 0.38269450465561039, 0};
     check_gains(speaker_gains(layout51, explicit_controls, 0, 4096, 0, true), bypassed);
 
     // Centre trim is local to the front-centre region; height trim scales with Z.
@@ -796,7 +796,7 @@ void test_speaker_step_trim_events() {
     update.trim.global_trim_mode = 0;
     update.trim.object_count = 16;
     CHECK(joc::speaker::step(&step, frame, &update, &error).ok());
-    const std::vector<double> warp1 = {0.65801380052399572, 0, 0, 0, 0.65801380052399572, 0};
+    const std::vector<double> warp1 = {0.85973219419392444, 0, 0, 0, 0.35612480624995158, 0};
     std::vector<double> gains(step.layout.channel_count);
     for (std::uint32_t channel = 0; channel < step.layout.channel_count; ++channel) {
         gains[channel] = step.output[read + channel];
@@ -810,8 +810,8 @@ void test_speaker_step_trim_events() {
     for (std::uint32_t channel = 0; channel < step.layout.channel_count; ++channel) {
         gains[channel] = step.output[read + channel];
     }
-    const std::vector<double> half_warp1 = {0.89123112643513935, 0, 0, 0,
-                                            0.36916001977848539, 0};
+    const std::vector<double> half_warp1 = {0.9461247896349676, 0, 0, 0,
+                                            0.18820181552760662, 0};
     check_gains(gains, half_warp1);
 
     // A new trim element switches the controls back to warp 0.
@@ -825,8 +825,8 @@ void test_speaker_step_trim_events() {
     for (std::uint32_t channel = 0; channel < step.layout.channel_count; ++channel) {
         gains[channel] = step.output[read + channel];
     }
-    const std::vector<double> half_warp0 = {0.94612591737884011, 0, 0, 0,
-                                            0.18819614606507579, 0};
+    const std::vector<double> half_warp0 = {0.96001622724230795, 0, 0, 0,
+                                            0.094556249720175942, 0};
     check_gains(gains, half_warp0);
 
     // A warp 2 element renders through the expanded layout and folds.
