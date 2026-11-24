@@ -243,21 +243,23 @@ Status Stream::flush_pending_frame() {
         apply_bed_positions(entry);
     }
     if (entry.has_joc) {
-        std::string error;
-        joc::CrossLayerNotes notes;
-        const Status checked = joc::check_cross_layer(
-            entry.params, entry.has_core ? &entry.core_frame : nullptr, entry.has_core,
-            entry.has_dependent, entry.has_chanmap, entry.chanmap,
-            entry.bed_assignments.empty() ? nullptr : &entry.bed_assignments, &error, &notes);
-        if (!checked.ok()) {
-            return Status::fail(checked.code(), checked.stage(),
-                                error.empty() ? checked.message() : error);
-        }
-        if (notes.chanmap_pair_mismatch) {
-            ++info_.chanmap_pair_mismatch_frames;
-        }
-        if (notes.bed_mask_mismatch) {
-            ++info_.bed_mask_mismatch_frames;
+        if (entry.params.status == JOC_FRAME_STATUS_OK) {
+            std::string error;
+            joc::CrossLayerNotes notes;
+            const Status checked = joc::check_cross_layer(
+                entry.params, entry.has_core ? &entry.core_frame : nullptr, entry.has_core,
+                entry.has_dependent, entry.has_chanmap, entry.chanmap,
+                entry.bed_assignments.empty() ? nullptr : &entry.bed_assignments, &error, &notes);
+            if (!checked.ok()) {
+                return Status::fail(checked.code(), checked.stage(),
+                                    error.empty() ? checked.message() : error);
+            }
+            if (notes.chanmap_pair_mismatch) {
+                ++info_.chanmap_pair_mismatch_frames;
+            }
+            if (notes.bed_mask_mismatch) {
+                ++info_.bed_mask_mismatch_frames;
+            }
         }
         if (entry.params.objects_clamped != 0u) {
             ++info_.objects_clamped_frames;
@@ -420,7 +422,8 @@ bool Stream::resolve_bed_plan() {
     }
     const FrameMetadata* joc_entry = nullptr;
     for (const FrameMetadata& candidate : metadata_) {
-        if (candidate.has_joc) {
+        // Only a complete, renderable JOC payload may decide the stream bed plan.
+        if (candidate.has_joc && candidate.params.status == JOC_FRAME_STATUS_OK) {
             joc_entry = &candidate;
             break;
         }
@@ -573,13 +576,15 @@ Status Stream::process_ready_frames(bool drain_all) {
         FrameMetadata entry = metadata_.front();
         metadata_.pop_front();
 
-        const int core_channels = entry.has_joc ? static_cast<int>(entry.params.n_channels)
-                                                : core_channels_;
+        const bool renderable_joc =
+            entry.has_joc && entry.params.status == JOC_FRAME_STATUS_OK;
+        const int core_channels =
+            renderable_joc ? static_cast<int>(entry.params.n_channels) : core_channels_;
         if (core_channels <= 0) {
             return Status::fail(JOC_ERR_STATE, stage::kDsp,
                                 "the JOC core channel count is not known yet");
         }
-        if (!entry.has_joc) {
+        if (!renderable_joc) {
             entry.params.dmx_config_idx = static_cast<std::uint8_t>(config_idx_);
             entry.params.n_channels = static_cast<std::uint8_t>(core_channels);
         }

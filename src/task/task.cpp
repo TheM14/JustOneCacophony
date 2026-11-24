@@ -304,7 +304,8 @@ int probe_config_idx(const std::string& path) {
             }
             joc_frame_params params{};
             if (::joc::joc::parse_eac3_frame(frame.data, frame.size, &params, &container, nullptr)
-                    .ok()) {
+                    .ok() &&
+                params.status == JOC_FRAME_STATUS_OK) {
                 config = static_cast<int>(params.dmx_config_idx);
                 break;
             }
@@ -1650,21 +1651,23 @@ Status run(const joc_task_config& raw, const joc_event_sink* sink, joc_task_resu
                     group_bed_assignments.clear();
 
                     if (has_joc) {
-                        std::string error;
-                        ::joc::joc::CrossLayerNotes notes;
-                        const Status checked = ::joc::joc::check_cross_layer(
-                            params, has_core ? &core_header : nullptr, has_core, has_dependent,
-                            has_chanmap, chanmap,
-                            assignments.empty() ? nullptr : &assignments, &error, &notes);
-                        if (!checked.ok()) {
-                            return Status::fail(checked.code(), checked.stage(),
-                                                error.empty() ? checked.message() : error);
-                        }
-                        if (notes.chanmap_pair_mismatch) {
-                            ++chanmap_pair_mismatch_frames;
-                        }
-                        if (notes.bed_mask_mismatch) {
-                            ++bed_mask_mismatch_frames;
+                        if (params.status == JOC_FRAME_STATUS_OK) {
+                            std::string error;
+                            ::joc::joc::CrossLayerNotes notes;
+                            const Status checked = ::joc::joc::check_cross_layer(
+                                params, has_core ? &core_header : nullptr, has_core, has_dependent,
+                                has_chanmap, chanmap,
+                                assignments.empty() ? nullptr : &assignments, &error, &notes);
+                            if (!checked.ok()) {
+                                return Status::fail(checked.code(), checked.stage(),
+                                                    error.empty() ? checked.message() : error);
+                            }
+                            if (notes.chanmap_pair_mismatch) {
+                                ++chanmap_pair_mismatch_frames;
+                            }
+                            if (notes.bed_mask_mismatch) {
+                                ++bed_mask_mismatch_frames;
+                            }
                         }
                         if (params.objects_clamped != 0u) {
                             ++objects_clamped_frames;

@@ -2568,6 +2568,89 @@ void test_joc_layout_change_on_hold_frame() {
     }
 }
 
+// A truncated leading ID14 payload whose dmx_config_idx disagrees with the
+// core substream must not decide the bed plan or fail the stream; once a
+// complete JOC frame arrives, the stream resolves the layout from it.
+void test_stream_truncated_leading_frame_defers_bed_plan() {
+    auto wrap_eac3_51 = [](const std::vector<std::uint8_t>& emdf) {
+        const std::size_t total = ((8u + emdf.size() + 1u) / 2u) * 2u;
+        const std::uint16_t frmsiz = static_cast<std::uint16_t>(total / 2u - 1u);
+        std::vector<std::uint8_t> out;
+        out.reserve(total);
+        out.push_back(0x0Bu);
+        out.push_back(0x77u);
+        out.push_back(static_cast<std::uint8_t>((frmsiz >> 8) & 0x07u));
+        out.push_back(static_cast<std::uint8_t>(frmsiz & 0xFFu));
+        out.push_back(0x3Fu);  // 48kHz, 6 blocks, acmod=7 (5ch), lfeon=1
+        out.push_back(0x80u);  // bsid=16 (E-AC-3)
+        out.push_back(0x00u);
+        out.push_back(0x00u);
+        out.insert(out.end(), emdf.begin(), emdf.end());
+        out.resize(total, 0u);
+        return out;
+    };
+
+    const std::vector<std::uint8_t> valid_oamd = from_hex("0304680004545313880D45301000");
+    // Frame 0: truncated ID14 claiming dmx_config_idx=4 (7ch) inside a 5.1 core.
+    Id14Spec bad_spec;
+    bad_spec.dmx_config_idx = 4u;  // 7ch (mismatch with 5.1 core!)
+    bad_spec.present = true;
+    std::vector<std::uint8_t> bad_joc = make_id14_payload(bad_spec);
+    bad_joc.pop_back();  // truncate inside joc_data (keeps 30-bit fixed header intact)
+    const std::vector<std::uint8_t> frame0 =
+        wrap_eac3_51(make_joc_emdf_container(valid_oamd, bad_joc));
+
+    // Frame 1: complete ID14 with dmx_config_idx=3 (5ch, matches 5.1 core).
+    Id14Spec good_spec;
+    good_spec.dmx_config_idx = 3u;
+    good_spec.present = true;
+    const std::vector<std::uint8_t> good_joc = make_id14_payload(good_spec);
+    const std::vector<std::uint8_t> frame1 =
+        wrap_eac3_51(make_joc_emdf_container(valid_oamd, good_joc));
+
+    joc_stream_config cfg{};
+    cfg.struct_size = sizeof(cfg);
+    cfg.struct_version = JOC_ABI_VERSION;
+    cfg.input = JOC_STREAM_IN_EAC3;
+    cfg.output = JOC_STREAM_OUT_PCM_OBJECTS16;
+    joc_stream* stream = nullptr;
+    CHECK(joc_stream_create(&cfg, &stream) == JOC_OK);
+    CHECK(stream != nullptr);
+
+    auto push_eac3_buf = [&](const std::vector<std::uint8_t>& bytes) {
+        joc_stream_buffer buf{};
+        buf.struct_size = sizeof(buf);
+        buf.struct_version = JOC_ABI_VERSION;
+        buf.kind = JOC_STREAM_IN_EAC3;
+        buf.bytes = bytes.data();
+        buf.byte_count = static_cast<std::uint32_t>(bytes.size());
+        return joc_stream_push(stream, &buf, nullptr, nullptr);
+    };
+    CHECK(push_eac3_buf(frame0) == JOC_OK);
+    CHECK(push_eac3_buf(frame1) == JOC_OK);
+    std::vector<float> bed6(static_cast<std::size_t>(JOC_FRAME_SAMPLES) * 6u * 2u, 0.1f);
+    {
+        joc_stream_buffer buf{};
+        buf.struct_size = sizeof(buf);
+        buf.struct_version = JOC_ABI_VERSION;
+        buf.kind = JOC_STREAM_IN_CORE_PCM;
+        buf.channels = 6u;
+        buf.sample_rate = 48000u;
+        buf.pcm = bed6.data();
+        buf.sample_count = JOC_FRAME_SAMPLES * 2u;
+        CHECK(joc_stream_push(stream, &buf, nullptr, nullptr) == JOC_OK);
+    }
+    CHECK(joc_stream_flush(stream) == JOC_OK);
+
+    joc_stream_status_info st{};
+    st.struct_size = sizeof(st);
+    st.struct_version = JOC_ABI_VERSION;
+    CHECK(joc_stream_status(stream, &st) == JOC_OK);
+    CHECK(st.truncated_joc_frames == 1u);
+    CHECK(st.frames_in == 2u);
+    joc_stream_destroy(stream);
+}
+
 int main() {
     test_sha256();
     test_crc32_and_inflate();
@@ -2613,6 +2696,7 @@ int main() {
     test_joc_no_previous_interpolation();
     test_binaural_timeline_full_frame_state();
     test_joc_layout_change_on_hold_frame();
+    test_stream_truncated_leading_frame_defers_bed_plan();
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
