@@ -1950,13 +1950,16 @@ void test_joc_truncated_payload_status() {
     CHECK(params.present_mask == 1u);
     CHECK(params.data_end_bits == cut.size() * 8u);
 
-    // One byte cannot even hold the 12-bit joc_header, so the payload stays an
+    // One, two and three bytes cannot hold the full 30-bit fixed header
+    // (joc_header + clipgain + seq_count), so the payload stays an
     // unclassifiable transport error.
-    std::vector<std::uint8_t> headerless(full.begin(), full.begin() + 1);
-    joc_frame_params headerless_params{};
-    CHECK(joc::joc::parse_id14(headerless.data(), headerless.size(), &headerless_params,
-                               nullptr)
-              .code() == JOC_ERR_BITSTREAM_TRUNCATED);
+    for (std::size_t short_len = 1u; short_len <= 3u; ++short_len) {
+        std::vector<std::uint8_t> short_payload(full.begin(), full.begin() + short_len);
+        joc_frame_params short_params{};
+        CHECK(joc::joc::parse_id14(short_payload.data(), short_payload.size(), &short_params,
+                                   nullptr)
+                  .code() == JOC_ERR_BITSTREAM_TRUNCATED);
+    }
 
     // The strict padding verifier keeps reporting the truncation.
     std::uint32_t trailing = 0;

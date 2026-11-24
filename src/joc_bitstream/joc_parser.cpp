@@ -277,7 +277,9 @@ Status parse_id14(const std::uint8_t* payload, std::size_t payload_size, joc_fra
     out->clipgain_y_bits = static_cast<std::uint8_t>(reader.read(5));
     out->seq_count = reader.read(10);
     if (reader.failed()) {
-        return truncated_frame(reader, out, payload, payload_size);
+        // The 30-bit fixed header (joc_header + clipgain + seq_count) is
+        // incomplete, so the frame has no usable identity.
+        return truncated_fail(reader);
     }
     // clipgain = 2^(x-4) * (1 + y/32); ldexp builds the power of two exactly
     // over the whole legal range, so the result is bit-exact to the reference.
