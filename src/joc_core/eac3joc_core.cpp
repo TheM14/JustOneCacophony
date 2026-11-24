@@ -872,20 +872,25 @@ private:
         }
     }
 
-    // Passthrough output: slots 0..7 take the previous frame's 8 core planes
-    // delayed by 1217 samples plus this frame's leading 319 samples; slots 8..15
-    // stay zero.
+    // Passthrough output: follow the pipeline slot contract where slot 0 holds
+    // LFE and slots 1..7 hold the non-LFE core planes (L,R,C,Ls,Rs,Lrs,Rrs),
+    // delayed by 1217 samples from the 8-plane core history; slots 8..15 stay
+    // zero.
     void write_passthrough(float* output16, const float output_scale) const noexcept {
-        for (int channel = 0; channel < EJOC_CORE_OUT_CHANNELS; ++channel) {
-            float* destination = output16 + channel * EJOC_FRAME_SAMPLES;
+        static constexpr int kSourceForSlot[EJOC_CORE_OUT_CHANNELS] = {
+            EJOC_LFE_SLOT, 0, 1, 2, 4, 5, 6, 7,
+        };
+        for (int slot = 0; slot < EJOC_CORE_OUT_CHANNELS; ++slot) {
+            const int source = kSourceForSlot[slot];
+            float* destination = output16 + slot * EJOC_FRAME_SAMPLES;
             for (int sample = 0; sample < kLfeDelay; ++sample) {
                 destination[sample] = static_cast<float>(
-                    core_history_[channel][EJOC_FRAME_SAMPLES - kLfeDelay + sample]) *
+                    core_history_[source][EJOC_FRAME_SAMPLES - kLfeDelay + sample]) *
                     output_scale;
             }
             for (int sample = kLfeDelay; sample < EJOC_FRAME_SAMPLES; ++sample) {
                 destination[sample] =
-                    static_cast<float>(core8_[channel][sample - kLfeDelay]) * output_scale;
+                    static_cast<float>(core8_[source][sample - kLfeDelay]) * output_scale;
             }
         }
     }

@@ -2146,7 +2146,8 @@ void test_joc_lfe_clipgain_ramp() {
 }
 
 void test_joc_passthrough_8_plane_layout() {
-    // 5-channel core: slots 0..5 = L,R,C,LFE,Ls,Rs and slots 6..7 stay zero.
+    // 5-channel core: pipeline contract puts LFE in slot 0 and L,R,C,Ls,Rs in
+    // slots 1..5; slots 6..7 stay zero.
     {
         FrameCase frame;
         frame.create();
@@ -2154,13 +2155,10 @@ void test_joc_passthrough_8_plane_layout() {
         CHECK(frame.render(EJOC_CORE_CHANNELS, 0u, EJOC_FRAME_STATUS_NO_METADATA, 0u, false,
                            0u, 1.0));
         float expected[8] = {};
-        for (int channel = 0; channel < 3; ++channel) {
-            expected[channel] = frame.bed[static_cast<std::size_t>(channel) * EJOC_FRAME_SAMPLES];
-        }
-        expected[3] = frame.lfe[0];
-        for (int index = 0; index < 2; ++index) {
-            expected[4 + index] =
-                frame.bed[static_cast<std::size_t>(3 + index) * EJOC_FRAME_SAMPLES];
+        expected[0] = frame.lfe[0];
+        for (int channel = 0; channel < 5; ++channel) {
+            expected[1 + channel] =
+                frame.bed[static_cast<std::size_t>(channel) * EJOC_FRAME_SAMPLES];
         }
         for (int channel = 0; channel < 8; ++channel) {
             for (int sample = 0; sample < JOC_LFE_DELAY_SAMPLES; ++sample) {
@@ -2172,24 +2170,21 @@ void test_joc_passthrough_8_plane_layout() {
         }
         CHECK(frame.silent_slots(8, EJOC_OUTPUT_CHANNELS - 1));
         // The 8-plane history is kept every frame: the next passthrough frame
-        // reads the previous frame's last 1217 samples.
+        // reads the previous frame's last 1217 samples in the same slot order.
         fill_frame_bed(&frame, 0.05f, 0.125f);
         CHECK(frame.render(EJOC_CORE_CHANNELS, 0u, EJOC_FRAME_STATUS_NO_METADATA, 0u, false,
                            0u, 1.0));
         float previous[8] = {};
         float current[8] = {};
-        for (int channel = 0; channel < 3; ++channel) {
-            current[channel] = frame.bed[static_cast<std::size_t>(channel) * EJOC_FRAME_SAMPLES];
+        current[0] = frame.lfe[0];
+        for (int channel = 0; channel < 5; ++channel) {
+            current[1 + channel] =
+                frame.bed[static_cast<std::size_t>(channel) * EJOC_FRAME_SAMPLES];
         }
-        current[3] = frame.lfe[0];
-        for (int index = 0; index < 2; ++index) {
-            current[4 + index] =
-                frame.bed[static_cast<std::size_t>(3 + index) * EJOC_FRAME_SAMPLES];
-        }
-        previous[0] = 0.1f;
-        previous[1] = 0.2f;
-        previous[2] = 0.3f;
-        previous[3] = 0.25f;
+        previous[0] = 0.25f;
+        previous[1] = 0.1f;
+        previous[2] = 0.2f;
+        previous[3] = 0.3f;
         previous[4] = 0.4f;
         previous[5] = 0.5f;
         for (int channel = 0; channel < 8; ++channel) {
@@ -2201,7 +2196,8 @@ void test_joc_passthrough_8_plane_layout() {
             }
         }
     }
-    // 7-channel core: the extra pair is written to slots 6 and 7.
+    // 7-channel core: LFE stays in slot 0, L,R,C,Ls,Rs in slots 1..5, and the
+    // extra pair is written to slots 6 and 7.
     {
         FrameCase frame;
         frame.create();
@@ -2209,13 +2205,10 @@ void test_joc_passthrough_8_plane_layout() {
         CHECK(frame.render(EJOC_MAX_CORE_CHANNELS, 0u, EJOC_FRAME_STATUS_NO_METADATA, 0u,
                            false, 0u, 1.0));
         float expected[8] = {};
-        for (int channel = 0; channel < 3; ++channel) {
-            expected[channel] = frame.bed[static_cast<std::size_t>(channel) * EJOC_FRAME_SAMPLES];
-        }
-        expected[3] = frame.lfe[0];
-        for (int index = 0; index < 4; ++index) {
-            expected[4 + index] =
-                frame.bed[static_cast<std::size_t>(3 + index) * EJOC_FRAME_SAMPLES];
+        expected[0] = frame.lfe[0];
+        for (int channel = 0; channel < 7; ++channel) {
+            expected[1 + channel] =
+                frame.bed[static_cast<std::size_t>(channel) * EJOC_FRAME_SAMPLES];
         }
         for (int channel = 0; channel < 8; ++channel) {
             for (int sample = JOC_LFE_DELAY_SAMPLES; sample < EJOC_FRAME_SAMPLES; ++sample) {
