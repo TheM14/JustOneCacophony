@@ -261,6 +261,43 @@ private:
     std::int16_t q_[kMaxObjects][kAxes] = {};
 };
 
+// Returns true when the OAMD declaration entry at `oamd_index` is an LFE/LFE2
+// bed channel routed to PCM slot 0 rather than a positioned object slot 1..N.
+// If `frame.program` was left completely default-initialized (unpopulated by a
+// caller), falls back to treating slot 0 as the legacy LFE slot.
+inline bool is_lfe_bed_object(const FrameState& frame, std::uint32_t oamd_index) {
+    const bool has_program = frame.program.dynamic_object_only || frame.program.content_bed ||
+                             frame.program.content_isf || frame.program.content_dynamic ||
+                             !frame.program.bed_labels.empty() || frame.program.lfe_present;
+    if (!has_program) {
+        return oamd_index == 0u;
+    }
+    if (oamd_index >= frame.objects.size() ||
+        frame.objects[oamd_index].kind != ObjectKind::kBed) {
+        return false;
+    }
+    if (oamd_index < frame.program.bed_labels.size()) {
+        const ::joc::joc::BedChannel channel = frame.program.bed_labels[oamd_index];
+        return channel == ::joc::joc::BedChannel::kLfe ||
+               channel == ::joc::joc::BedChannel::kLfe2;
+    }
+    return oamd_index == 0u && frame.program.dynamic_object_only &&
+           frame.program.lfe_present;
+}
+
+// Maps 0-based non-LFE object slots (PCM slots 1..N) to OAMD declaration
+// indices, skipping LFE/LFE2 bed entries in declaration order.
+inline std::vector<std::uint32_t> non_lfe_oamd_indices(const FrameState& frame) {
+    std::vector<std::uint32_t> indices;
+    indices.reserve(frame.objects.size());
+    for (std::uint32_t index = 0; index < frame.objects.size(); ++index) {
+        if (!is_lfe_bed_object(frame, index)) {
+            indices.push_back(index);
+        }
+    }
+    return indices;
+}
+
 // q_of(k, n) = min(32767, floor(32768 k / n + 0.5)), the reference's quantiser.
 int q_of(int k, int n);
 

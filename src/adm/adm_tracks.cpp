@@ -244,8 +244,23 @@ void TrajectoryBuilder::submit_frame(std::int64_t frame_index, const oamd::OamdU
                                      std::int64_t outer_offset) {
     std::int64_t event_sample = frame_index * 1536;
     std::int64_t ramp_samples = 0;
+    std::vector<std::uint32_t> oamd_indices;
     if (update != nullptr) {
-        state_.apply(*update);
+        if (update->has_frame_state) {
+            oamd_indices = oamd::non_lfe_oamd_indices(update->frame_state);
+            for (int slot = 0;
+                 slot < kObjectCount && static_cast<std::size_t>(slot) < oamd_indices.size();
+                 ++slot) {
+                const oamd::ObjectElementState& elem =
+                    update->frame_state.objects[oamd_indices[static_cast<std::size_t>(slot)]];
+                if (!elem.blocks.empty() && elem.kind == oamd::ObjectKind::kDynamic &&
+                    !elem.blocks[0].render.not_active) {
+                    state_.apply_render_state(slot + 1, elem.blocks[0].render);
+                }
+            }
+        } else {
+            state_.apply(*update);
+        }
         event_sample += outer_offset + static_cast<std::int64_t>(update->block_offset_samples);
         ramp_samples = static_cast<std::int64_t>(update->ramp_duration_samples);
     }
@@ -257,9 +272,9 @@ void TrajectoryBuilder::submit_frame(std::int64_t frame_index, const oamd::OamdU
         // OAMD block 0 对动态对象显式携带 gain/size/snap；divergence 只在扩展
         // 元素里出现，缺失时按 0 处理，与 speaker 渲染器的逐 payload 语义一致。
         if (update != nullptr && update->has_frame_state &&
-            static_cast<std::size_t>(object) < update->frame_state.objects.size()) {
+            static_cast<std::size_t>(slot) < oamd_indices.size()) {
             const oamd::ObjectElementState& element =
-                update->frame_state.objects[static_cast<std::size_t>(object)];
+                update->frame_state.objects[oamd_indices[static_cast<std::size_t>(slot)]];
             if (!element.blocks.empty() && element.kind == oamd::ObjectKind::kDynamic) {
                 const oamd::ObjectRenderState& render = element.blocks[0].render;
                 ObjectMetadata& meta = meta_[slot];

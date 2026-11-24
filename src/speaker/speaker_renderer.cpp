@@ -1781,6 +1781,9 @@ Status MetaRenderer::process_frame(
     const std::uint32_t total_blocks = sample_count / static_cast<std::uint32_t>(kBlockSamples);
     const std::uint32_t event_block =
         align_metadata_sample(metadata_offset) / static_cast<std::uint32_t>(kBlockSamples);
+    // Frames without OAMD metadata skip scheduling while keeping `pending` and
+    // active `current`/`target`/`step` ramp state intact, naturally holding the
+    // last spatial rendering state across metadata gaps.
     const bool has_metadata =
         update != nullptr && update->has_frame_state && update->frame_state.object_count != 0u;
     bool scheduled = false;

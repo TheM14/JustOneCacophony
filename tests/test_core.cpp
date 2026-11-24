@@ -2454,8 +2454,8 @@ void test_joc_no_previous_interpolation() {
 // being rejected, and a renderer with a different source count can read more
 // tracks than the fifteen JOC object sources.
 void test_binaural_timeline_full_frame_state() {
-    // Two position blocks in one object element: the legacy frame_update() view
-    // rejects this, the full frame state schedules both blocks.
+    // Two position blocks in one object element (dynamic_object_only=1, lfe_present=0):
+    // track 0 maps to OAMD object 0 rather than skipping it.
     const std::vector<std::uint8_t> multiblock = from_hex("0104600800450132831d6a00");
     joc::oamd::OamdUpdate update;
     CHECK(joc::oamd::parse_id11_state(multiblock.data(), multiblock.size(), &update).ok());
@@ -2467,9 +2467,26 @@ void test_binaural_timeline_full_frame_state() {
     CHECK(timeline.payload_count() == 1);
     double positions[joc::timeline::kTimelineObjects][3] = {};
     CHECK(timeline.positions_at(0, &positions[0][0], joc::timeline::kTimelineObjects).ok());
+    double expected_x = 0.0;
+    double expected_y = 0.0;
+    double expected_z = 0.0;
+    joc::geometry::q_to_adm_xyz(6342, 21141, 0, &expected_x, &expected_y, &expected_z);
+    CHECK(std::fabs(positions[0][0] - expected_x) < 1e-12);
+    CHECK(std::fabs(positions[0][1] - expected_y) < 1e-12);
+    CHECK(std::fabs(positions[0][2] - expected_z) < 1e-12);
 
-    // Seventeen declared objects: the timeline grows one track per object instead
-    // of stopping at the 16-slot legacy view.
+    // ADM TrajectoryBuilder uses the same non-LFE mapping when lfe_present=0.
+    joc::adm::TrajectoryBuilder adm_tracks;
+    adm_tracks.submit_frame(0, &update, 0);
+    std::vector<joc::adm::Track> built_tracks;
+    CHECK(adm_tracks.build(1536, joc::adm::TrajectoryMode::Compact, &built_tracks).ok());
+    CHECK(!built_tracks.empty() && !built_tracks[0].blocks.empty());
+    CHECK(std::fabs(built_tracks[0].blocks[0].x - expected_x) < 1e-12);
+    CHECK(std::fabs(built_tracks[0].blocks[0].y - expected_y) < 1e-12);
+    CHECK(std::fabs(built_tracks[0].blocks[0].z - expected_z) < 1e-12);
+
+    // Seventeen pure-dynamic declared objects (lfe_present=0): the timeline grows
+    // to 17 tracks so none of the dynamic objects are dropped.
     const char* many_objects_hex =
         "21044E600022A29808054530100A8A60201514C0402A29808054530100A8A60201514C040"
         "2A29808054530100A8A60201514C0402A29808054530100A8A60201514C0402A2980800";
@@ -2479,29 +2496,29 @@ void test_binaural_timeline_full_frame_state() {
     CHECK(many.frame_state.object_count == 17);
     joc::timeline::OamdPositionTimeline wide;
     CHECK(wide.submit_update(many, 0, 0, 1473, 0).ok());
-    CHECK(wide.object_count() == 16);
-    double wide_positions[16][3] = {};
-    CHECK(wide.positions_at(0, &wide_positions[0][0], 16).ok());
-    CHECK(wide.positions_at(0, &wide_positions[0][0], 17).code() ==
+    CHECK(wide.object_count() == 17);
+    double wide_positions[17][3] = {};
+    CHECK(wide.positions_at(0, &wide_positions[0][0], 17).ok());
+    CHECK(wide.positions_at(0, &wide_positions[0][0], 18).code() ==
           JOC_ERR_INVALID_ARGUMENT);
 
-    // The legacy slot view still works and matches the frame-state path for a
-    // single-block payload.
+    // Pure-dynamic two-object payload (lfe_present=0): track 0 receives object 0's
+    // coordinates (qx=10570) rather than shifting to object 1.
     const std::vector<std::uint8_t> single = from_hex("0304680004545313880D45301000");
     joc::oamd::OamdUpdate parsed;
     CHECK(joc::oamd::parse_id11_state(single.data(), single.size(), &parsed).ok());
     joc::timeline::OamdPositionTimeline full;
-    joc::timeline::OamdPositionTimeline legacy;
     CHECK(full.submit_update(parsed, 0, 0, 1473, 0).ok());
-    joc::oamd::OamdUpdate slot_view = parsed;
-    slot_view.has_frame_state = false;
-    CHECK(legacy.submit_update(slot_view, 0, 0, 1473, 0).ok());
     double frame_position[3] = {};
-    double slot_position[3] = {};
     CHECK(full.positions_at(0, frame_position, 1).ok());
-    CHECK(legacy.positions_at(0, slot_position, 1).ok());
-    CHECK(frame_position[0] == slot_position[0] && frame_position[1] == slot_position[1] &&
-          frame_position[2] == slot_position[2]);
+    double single_x = 0.0;
+    double single_y = 0.0;
+    double single_z = 0.0;
+    joc::geometry::q_to_adm_xyz(parsed.frame_state.objects[0].blocks[0].render.qx,
+                                parsed.frame_state.objects[0].blocks[0].render.qy, 0,
+                                &single_x, &single_y, &single_z);
+    CHECK(std::fabs(frame_position[0] - single_x) < 1e-12);
+    CHECK(std::fabs(frame_position[1] - single_y) < 1e-12);
 }
 
 // A core channel-count change occurring on a NO_METADATA (status 8) or

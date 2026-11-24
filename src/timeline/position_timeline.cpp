@@ -145,17 +145,16 @@ void OamdPositionTimeline::reset() {
 
 void OamdPositionTimeline::apply_block(const oamd::FrameState& state,
                                        std::uint32_t block_index) {
-    // Track i reads OAMD object i + 1: object 0 is the LFE/bed slot the JOC
-    // renderers do not position.  Bed and ISF objects carry no position field,
-    // and an inactive block keeps the previous position, exactly like the
-    // reference frame_update() value construction.
+    // Map each non-LFE track to its OAMD declaration index by skipping LFE/LFE2
+    // bed entries (matching MetaRenderer::init_meta).  Bed and ISF objects carry
+    // no position field, and an inactive block keeps the previous position.
+    const std::vector<std::uint32_t> oamd_indices = oamd::non_lfe_oamd_indices(state);
     for (int track = 0; track < object_count_; ++track) {
-        const int object_index = track + 1;
-        if (object_index >= static_cast<int>(state.objects.size())) {
+        if (static_cast<std::size_t>(track) >= oamd_indices.size()) {
             break;
         }
-        const oamd::ObjectElementState& element =
-            state.objects[static_cast<std::size_t>(object_index)];
+        const std::uint32_t object_index = oamd_indices[static_cast<std::size_t>(track)];
+        const oamd::ObjectElementState& element = state.objects[object_index];
         if (block_index >= element.blocks.size()) {
             continue;
         }
@@ -164,7 +163,7 @@ void OamdPositionTimeline::apply_block(const oamd::FrameState& state,
         if (render.not_active || element.kind != oamd::ObjectKind::kDynamic) {
             continue;
         }
-        state_.apply_render_state(object_index, render);
+        state_.apply_render_state(track + 1, render);
     }
 }
 
@@ -264,7 +263,8 @@ Status OamdPositionTimeline::submit_update(const oamd::OamdUpdate& update,
     }
 
     const oamd::FrameState& state = update.frame_state;
-    ensure_tracks(state.object_count > 0u ? static_cast<int>(state.object_count) - 1 : 0);
+    const std::vector<std::uint32_t> oamd_indices = oamd::non_lfe_oamd_indices(state);
+    ensure_tracks(static_cast<int>(oamd_indices.size()));
     const std::uint32_t block_count =
         state.blocks.empty() ? 1u : static_cast<std::uint32_t>(state.blocks.size());
     for (std::uint32_t block = 0; block < block_count; ++block) {
