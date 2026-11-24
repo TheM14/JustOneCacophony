@@ -2508,6 +2508,70 @@ void test_binaural_timeline_full_frame_state() {
           frame_position[2] == slot_position[2]);
 }
 
+// A core channel-count change occurring on a NO_METADATA (status 8) or
+// TRUNCATED (status 7) frame must still force a one-frame hard cut so the next
+// valid frame fades in from zero instead of interpolating old-layout matrices.
+void test_joc_layout_change_on_hold_frame() {
+    for (const std::uint32_t middle_status :
+         {static_cast<std::uint32_t>(EJOC_FRAME_STATUS_NO_METADATA),
+          static_cast<std::uint32_t>(JOC_FRAME_STATUS_TRUNCATED)}) {
+        const bool middle_has_meta = (middle_status != EJOC_FRAME_STATUS_NO_METADATA);
+        FrameCase actual;
+        actual.create();
+        FrameCase reference;
+        reference.create();
+
+        for (int sample = 0; sample < EJOC_FRAME_SAMPLES; ++sample) {
+            const float tone =
+                static_cast<float>(0.2 * std::sin(static_cast<double>(sample) * 0.07));
+            actual.bed[static_cast<std::size_t>(sample)] = tone;
+            reference.bed[static_cast<std::size_t>(sample)] = tone;
+        }
+        configure_passthrough_object(&actual);
+        configure_passthrough_object(&reference);
+
+        // Frame 0: 5-lane valid frame establishes non-zero prev_matrix_[0].
+        CHECK(actual.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 1u, true, 1u, 1.0));
+        CHECK(reference.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 1u, true, 1u, 1.0));
+        CHECK(object_peak(actual, 1) > 1.0e-3f);
+
+        // Frame 1: 7-lane frame with NO_METADATA or TRUNCATED (actual) vs normal
+        // 7-lane status 0 -> status 9 hard cut (reference).
+        CHECK(actual.render(EJOC_MAX_CORE_CHANNELS,
+                            middle_has_meta ? EJOC_MAX_CORE_CHANNELS : 0u, middle_status, 2u,
+                            middle_has_meta, middle_has_meta ? 1u : 0u, 1.0));
+        CHECK(reference.render(EJOC_MAX_CORE_CHANNELS, EJOC_MAX_CORE_CHANNELS, 0u, 2u, true, 1u,
+                               1.0));
+        CHECK(actual.silent_slots(0, EJOC_OUTPUT_CHANNELS - 1));
+        CHECK(reference.silent_slots(0, EJOC_OUTPUT_CHANNELS - 1));
+
+        // Frame 2: 7-lane valid frame must fade in identically from zero in both.
+        CHECK(actual.render(EJOC_MAX_CORE_CHANNELS, EJOC_MAX_CORE_CHANNELS, 0u, 3u, true, 1u, 1.0));
+        CHECK(reference.render(EJOC_MAX_CORE_CHANNELS, EJOC_MAX_CORE_CHANNELS, 0u, 3u, true, 1u,
+                               1.0));
+        CHECK(object_peak(actual, 1) > 1.0e-3f);
+        for (int sample = 0; sample < EJOC_FRAME_SAMPLES; ++sample) {
+            CHECK(std::fabs(actual.at(1, sample) - reference.at(1, sample)) < 1e-6f);
+        }
+    }
+
+    // OBJECTS_CLAMPED remains an invalid frame status and holds mid-stream.
+    {
+        FrameCase frame;
+        frame.create();
+        for (int sample = 0; sample < EJOC_FRAME_SAMPLES; ++sample) {
+            frame.bed[static_cast<std::size_t>(sample)] =
+                static_cast<float>(0.2 * std::sin(static_cast<double>(sample) * 0.05));
+        }
+        configure_passthrough_object(&frame);
+        CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS, 0u, 1u, true, 1u, 1.0));
+        CHECK(object_peak(frame, 1) > 1.0e-3f);
+        CHECK(frame.render(EJOC_CORE_CHANNELS, EJOC_CORE_CHANNELS,
+                           JOC_FRAME_STATUS_OBJECTS_CLAMPED, 2u, true, 1u, 1.0));
+        CHECK(object_peak(frame, 1) > 1.0e-3f);
+    }
+}
+
 int main() {
     test_sha256();
     test_crc32_and_inflate();
@@ -2552,6 +2616,7 @@ int main() {
     test_joc_truncated_frame_holds_previous_matrix();
     test_joc_no_previous_interpolation();
     test_binaural_timeline_full_frame_state();
+    test_joc_layout_change_on_hold_frame();
     std::printf("%d checks, %d failure(s)\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

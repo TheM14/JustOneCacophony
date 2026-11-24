@@ -726,11 +726,15 @@ private:
         }
     }
 
+    void clear_lfe_ring() noexcept {
+        std::memset(lfe_delay_, 0, sizeof(lfe_delay_));
+    }
+
     // A declared core-channel-count change (renderer status 9) clears the LFE
     // ring; the clipgain ramp state is kept, so the gain does not retune.
     void maybe_clear_lfe_ring(const uint32_t status) noexcept {
         if (status == 9u) {
-            std::memset(lfe_delay_, 0, sizeof(lfe_delay_));
+            clear_lfe_ring();
         }
     }
 
@@ -1060,8 +1064,11 @@ private:
             }
         }
 
-        if (n_channels_prev_ >= 0 && n_channels != static_cast<uint32_t>(n_channels_prev_)) {
+        const bool layout_changed =
+            n_channels_prev_ >= 0 && n_channels != static_cast<uint32_t>(n_channels_prev_);
+        if (layout_changed) {
             clear_unused_channels(n_channels);
+            clear_lfe_ring();
         }
         // The parse status decides whether the frame's clipgain is usable; a
         // declared-channel-count change (status 9) is only the renderer's own
@@ -1076,7 +1083,10 @@ private:
         }
         advance_state(status, input.seq);
         maybe_clear_lfe_ring(status);
-        const FrameMode mode = select_mode(status);
+        // Layout changes always force a one-frame hard cut even when the frame
+        // carries no renderable metadata, so previous-layout matrices are never
+        // held or interpolated across a channel-count transition.
+        const FrameMode mode = layout_changed ? FrameMode::HardCut : select_mode(status);
         if (input.phase_shift_valid != 0u) {
             phase_shift_enabled_ = input.phase_shift != 0u;
         }
